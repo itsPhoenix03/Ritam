@@ -1,0 +1,16 @@
+# Build and Go caches
+.gotmp/
+/orch
+/orch.exe
+*.test
+*.out
+
+# Local runtime state
+.orch/
+*.db
+*.db-*
+*.lock
+*.log
+
+# Local configuration (copy orch.example.yaml to orch.yaml)
+orch.yaml
