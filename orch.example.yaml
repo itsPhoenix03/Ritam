@@ -1,0 +1,143 @@
+# Settings for the multi-agent orchestrator.
+#
+# Settings are read in layers, each overriding the one before:
+#   1. the global settings, orch.yaml in the app home
+#      (%LOCALAPPDATA%\orch on Windows, ~/.orch elsewhere, or $ORCH_HOME);
+#   2. the project's settings: orch.yaml in the project folder and/or
+#      .orch/orch.yaml in its hidden folder.
+# Only what a file sets is overridden, so a project file can hold just the
+# few settings that differ for that project. `orch where` shows the paths.
+#
+# Copy to one of those places and edit. Everything here is local: there is no remote
+# config source, and NO API KEYS BELONG IN THIS FILE. Claude Code and Codex
+# authenticate through their own CLI mechanisms; the orchestrator never reads
+# or stores provider credentials.
+
+# How to run each provider's CLI. This file defines no agents: the team is
+# recruited in the TUI. Press n for a new task, tick the models it needs
+# under Recruit (Opus x2, Sonnet, GPT-6-Sol, ...), and tick one participant
+# as the authority. Agents are named after their model (opus-1, sonnet-1),
+# kept in .orch/team.json, and started the way their provider says here.
+providers:
+  claude-code:
+    # Resolved on PATH when not an absolute path. Never hard-code an install
+    # location: Claude Code and Codex are installed differently per machine,
+    # and on Windows these are usually shims on PATH.
+    executable: claude
+    startupTimeout: 30s
+    responseTimeout: 5m      # bounds a single CLI invocation
+    # Agents may edit files, only ever inside the workspace (the folder orch
+    # runs in). false makes this provider's agents read-only.
+    allowWrites: true
+    # Commands these agents may run besides workspace.allowedCommands.
+    allowedCommands: []
+
+  codex:
+    executable: codex
+    startupTimeout: 30s
+    responseTimeout: 5m
+    allowWrites: true        # maps to codex's workspace-write sandbox
+    allowedCommands: []
+
+orchestrator:
+  maxConcurrentTasks: 1
+  # Loop protection meters AUTONOMOUS agent work only. Any human input (an
+  # instruction, a follow-up, a resume, an approval or rejection) starts a fresh
+  # allowance, and messages to or from the human never count. Reaching a hard
+  # limit PAUSES the task for a human; it never picks a winner.
+  #
+  # Checkpoint interval, not a limit: every this many authority-led agent
+  # rounds without human input, the authority posts a progress STATUS_UPDATE
+  # and you are notified. Work continues; long tasks need many rounds.
+  maxDeliberationRounds: 10
+  # Pause after this many agent-to-agent messages without human input.
+  maxMessages: 200
+  # Pause after this long without human input (not since the task was created,
+  # so a follow-up hours later is not paused on arrival).
+  maxTaskDuration: 30m
+  # Pause after this many consecutive agent messages that make no progress:
+  # no request answered, nothing new produced, or a repeat of an earlier
+  # message. This is what catches agents going in circles.
+  stallMessages: 8
+  # Absolute ceiling over the task's whole life. Nothing resets it.
+  maxTotalMessages: 1000
+  # Spending ceilings from the usage the CLIs report. 0 disables each.
+  # Claude reports cost; Codex reports tokens only, so only maxTaskTokens
+  # bounds Codex spending.
+  maxTaskCostUSD: 10
+  maxTaskTokens: 0
+  # Hold a task at AWAITING_DECISION until the human approves or rejects the
+  # authority agent's FINAL_DECISION.
+  requireHumanApproval: false
+  # Pause the task if no agent says or does anything for this long. An agent
+  # streaming output or running tools counts as active, so a long CLI turn
+  # that is visibly working is never mistaken for a hung one.
+  idleTimeout: 60s
+
+# Where tasks, messages, events, decisions and shared knowledge are kept.
+# sqlite (default): the project's own database, .orch/orch.db in its hidden
+#   folder; tasks survive a restart, so a completed task can still be
+#   followed up next session.
+# memory: everything is lost when orch exits.
+# Only one orch may use a project's database at a time.
+storage:
+  backend: sqlite
+
+# Each project's database is backed up into the app home
+# (backups/<project>-<id>/): when a task finishes, when orch exits, every
+# `interval` while work is going on, and before the database is upgraded.
+# Nothing is written while the project is idle. `orch backups` lists them,
+# `orch restore` brings one back.
+backups:
+  enabled: true
+  keep: 5                  # snapshots kept per project
+  interval: 10m
+  # A project whose folder was deleted: ask (say so at start, keep its
+  # backups until told), keep, or delete (after deleteAfterDays).
+  whenProjectDeleted: ask
+  deleteAfterDays: 30
+
+proxy:
+  # The local LLM proxy is NOT the orchestrator. It handles provider traffic,
+  # transformation, logging, token accounting and context optimization only.
+  # Not implemented in this phase.
+  enabled: false
+  host: 127.0.0.1
+  port: 8787
+  logRequests: true
+
+logging:
+  level: info              # debug | info | warn | error
+  format: text             # text | json
+  # The TUI owns the terminal, so logs go to a file: one per project in the
+  # app home's logs folder, unless a file is given here.
+
+tui:
+  demoOnStart: false
+  # Force every agent onto the mock adapter. Defaults to true so that nothing
+  # reaches a real provider by accident. The `-real` flag overrides this and
+  # also raises idleTimeout, since real CLIs take minutes rather than
+  # milliseconds to answer.
+  useMockAgents: true
+
+# Persistent agent sessions. Each agent keeps its own Claude Code / Codex
+# conversation per task and resumes it on every turn (claude --resume,
+# codex exec resume), so it remembers the deliberation and can be followed up.
+# The record of which CLI session belongs to which agent on which task is
+# kept in the project's hidden folder (.orch/sessions.json).
+
+# The workspace: where agents work, and the only place an agent with
+# allowWrites may write. It is the folder holding this file unless set here.
+# Launched at a global location (your home folder, a drive root, a system
+# folder), agents are read-only; allowGlobal lets them write, but only into
+# orch's own folder (~/.orch/workspace). Nothing is written to temp folders.
+workspace:
+  root: ""
+  allowGlobal: false
+  # Shell commands a write-enabled agent may run, as prefixes. Empty: it may
+  # edit files but run nothing. Destructive commands (rm, del, git push,
+  # curl, sudo, ...) are refused even if listed. Per-agent `allowedCommands`
+  # add to this list.
+  allowedCommands: []
+  #  - go build
+  #  - go test
