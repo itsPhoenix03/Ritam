@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -30,6 +32,7 @@ const (
 	fieldDescription
 	fieldRecruit
 	fieldParticipants
+	fieldBuilder
 )
 
 // maxRecruitCount caps how many agents of one model the form takes.
@@ -157,6 +160,16 @@ func (m Model) updateFormTeam(msg tea.KeyMsg) Model {
 			m.form.recruit[c] = int(k[0] - '0')
 		}
 
+	case fieldBuilder:
+		opts := m.builderOptions()
+		i := max(0, slices.Index(opts, m.formBuilder()))
+		switch k {
+		case "right", " ", "down":
+			m.form.builder = opts[(i+1)%len(opts)]
+		case "left", "up":
+			m.form.builder = opts[(i-1+len(opts))%len(opts)]
+		}
+
 	case fieldParticipants:
 		members := m.formMembers()
 		if len(members) == 0 {
@@ -240,6 +253,9 @@ func (m Model) formTeamLines(inner int) []line {
 		if mi.Unavailable || mi.Checked {
 			row = row.join(availabilityCell(mi))
 		}
+		if mi.Builds {
+			row = row.join(buildsCell())
+		}
 		if n > 0 {
 			row = row.join(st(fmt.Sprintf("x%d", n), emphStyle))
 		}
@@ -281,7 +297,85 @@ func (m Model) formTeamLines(inner int) []line {
 	case len(members) >= 2 && !hasAuthority:
 		out = append(out, blank(), line{st("  Tick one participant as the authority.", warnStyle)})
 	}
+
+	// Builder: who runs builds and tests.
+	b := m.formBuilder()
+	out = append(out, blank())
+	out = append(out, head(fieldBuilder, "Builder: "+g.arrow+" "+domain.BuilderLabel(b), keyLegend("left/right choose"))...)
+	text, warn := m.builderNote(b)
+	sty := dimStyle
+	if warn {
+		sty = warnStyle
+	}
+	for _, w := range wrapWords(text, maxInt(8, inner-4)) {
+		out = append(out, line{txt("    "), st(w, sty)})
+	}
 	return out
+}
+
+// builderOptions are the Builder field's choices: auto, manual, then each
+// participant.
+func (m Model) builderOptions() []string {
+	opts := []string{domain.BuilderAuto, domain.BuilderManual}
+	for _, fm := range m.formMembers() {
+		opts = append(opts, string(fm.id))
+	}
+	return opts
+}
+
+// formBuilder is the Builder field's choice, auto when the participant
+// chosen has since left the form.
+func (m Model) formBuilder() string {
+	if slices.Contains(m.builderOptions(), m.form.builder) {
+		return m.form.builder
+	}
+	return domain.BuilderAuto
+}
+
+// memberBuilds reports whether a participant's model passed the sandbox
+// check.
+func (m Model) memberBuilds(id domain.AgentID) bool {
+	entries := m.recruitEntries()
+	for _, fm := range m.formMembers() {
+		if fm.id == id && fm.entry < len(entries) {
+			return entries[fm.entry].Builds
+		}
+	}
+	return false
+}
+
+// builderNote explains a Builder choice under the workspace's access level,
+// and whether it will not work as chosen.
+func (m Model) builderNote(b string) (string, bool) {
+	level := m.access.Level
+	switch b {
+	case domain.BuilderManual:
+		return "You run the builds and tests; the agents ask you, and the task stays open until you answer.", false
+	case domain.BuilderAuto:
+		switch level {
+		case domain.AccessFilesOnly:
+			return "Access level 0: no agent may build, so you do (the task stays open until you answer). Raise it in :settings.", false
+		case domain.AccessSandboxedBuilder:
+			var who []string
+			for _, fm := range m.formMembers() {
+				if m.memberBuilds(fm.id) {
+					who = append(who, string(fm.id))
+				}
+			}
+			if len(who) == 0 {
+				return "Participants whose sandbox check passed build; others declaring a sandbox are checked when the task starts (one short call). With none, you build.", false
+			}
+			return strings.Join(who, ", ") + " build, each in build/<agent>/; the others ask them.", false
+		}
+		return fmt.Sprintf("Access level %d: every agent may build, each in its own build/<agent>/ folder.", int(level)), false
+	}
+	switch {
+	case level == domain.AccessFilesOnly:
+		return "Access level 0: no agent may build. Choose Manual, or raise the level in :settings.", true
+	case level == domain.AccessSandboxedBuilder && !m.memberBuilds(domain.AgentID(b)):
+		return b + " has not passed the sandbox check, and at level 1 only sandboxed agents build: it is checked when the task starts.", true
+	}
+	return "Only " + b + " runs builds and tests, in build/" + b + "/; the others ask it.", false
 }
 
 // formSubmission is the task the form describes: its authority, the

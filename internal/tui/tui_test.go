@@ -78,6 +78,7 @@ func (f *fakeService) CreateTask(ctx context.Context, in ports.CreateTaskInput) 
 		Description:    in.Description,
 		AuthorityAgent: in.Authority,
 		Participants:   in.Participants,
+		Builder:        in.Builder,
 		State:          domain.TaskCreated,
 	}
 	f.tasks = append(f.tasks, t)

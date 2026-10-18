@@ -162,10 +162,13 @@ type createForm struct {
 	// authority the participant the human ticked as authority.
 	cursor    int
 	authority domain.AgentID
+	// builder is who runs builds: domain.BuilderAuto, domain.BuilderManual
+	// or a participant's id.
+	builder string
 }
 
 // formFields is how many fields the new-task form has.
-const formFields = 4
+const formFields = 5
 
 // promptState holds the in-progress state of a single-line text prompt used
 // for pause/cancel/approve/reject reasons and for send-instruction content.

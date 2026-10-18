@@ -231,6 +231,9 @@ func (m Model) settingsLines(inner int) ([]line, []int) {
 	if len(a.Blocked) > 0 {
 		para("always blocked, never run: "+strings.Join(a.Blocked, ", "), warnStyle)
 	}
+	if len(a.Missing) > 0 {
+		para("not found on PATH, so these will fail until installed: "+strings.Join(a.Missing, ", "), warnStyle)
+	}
 	add(line{st("  :allow <command> adds one "+dot()+" :disallow <command> removes one", dimStyle)}, -1)
 
 	add(blank(), -1)

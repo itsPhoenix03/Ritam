@@ -759,6 +759,7 @@ func (m Model) submitCreateForm() (tea.Model, tea.Cmd) {
 		Description:  m.form.description,
 		Authority:    authority,
 		Participants: participants,
+		Builder:      m.formBuilder(),
 	}
 	m.mode = modeNormal
 	if len(recruits) > 0 {

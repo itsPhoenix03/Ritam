@@ -50,11 +50,17 @@ func (m Model) applyModelCheck(msg modelCheckedMsg) Model {
 		if m.models[i].Provider == msg.info.Provider && m.models[i].ID == msg.info.ID {
 			m.models[i].Checked, m.models[i].Unavailable, m.models[i].Reason =
 				msg.info.Checked, msg.info.Unavailable, msg.info.Reason
+			m.models[i].Builds, m.models[i].SandboxNote = msg.info.Builds, msg.info.SandboxNote
 		}
 	}
-	if msg.info.Unavailable {
+	switch {
+	case msg.info.Unavailable:
 		m.setStatus("%s cannot run on this account: %s", msg.info.ID, msg.info.Reason)
-	} else {
+	case msg.info.Builds:
+		m.setStatus("%s runs on this account, and its sandbox check passed: it builds & tests at level 1", msg.info.ID)
+	case msg.info.SandboxNote != "":
+		m.setStatus("%s runs on this account; sandbox check: %s", msg.info.ID, msg.info.SandboxNote)
+	default:
 		m.setStatus("%s runs on this account", msg.info.ID)
 	}
 	return m
@@ -70,6 +76,11 @@ func availabilityCell(mi ports.ModelInfo) cell {
 		return st("  "+gl().done+" runs on this account", lipgloss.NewStyle().Foreground(colorGreen))
 	}
 	return txt("")
+}
+
+// buildsCell tags a model whose CLI passed the sandbox check.
+func buildsCell() cell {
+	return st("  "+gl().done+" builds & tests", lipgloss.NewStyle().Foreground(colorGreen))
 }
 
 // checking starts a check of mi.
@@ -209,6 +220,9 @@ func (m Model) teamLines(inner int) ([]line, []int) {
 			row = row.join(availabilityCell(mi))
 		} else {
 			row = row.join(st(mi.Description, dimStyle))
+		}
+		if mi.Builds {
+			row = row.join(buildsCell())
 		}
 		if i == sel {
 			row = line{st(fitEllipsis(row.plain(), inner), reverseStyle)}

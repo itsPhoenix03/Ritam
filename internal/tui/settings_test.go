@@ -118,3 +118,55 @@ func TestALockedLevelCannotBeRaised(t *testing.T) {
 		t.Errorf("a locked level says why and changes nothing: mode %v status %q", next.mode, next.statusLine)
 	}
 }
+
+// TestTheTaskFormChoosesTheBuilder: Auto by default; left/right cycles
+// Manual and each participant, explained under the workspace's access level.
+func TestTheTaskFormChoosesTheBuilder(t *testing.T) {
+	svc := teamService()
+	svc.models[3].Builds = true // gpt-6.1-sol passed the sandbox check
+	svc.access = ports.AccessInfo{Level: domain.AccessSandboxedBuilder, Commands: []string{"cmake"}}
+	m := populatedModel(svc)
+	m.width, m.height = 140, 60
+	m = runAccess(t, m, loadAccessCmd(m.ctx, svc))
+	next, cmd := key(m, "n")
+	m = run(t, next, cmd)
+	for _, r := range "Build it" {
+		m, _ = key(m, string(r))
+	}
+	m.form.focus = fieldRecruit
+	m, _ = key(m, " ") // opus
+	m, _ = key(m, "down")
+	m, _ = key(m, "down")
+	m, _ = key(m, " ") // gpt-6.1-sol
+	m.form.focus = fieldParticipants
+	m, _ = key(m, " ") // opus-1 is the authority
+
+	view := stripANSI(m.View())
+	for _, want := range []string{"builds & tests", "Builder: ", "auto", "gpt-6-1-sol-1 build"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("form missing %q:\n%s", want, view)
+		}
+	}
+
+	m.form.focus = fieldBuilder
+	m, _ = key(m, "right")
+	if m.formBuilder() != domain.BuilderManual || !strings.Contains(stripANSI(m.View()), "You run the builds") {
+		t.Fatalf("right picks Manual: %q", m.formBuilder())
+	}
+	m, _ = key(m, "right")
+	if m.formBuilder() != "opus-1" || !strings.Contains(stripANSI(m.View()), "has not passed the sandbox check") {
+		t.Errorf("then each participant, warned when it cannot build at level 1: %q", m.formBuilder())
+	}
+	m, _ = key(m, "right")
+	if m.formBuilder() != "gpt-6-1-sol-1" {
+		t.Fatalf("builder = %q", m.formBuilder())
+	}
+	next, cmd = key(m, "enter")
+	if cmd == nil {
+		t.Fatalf("submit: %s", next.statusLine)
+	}
+	cmd()
+	if svc.created == nil || svc.created.Builder != "gpt-6-1-sol-1" {
+		t.Errorf("the task is created with the builder chosen: %+v", svc.created)
+	}
+}
