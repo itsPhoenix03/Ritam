@@ -117,7 +117,7 @@ func (m Model) isListPane(p pane) bool {
 			return false
 		}
 		switch m.centerOrDefault() {
-		case tabConversation, tabDecisions, tabTeam:
+		case tabConversation, tabDecisions, tabTeam, tabSettings:
 			return true
 		}
 	}

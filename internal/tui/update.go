@@ -39,13 +39,32 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelCheckedMsg:
 		return m.applyModelCheck(msg), nil
 
+	case accessLoadedMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		return m.applyAccess(msg.info), nil
+
+	case accessChangedMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		m = m.applyAccess(msg.info)
+		m.levelSel = int(msg.info.Level)
+		m.setStatus("access level %s, commands: %s: applies from each agent's next turn",
+			msg.info.Level, listOrNone(msg.info.Commands))
+		return m, nil
+
 	case teamChangedMsg:
 		if msg.err != nil {
 			m.setError(msg.err)
 			return m, nil
 		}
 		m.setStatus("%s", msg.status)
-		return m, loadAgentsCmd(m.ctx, m.svc, m.currentTaskID)
+		// The builders the settings tab names may have changed too.
+		return m, tea.Batch(loadAgentsCmd(m.ctx, m.svc, m.currentTaskID), loadAccessCmd(m.ctx, m.svc))
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -210,6 +229,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if ev.TaskID == "" || ev.TaskID == m.currentTaskID {
 				cmds = append(cmds, loadAgentsCmd(m.ctx, m.svc, m.currentTaskID))
 			}
+		case domain.EvtAccessLevel:
+			cmds = append(cmds, loadAccessCmd(m.ctx, m.svc))
 		}
 		if len(cmds) == 0 {
 			return m, nil
@@ -395,6 +416,9 @@ func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 	case ActionInspect:
 		if m.scrollTarget() == paneConversation && m.centerOrDefault() == tabTeam {
 			return m.startRecruit(), nil
+		}
+		if m.scrollTarget() == paneConversation && m.centerOrDefault() == tabSettings {
+			return m.chooseLevel(domain.AccessLevels[clampInt(m.levelSel, 0, len(domain.AccessLevels)-1)])
 		}
 		return m.open(), nil
 
@@ -780,6 +804,9 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	p := m.prompt
 	m.mode = modeNormal
+	if p.action == ActionSetAccess {
+		return m.confirmLevel(p)
+	}
 	if p.action == ActionRecruit {
 		name := strings.TrimSpace(p.input)
 		if name == "" {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"ritam/internal/brand"
 	"ritam/internal/domain"
 )
 
@@ -111,14 +112,16 @@ func (m Model) headerRows(width, height int) []string {
 // headerLine is the task's status row.
 func (m Model) headerLine(inner int) line {
 	sep := st(" "+gl().vert+" ", dimStyle)
-	left := line{st(" ORCH ", titleStyle)}
+	left := line{st(" "+brand.Title()+" ", titleStyle)}
 	t := m.currentTask()
 	if t == nil {
-		return left.join(sep, st("no task", dimStyle), sep, st("press n to create one", dimStyle))
+		return left.join(sep, st("no task", dimStyle), sep, st("press n to create one", dimStyle), sep).join(m.accessChip()...)
 	}
 	left = left.join(sep, st(string(t.ID), emphStyle), txt(" "), st(t.Title, bodyStyle))
 
-	right := line{taskStateBadge(t.State)}
+	// The access level sits beside the state: it says what the agents
+	// working on this task may run right now.
+	right := m.accessChip().join(taskStateBadge(t.State))
 	if d, ok := m.elapsed(); ok {
 		right = right.join(sep, st(clock(d), bodyStyle))
 	}

@@ -31,6 +31,8 @@ func (m Model) navigate(p pane, n int) (Model, tea.Cmd) {
 			return m.moveDecisionSelection(-n), nil
 		case tabTeam:
 			return m.moveModelSelection(-n), nil
+		case tabSettings:
+			return m.moveLevelSelection(-n), nil
 		}
 		return m.moveConvSelection(-n), nil
 	}
@@ -246,6 +248,22 @@ func (m Model) clickCenter(row int) Model {
 		if r < len(owners) && owners[r] >= 0 {
 			return m.moveConvSelection(owners[r] - m.convSelected(items))
 		}
+	case tabSettings:
+		all, owners := m.settingsLines(inner)
+		first, last := -1, -1
+		for i, o := range owners {
+			if o == m.levelSel && o >= 0 {
+				if first < 0 {
+					first = i
+				}
+				last = i
+			}
+		}
+		r := followSelection(m.scrollOf(paneConversation), first, last, rows, len(all)) + row
+		if r < len(owners) && owners[r] >= 0 {
+			m.levelSel = owners[r]
+		}
+		return m
 	case tabTeam:
 		all, owners := m.teamLines(inner)
 		first, last := -1, -1

@@ -18,10 +18,13 @@ import (
 type Action string
 
 const (
-	ActionCreateTask       Action = "create_task"
-	ActionPauseTask        Action = "pause_task"
-	ActionSetAuthority     Action = "set_authority"
-	ActionRecruit          Action = "recruit"
+	ActionCreateTask   Action = "create_task"
+	ActionPauseTask    Action = "pause_task"
+	ActionSetAuthority Action = "set_authority"
+	ActionRecruit      Action = "recruit"
+	// ActionSetAccess is the confirmation prompt for raising the access
+	// level. It is never bound to a key.
+	ActionSetAccess        Action = "set_access"
 	ActionResumeTask       Action = "resume_task"
 	ActionCancelTask       Action = "cancel_task"
 	ActionApprove          Action = "approve"

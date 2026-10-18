@@ -649,6 +649,8 @@ func (m Model) centerColumn(width, height int) []string {
 		return append(rows, m.inspectorBox(width, paneH)...)
 	case tabTeam:
 		return append(rows, m.teamBox(width, paneH)...)
+	case tabSettings:
+		return append(rows, m.settingsBox(width, paneH)...)
 	default:
 		return append(rows, m.conversationBox(width, paneH)...)
 	}

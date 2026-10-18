@@ -75,6 +75,8 @@ const (
 	tabInspector
 	// tabTeam lists the team and the models to recruit from (team.go).
 	tabTeam
+	// tabSettings sets the workspace's access level (settings.go).
+	tabSettings
 )
 
 // String names the tab for the tab bar and the :tab command.
@@ -94,6 +96,8 @@ func (t centerTab) String() string {
 		return "inspector"
 	case tabTeam:
 		return "team"
+	case tabSettings:
+		return "settings"
 	default:
 		return "conversation"
 	}
@@ -172,7 +176,8 @@ type promptState struct {
 	taskID       domain.TaskID
 	participants []domain.AgentID // candidate recipients, for ActionSendInstruction
 	targetIdx    int
-	recruit      ports.ModelInfo // the model being recruited, for ActionRecruit
+	recruit      ports.ModelInfo    // the model being recruited, for ActionRecruit
+	access       domain.AccessLevel // the level being raised to, for ActionSetAccess
 }
 
 // Model is the Bubble Tea model for the whole application. All fields are
@@ -222,6 +227,11 @@ type Model struct {
 	modelsLoading bool
 	modelsErr     error
 	modelSel      int
+	// The settings tab: the workspace's access settings, and the level the
+	// cursor is on.
+	access       ports.AccessInfo
+	accessLoaded bool
+	levelSel     int
 	// inspect is what the inspector shows; zoom gives the inspector the
 	// whole body, for reading a long message.
 	inspect inspectSubject
@@ -311,6 +321,7 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		loadAgentsCmd(m.ctx, m.svc, m.currentTaskID),
 		loadTasksCmd(m.ctx, m.svc),
+		loadAccessCmd(m.ctx, m.svc),
 	}
 	if m.opts.DemoOnStart {
 		cmds = append(cmds, createTaskCmd(m.ctx, m.svc, ports.CreateTaskInput{
@@ -341,7 +352,7 @@ func (m Model) layout() layout {
 // the terminal narrows: panes that no longer have a column of their own fold
 // in here rather than becoming unreachable.
 func (m Model) centerTabs() []centerTab {
-	tabs := []centerTab{tabConversation, tabActivity, tabEvents, tabDecisions, tabTeam}
+	tabs := []centerTab{tabConversation, tabActivity, tabEvents, tabDecisions, tabTeam, tabSettings}
 	switch m.layout() {
 	case layoutMedium:
 		tabs = append(tabs, tabTasks)

@@ -17,7 +17,7 @@ import (
 func TestTabSwitchesTheCentreView(t *testing.T) {
 	m := swarmModel()
 	m.width, m.height = 160, 44
-	want := []centerTab{tabActivity, tabEvents, tabDecisions, tabTeam, tabConversation}
+	want := []centerTab{tabActivity, tabEvents, tabDecisions, tabTeam, tabSettings, tabConversation}
 	for _, w := range want {
 		m, _ = key(m, "tab")
 		if m.centerOrDefault() != w {
@@ -25,8 +25,8 @@ func TestTabSwitchesTheCentreView(t *testing.T) {
 		}
 	}
 	m, _ = key(m, "shift+tab")
-	if m.centerOrDefault() != tabTeam {
-		t.Errorf("shift+tab went to %s, want team", m.centerOrDefault())
+	if m.centerOrDefault() != tabSettings {
+		t.Errorf("shift+tab went to %s, want settings", m.centerOrDefault())
 	}
 }
 

@@ -32,6 +32,7 @@ type fakeService struct {
 	lastRecruit ports.RecruitInput
 	recruits    []ports.RecruitInput
 	checkResult *ports.ModelInfo
+	access      ports.AccessInfo
 
 	handlers []domain.EventHandler
 
@@ -225,6 +226,21 @@ func (f *fakeService) Subscribe(h domain.EventHandler) (unsubscribe func()) {
 	defer f.mu.Unlock()
 	f.handlers = append(f.handlers, h)
 	return func() {}
+}
+
+func (f *fakeService) Access(ctx context.Context) (ports.AccessInfo, error) {
+	f.record("Access")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.access, nil
+}
+
+func (f *fakeService) SetAccess(ctx context.Context, in ports.AccessChange) (ports.AccessInfo, error) {
+	f.record("SetAccess")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.access.Level, f.access.Commands = in.Level, in.Commands
+	return f.access, nil
 }
 
 var _ ports.Service = (*fakeService)(nil)

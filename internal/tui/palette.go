@@ -56,6 +56,10 @@ var commands = []command{
 	{name: "recruit", usage: "recruit <provider> <model> [name] [role] [writes]", help: "add an agent running a model to the team"},
 	{name: "dismiss", usage: "dismiss <agent>", help: "remove a recruited agent from the team", argHint: "agent"},
 	{name: "check", usage: "check [provider model]", help: "check a model runs on your account (one short paid call)"},
+	{name: "settings", usage: "settings", help: "the workspace's access level and command list"},
+	{name: "access", usage: "access <0-3>", help: "set the access level: 0 files only .. 3 any command (raising asks first)"},
+	{name: "allow", usage: "allow <command>", help: "let agents run a command at access levels 1 and 2 (e.g. allow cmake)"},
+	{name: "disallow", usage: "disallow <command>", help: "take a command off the list"},
 	{name: "export", usage: "export jsonl [path]", help: "dump the event log seen by this UI"},
 	{name: "help", usage: "help", help: "show the key and command reference"},
 	{name: "quit", usage: "quit", help: "leave the TUI (agents keep running)"},
@@ -318,6 +322,31 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 			m.models, m.modelsErr = nil, nil // ask again
 		}
 		return m, nil
+
+	case "settings":
+		m.center, m.activePane, m.zoom = tabSettings, paneConversation, false
+		m.levelSel = int(m.access.Level)
+		return m, loadAccessCmd(m.ctx, m.svc)
+
+	case "access":
+		if strings.TrimSpace(rest) == "" {
+			m.center, m.activePane, m.zoom = tabSettings, paneConversation, false
+			m.setStatus("access level %s: %s (:access <0-3> changes it)", m.access.Level, m.access.Level.Summary())
+			return m, nil
+		}
+		l, err := domain.ParseAccessLevel(rest)
+		if err != nil {
+			m.setStatus("%v", err)
+			return m, nil
+		}
+		m.levelSel = int(l)
+		return m.chooseLevel(l)
+
+	case "allow":
+		return m.editCommands(rest, true)
+
+	case "disallow":
+		return m.editCommands(rest, false)
 
 	case "recruit":
 		in, err := m.parseRecruit(rest)
