@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // EventBus fans domain events out to subscribers and appends every event to

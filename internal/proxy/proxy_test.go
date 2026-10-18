@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
-	"projectorch/internal/proxy"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
+	"ritam/internal/proxy"
 )
 
 func TestDisabledProxyIsANoOp(t *testing.T) {

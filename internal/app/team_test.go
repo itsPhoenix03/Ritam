@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // TestARecruitedAgentJoinsTheTeamAndStays: recruit a second agent on the
 // same model, run a task with it, and find it still there after a restart.
-// orch.yaml is never touched: the recruit lives in team.json.
+// ritam.yaml is never touched: the recruit lives in team.json.
 func TestARecruitedAgentJoinsTheTeamAndStays(t *testing.T) {
 	cfg := mockConfig(t)
 	sys, err := build(t, cfg)
@@ -78,8 +78,8 @@ func TestRecruitingRefusesWhatCannotWork(t *testing.T) {
 			t.Errorf("%s: recruiting %+v should fail", name, in)
 		}
 	}
-	if err := sys.Service.Dismiss(ctx, "opus"); err == nil || !strings.Contains(err.Error(), "orch.yaml") {
-		t.Errorf("an agent from orch.yaml cannot be dismissed: %v", err)
+	if err := sys.Service.Dismiss(ctx, "opus"); err == nil || !strings.Contains(err.Error(), "ritam.yaml") {
+		t.Errorf("an agent from ritam.yaml cannot be dismissed: %v", err)
 	}
 }
 
@@ -92,7 +92,7 @@ func hasAgent(agents []domain.Agent, id domain.AgentID) bool {
 	return false
 }
 
-// TestATeamRecruitedFromNothing: orch.yaml defines no agents, so orch starts
+// TestATeamRecruitedFromNothing: ritam.yaml defines no agents, so ritam starts
 // with an empty team; the agents the form recruits run a task to the end.
 func TestATeamRecruitedFromNothing(t *testing.T) {
 	cfg := mockConfig(t)

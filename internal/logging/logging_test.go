@@ -36,7 +36,7 @@ func TestRedactKeepsOrdinaryText(t *testing.T) {
 // TestFileLoggerRedactsAttributes checks the slog handler, not just the helper:
 // a secret passed as a structured attribute must not land on disk either.
 func TestFileLoggerRedactsAttributes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "orch.log")
+	path := filepath.Join(t.TempDir(), "ritam.log")
 	log, err := New(Options{Level: "debug", Format: "text", File: path})
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestFileLoggerRedactsAttributes(t *testing.T) {
 
 // TestCorrelationLoggers checks that the tracing fields are attached.
 func TestCorrelationLoggers(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "orch.log")
+	path := filepath.Join(t.TempDir(), "ritam.log")
 	log, err := New(Options{Level: "debug", Format: "json", File: path})
 	if err != nil {
 		t.Fatal(err)

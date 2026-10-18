@@ -9,16 +9,16 @@ package brand
 import "strings"
 
 // Name is the application's name, as typed on the command line.
-const Name = "orch"
+const Name = "ritam"
 
 // FormerNames are names the app was released under before. On start, a
 // folder or file still carrying one of them is renamed to Name.
-var FormerNames = []string{}
+var FormerNames = []string{"orch"}
 
 // Title is the name as the TUI shows it.
 func Title() string { return strings.ToUpper(Name) }
 
-// HiddenDir is the per-project folder: ".orch" in the project root.
+// HiddenDir is the per-project folder: ".ritam" in the project root.
 func HiddenDir() string { return HiddenDirFor(Name) }
 
 // HiddenDirFor is HiddenDir for another name.

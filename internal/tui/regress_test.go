@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Regression tests for the verified TUI bugs. Each one reproduces the report

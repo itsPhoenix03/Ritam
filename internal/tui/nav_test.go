@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // Navigation as a human experiences it: keys and the mouse. The rule is the

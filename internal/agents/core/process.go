@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // ProcessRuntime implements ports.AgentRuntime over a long-lived child

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 func TestMemDisagreementRepository(t *testing.T) {

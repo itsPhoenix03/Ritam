@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/agents/core"
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/domain"
+	"ritam/internal/agents/core"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/domain"
 )
 
 func newManager(t *testing.T, ids ...domain.AgentID) (*core.Manager, *core.Registry, map[domain.AgentID]*mockagent.Adapter) {

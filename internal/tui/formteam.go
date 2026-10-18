@@ -5,8 +5,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // The new-task form's team: Recruit, then Participants.
@@ -14,7 +14,7 @@ import (
 // Recruit lists every model the providers offer. Tick the ones the task
 // needs and say how many agents of each. Participants is built only from
 // that, and every participant is named after its model: opus-1, opus-2,
-// sonnet-1, ... The agents defined in orch.yaml (and any other name) are
+// sonnet-1, ... The agents defined in ritam.yaml (and any other name) are
 // never pulled in; a name of this form already on the team for the same
 // model is simply used again, since an agent is only a definition and each
 // task gets its own instance of it.
@@ -112,7 +112,7 @@ func (m Model) formRecruits() []ports.RecruitInput {
 		if !fm.existing {
 			mi := entries[fm.entry]
 			// Writing is still confined to the workspace, and turned off
-			// when orch runs somewhere it may not write.
+			// when ritam runs somewhere it may not write.
 			out = append(out, ports.RecruitInput{Name: fm.id, Provider: mi.Provider, Model: mi.ID, AllowWrites: true})
 		}
 	}

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
-	"projectorch/internal/storage"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
+	"ritam/internal/storage"
 )
 
 func newStore() *Store {

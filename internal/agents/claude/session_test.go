@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
+	"ritam/internal/agents/core"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
 )
 
 // These tests drive the adapter against a fake `claude` that records how it
@@ -97,7 +97,7 @@ func TestFirstTurnCreatesASessionAndLaterTurnsResumeIt(t *testing.T) {
 		t.Fatalf("the first turn must create a session with --session-id, args: %s", cs[0].args)
 	}
 	id := m[1]
-	if !strings.Contains(cs[0].args, "-n orch TASK-001 opus") {
+	if !strings.Contains(cs[0].args, "-n ritam TASK-001 opus") {
 		t.Errorf("the session should be named for a human browsing /resume, args: %s", cs[0].args)
 	}
 	if cs[0].prompt != "full" {

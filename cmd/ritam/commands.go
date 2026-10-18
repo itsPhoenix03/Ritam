@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"projectorch/internal/backup"
-	"projectorch/internal/brand"
-	"projectorch/internal/layout"
-	"projectorch/internal/storage"
+	"ritam/internal/backup"
+	"ritam/internal/brand"
+	"ritam/internal/layout"
+	"ritam/internal/storage"
 )
 
 // Commands for managing where the app keeps its data. They run without the
-// TUI and, except for where and backups list, need orch closed in the
+// TUI and, except for where and backups list, need ritam closed in the
 // project, since they replace or read its database directly.
 
 // commandUsage lists the commands.
@@ -216,7 +216,7 @@ func cmdRestore(args []string, out io.Writer) error {
 	}
 
 	// What is about to be replaced is backed up first, so a restore can be
-	// undone. Opening the database also proves orch is not using it.
+	// undone. Opening the database also proves ritam is not using it.
 	db, err := storage.OpenSQLite(cfg.Storage.Path)
 	if err != nil {
 		return closeOrchFirst(err)

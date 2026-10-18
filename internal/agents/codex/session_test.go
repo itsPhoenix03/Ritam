@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
+	"ritam/internal/agents/core"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
 )
 
 // The real CLI's behaviour these tests mirror was checked live: `exec --json`
@@ -22,7 +22,7 @@ import (
 // found"; and `exec resume` has no --sandbox flag, so read-only must be forced
 // with `-c sandbox_mode="read-only"` (a resumed turn with it could not write).
 
-const fakeMissingEnv = "ORCH_FAKE_CODEX_MISSING"
+const fakeMissingEnv = "RITAM_FAKE_CODEX_MISSING"
 
 // runFakeSessionCLI records its invocation and answers like the real CLI: a
 // new run announces a fresh thread id, a resume continues the given one.

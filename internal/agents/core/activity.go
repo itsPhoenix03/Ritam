@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // activityFlushInterval bounds how often coalesced text is published. Token

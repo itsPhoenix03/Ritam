@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"projectorch/internal/backup"
-	"projectorch/internal/brand"
-	"projectorch/internal/config"
-	"projectorch/internal/layout"
+	"ritam/internal/backup"
+	"ritam/internal/brand"
+	"ritam/internal/config"
+	"ritam/internal/layout"
 )
 
 // place is where this run keeps its files: the app home, the record of known
-// projects, and the project orch was started in.
+// projects, and the project ritam was started in.
 type place struct {
 	home layout.Home
 	reg  *layout.Registry
@@ -29,7 +29,7 @@ type place struct {
 // and points every file the run uses at the right place.
 //
 // configPath is the -config flag: a settings file for the project, whose
-// folder is then the project. Empty means the folder orch was started in,
+// folder is then the project. Empty means the folder ritam was started in,
 // with its settings in <project>/<name>.yaml (if any) and
 // <project>/.<name>/<name>.yaml.
 func prepare(configPath string) (*config.Config, place, error) {
@@ -71,8 +71,8 @@ func prepare(configPath string) (*config.Config, place, error) {
 		pl.notices = append(pl.notices, done...)
 	}
 
-	// The workspace decides the project: normally the folder orch started
-	// in; after a global launch, orch's own folder in the app home.
+	// The workspace decides the project: normally the folder ritam started
+	// in; after a global launch, ritam's own folder in the app home.
 	cfg, err := config.LoadLayers(home.ConfigPath(), visible)
 	if err != nil {
 		return nil, pl, err
@@ -110,7 +110,7 @@ func prepare(configPath string) (*config.Config, place, error) {
 }
 
 // resolveWorkspace settles the workspace's root (relative to the project)
-// and orch's own folder, and resolves it.
+// and ritam's own folder, and resolves it.
 func resolveWorkspace(cfg *config.Config, root string, home layout.Home) (config.Workspace, error) {
 	switch {
 	case cfg.Workspace.Root == "":

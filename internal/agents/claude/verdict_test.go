@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 func TestAReviewVerdictTravelsFromTheReplyHeader(t *testing.T) {

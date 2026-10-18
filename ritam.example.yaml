@@ -1,12 +1,12 @@
 # Settings for the multi-agent orchestrator.
 #
 # Settings are read in layers, each overriding the one before:
-#   1. the global settings, orch.yaml in the app home
-#      (%LOCALAPPDATA%\orch on Windows, ~/.orch elsewhere, or $ORCH_HOME);
-#   2. the project's settings: orch.yaml in the project folder and/or
-#      .orch/orch.yaml in its hidden folder.
+#   1. the global settings, ritam.yaml in the app home
+#      (%LOCALAPPDATA%\ritam on Windows, ~/.ritam elsewhere, or $RITAM_HOME);
+#   2. the project's settings: ritam.yaml in the project folder and/or
+#      .ritam/ritam.yaml in its hidden folder.
 # Only what a file sets is overridden, so a project file can hold just the
-# few settings that differ for that project. `orch where` shows the paths.
+# few settings that differ for that project. `ritam where` shows the paths.
 #
 # Copy to one of those places and edit. Everything here is local: there is no remote
 # config source, and NO API KEYS BELONG IN THIS FILE. Claude Code and Codex
@@ -17,7 +17,7 @@
 # recruited in the TUI. Press n for a new task, tick the models it needs
 # under Recruit (Opus x2, Sonnet, GPT-6-Sol, ...), and tick one participant
 # as the authority. Agents are named after their model (opus-1, sonnet-1),
-# kept in .orch/team.json, and started the way their provider says here.
+# kept in .ritam/team.json, and started the way their provider says here.
 providers:
   claude-code:
     # Resolved on PATH when not an absolute path. Never hard-code an install
@@ -26,7 +26,7 @@ providers:
     executable: claude
     startupTimeout: 30s
     responseTimeout: 5m      # bounds a single CLI invocation
-    # Agents may edit files, only ever inside the workspace (the folder orch
+    # Agents may edit files, only ever inside the workspace (the folder ritam
     # runs in). false makes this provider's agents read-only.
     allowWrites: true
     # Commands these agents may run besides workspace.allowedCommands.
@@ -75,19 +75,19 @@ orchestrator:
   idleTimeout: 60s
 
 # Where tasks, messages, events, decisions and shared knowledge are kept.
-# sqlite (default): the project's own database, .orch/orch.db in its hidden
+# sqlite (default): the project's own database, .ritam/ritam.db in its hidden
 #   folder; tasks survive a restart, so a completed task can still be
 #   followed up next session.
-# memory: everything is lost when orch exits.
-# Only one orch may use a project's database at a time.
+# memory: everything is lost when ritam exits.
+# Only one ritam may use a project's database at a time.
 storage:
   backend: sqlite
 
 # Each project's database is backed up into the app home
-# (backups/<project>-<id>/): when a task finishes, when orch exits, every
+# (backups/<project>-<id>/): when a task finishes, when ritam exits, every
 # `interval` while work is going on, and before the database is upgraded.
-# Nothing is written while the project is idle. `orch backups` lists them,
-# `orch restore` brings one back.
+# Nothing is written while the project is idle. `ritam backups` lists them,
+# `ritam restore` brings one back.
 backups:
   enabled: true
   keep: 5                  # snapshots kept per project
@@ -124,13 +124,13 @@ tui:
 # conversation per task and resumes it on every turn (claude --resume,
 # codex exec resume), so it remembers the deliberation and can be followed up.
 # The record of which CLI session belongs to which agent on which task is
-# kept in the project's hidden folder (.orch/sessions.json).
+# kept in the project's hidden folder (.ritam/sessions.json).
 
 # The workspace: where agents work, and the only place an agent with
 # allowWrites may write. It is the folder holding this file unless set here.
 # Launched at a global location (your home folder, a drive root, a system
 # folder), agents are read-only; allowGlobal lets them write, but only into
-# orch's own folder (~/.orch/workspace). Nothing is written to temp folders.
+# ritam's own folder (~/.ritam/workspace). Nothing is written to temp folders.
 workspace:
   root: ""
   allowGlobal: false

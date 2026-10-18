@@ -7,10 +7,10 @@ package app
 import (
 	"context"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/knowledge"
-	"projectorch/internal/orchestrator"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/knowledge"
+	"ritam/internal/orchestrator"
+	"ritam/internal/ports"
 )
 
 // Service implements ports.Service on top of the orchestrator. It holds no

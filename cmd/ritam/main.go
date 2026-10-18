@@ -1,10 +1,10 @@
-// Command orch is the local multi-agent orchestrator.
+// Command ritam is the local multi-agent orchestrator.
 //
 // It starts a terminal UI that lets a human submit a task to an authoritative
 // agent, watch that agent deliberate with supporting agents through the
 // orchestrator, and intervene at any point.
 //
-// The scaffold ships with mock agents enabled, so `orch` runs end to end with
+// The scaffold ships with mock agents enabled, so `ritam` runs end to end with
 // no Claude Code, no Codex, no network and no API keys.
 package main
 
@@ -17,12 +17,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"projectorch/internal/app"
-	"projectorch/internal/brand"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
-	"projectorch/internal/tui"
+	"ritam/internal/app"
+	"ritam/internal/brand"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
+	"ritam/internal/tui"
 )
 
 func main() {

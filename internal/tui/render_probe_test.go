@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // probeModel is a realistic finished-review screen: three agents, markdown
@@ -68,7 +68,7 @@ func TestRenderProbe(t *testing.T) {
 		m.follow = false
 		m.convSel = 4 // opus's answer to the human
 		out := m.View()
-		if os.Getenv("ORCH_PROBE") != "" {
+		if os.Getenv("RITAM_PROBE") != "" {
 			t.Logf("\n%s", out)
 		}
 		lines := strings.Split(out, "\n")

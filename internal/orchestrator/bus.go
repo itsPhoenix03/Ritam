@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // AgentGateway is the slice of the agent manager the message bus needs. It is

@@ -22,7 +22,7 @@ import (
 //	ctrl+u  clear the field
 //	ctrl+w  delete the last word
 
-// keyLegend joins key hints with the separator dot (ASCII under ORCH_ASCII).
+// keyLegend joins key hints with the separator dot (ASCII under RITAM_ASCII).
 func keyLegend(hints ...string) string {
 	return strings.Join(hints, " "+dot()+" ")
 }

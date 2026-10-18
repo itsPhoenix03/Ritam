@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // SetFollowUpSettleInterval shortens the follow-up settle check for tests.

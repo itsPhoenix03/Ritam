@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/config"
+	"ritam/internal/config"
 )
 
 // TestRecruitsAreStartedTheWayTheProviderSays: a recruit takes its command,
-// timeouts and extra commands from the provider's entry in orch.yaml.
+// timeouts and extra commands from the provider's entry in ritam.yaml.
 func TestRecruitsAreStartedTheWayTheProviderSays(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers["codex"] = config.ProviderConfig{Executable: "C:/tools/codex.exe",

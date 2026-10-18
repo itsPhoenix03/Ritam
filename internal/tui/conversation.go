@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // The centre column.
@@ -166,7 +166,7 @@ func humanAuthored(msg *domain.Message) bool {
 	return msg.FromAgent == domain.HumanAgentID && msg.Metadata["orchestrator"] == "" && msg.Metadata["reason"] == ""
 }
 
-// toYou reports whether msg is an agent (or orch) speaking to the human.
+// toYou reports whether msg is an agent (or ritam) speaking to the human.
 func toYou(msg *domain.Message) bool {
 	return msg.ToAgent == domain.HumanAgentID && msg.FromAgent != domain.HumanAgentID
 }

@@ -1,4 +1,6 @@
-# project-orch
+# Ritam
+
+*Ṛtam* (ऋतम्) is the Vedic principle of order that keeps everything on its proper course. Here it is the orchestrator that keeps every agent within its role.
 
 A local, terminal-based orchestrator that coordinates multiple coding-agent CLIs (Claude Code, Codex) on a single task, with one agent holding final decision-making authority and the others contributing investigation, implementation and review. The orchestrator — not any agent's own reasoning — owns task state, message routing and the authority model, and enforces all of it in code.
 
@@ -13,7 +15,7 @@ Related documents:
 
 ## 1. What this is
 
-`orch` is a single Go binary (`cmd/orch`) that:
+`ritam` is a single Go binary (`cmd/ritam`) that:
 
 - lets a human create a **task** with a title, description, an **authority agent** and a set of **participant agents**;
 - starts each participant's agent runtime and drives a structured, routed conversation between them until the authority agent issues a final decision or a human intervenes;
@@ -143,22 +145,22 @@ Prerequisites: Go 1.26 or later, on PATH. No other services, no database, no net
 
 ```powershell
 # from the repository root
-go run ./cmd/orch                  # terminal UI, using orch.yaml
-go run ./cmd/orch -demo            # ...and immediately create the demo task
-go run ./cmd/orch -headless        # no TUI: run one task and print the event log
-go run ./cmd/orch -config path\to\other.yaml
+go run ./cmd/ritam                  # terminal UI, using ritam.yaml
+go run ./cmd/ritam -demo            # ...and immediately create the demo task
+go run ./cmd/ritam -headless        # no TUI: run one task and print the event log
+go run ./cmd/ritam -config path\to\other.yaml
 
 # force one mode regardless of the config file:
-go run ./cmd/orch -real                                   # real Claude Code / Codex CLIs
-go run ./cmd/orch -mock                                   # offline scripted agents
-go run ./cmd/orch -real -headless -task "your question"   # one real task, headless
+go run ./cmd/ritam -real                                   # real Claude Code / Codex CLIs
+go run ./cmd/ritam -mock                                   # offline scripted agents
+go run ./cmd/ritam -real -headless -task "your question"   # one real task, headless
 ```
 
 ### The screen
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ ORCH  │ TASK-001 test                                                                           ● PAUSED  │ 31 msgs │ 139.2k tok │ $4.18 │
+│ RITAM │ TASK-001 test                                                                           ● PAUSED  │ 31 msgs │ 139.2k tok │ $4.18 │
 │ PAUSED  TIMEOUT: no agent activity   r  resume   i  instruct                                                                             │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌─ TASKS ──────── 2 ─┐ [conversation] activity  events  decisions     f follow · tab switch  ┌─ AGENTS ──────────────────────── 1 working ─┐
@@ -208,7 +210,7 @@ The inspector follows whatever you last selected: a message in the conversation,
 
 The layout drops columns rather than squeezing them. Below 130 columns the task list becomes a centre tab. Below 96 columns the agents and the inspector do too, and `enter` opens the inspector tab.
 
-Identity is **sigil plus colour** (`[C] opus`, `[O] codex`, …), never colour alone, so it survives `NO_COLOR`. Selection is reverse video plus a leading `❯` / `>` marker, and the active tab is bracketed. Set `NO_COLOR` or `ORCH_ASCII=1` for a plain-ASCII, monochrome screen.
+Identity is **sigil plus colour** (`[C] opus`, `[O] codex`, …), never colour alone, so it survives `NO_COLOR`. Selection is reverse video plus a leading `❯` / `>` marker, and the active tab is bracketed. Set `NO_COLOR` or `RITAM_ASCII=1` for a plain-ASCII, monochrome screen.
 
 Tokens and cost are what the CLIs report, and read `--` until they report something. Codex reports tokens but not cost.
 
@@ -256,67 +258,67 @@ export jsonl [path]      dump the event log this session has seen
 
 Text fields (the instruction prompt, the command line, the new-task form) show everything you type, wrapped over as many rows as it needs, up to a third of the screen, past which they scroll with the end in view. `ctrl+a` selects the whole text (typing replaces it, backspace clears it), `ctrl+u` clears the field and `ctrl+w` deletes the last word. Your own messages stand out in the conversation: a `YOU` badge, a bar down the left edge, and up to four lines of what you wrote.
 
-`export jsonl` writes the TUI's own bounded buffer, not the durable log. It is capped at 500 events, so a long run's oldest events are not there to export. The full history is in `.orch/orch.db`.
+`export jsonl` writes the TUI's own bounded buffer, not the durable log. It is capped at 500 events, so a long run's oldest events are not there to export. The full history is in `.ritam/ritam.db`.
 
 ### Agent sessions and follow-ups
 
 Each agent keeps its own Claude Code / Codex conversation for the task and resumes it on every turn (`claude --resume <id>`, `codex exec resume <id>`), so it remembers the deliberation instead of being re-briefed from scratch by every call.
 
-- **Which session is whose.** The orchestrator records one session per (task, agent) in `.orch/sessions.json`, in the project's hidden folder. Claude sessions get an id the orchestrator chooses (`--session-id`); Codex announces its thread id at the start of the first turn and that is recorded. The CLIs' "most recent session" shortcuts (`--continue`, `--last`) are never used: the most recent session may be yours, or another agent's.
+- **Which session is whose.** The orchestrator records one session per (task, agent) in `.ritam/sessions.json`, in the project's hidden folder. Claude sessions get an id the orchestrator chooses (`--session-id`); Codex announces its thread id at the start of the first turn and that is recorded. The CLIs' "most recent session" shortcuts (`--continue`, `--last`) are never used: the most recent session may be yours, or another agent's.
 - **Same place, same permissions.** Claude files sessions by working directory, so every turn runs where the session was created. Read-only permissions are not saved with a session, so they are passed again on every turn; for Codex, whose `exec resume` has no `--sandbox` flag, read-only is forced with `-c sandbox_mode="read-only"`.
 - **Compaction.** The CLIs summarise long sessions. Every resumed turn therefore carries a short standing brief (agent id, role, who it may address, the reply format), so a summary that dropped them cannot break the agent's replies.
 - **Lost sessions.** If a CLI no longer has a session, a new one is started and the agent is re-briefed with a transcript of the task so far. The registry marks it `rebuilt`, keeps the old id, and the log says so.
 - **Follow-ups.** Press `i` (or `:instruct`) on a completed task: it is reopened, the agents resume their sessions, and your message is delivered once they are up. A new `FINAL_DECISION` supersedes the old one, which stays on record. Instructing a paused task asks you to resume it first, rather than failing. A follow-up that only asks something completes again once it is answered. One in which the authority hands the other agents new work (a `TASK_ASSIGNMENT` or `IMPLEMENT`) stays open until the authority sends a `FINAL_DECISION`, as the original task did; the authority is told this when the follow-up reaches it.
 
-### Where orch keeps its data
+### Where ritam keeps its data
 
-orch keeps files in two places. The app's name is defined once (`internal/brand`), so every folder and file below is named after it.
+ritam keeps files in two places. The app's name is defined once (`internal/brand`), so every folder and file below is named after it.
 
-- **The app home**, one per user, made on first run: `%LOCALAPPDATA%\orch` on Windows, `~/.orch` elsewhere, or `$ORCH_HOME`. It holds what belongs to you rather than to a project:
-  - `orch.yaml`, the global settings;
+- **The app home**, one per user, made on first run: `%LOCALAPPDATA%\ritam` on Windows, `~/.ritam` elsewhere, or `$RITAM_HOME`. It holds what belongs to you rather than to a project:
+  - `ritam.yaml`, the global settings;
   - `logs/`, one log per project;
-  - `projects.json`, the projects orch knows;
+  - `projects.json`, the projects ritam knows;
   - `backups/<project>-<id>/`, each project's database snapshots;
-  - `archives/`, archives made by `orch archive`;
+  - `archives/`, archives made by `ritam archive`;
   - `models.json`, what was learned about models on your account;
   - `canary/`, for sandbox checks.
-- **The project's hidden folder**, `<project>/.orch`, made the first time orch runs in a project. It holds the project's own state:
-  - `orch.db`, the database;
+- **The project's hidden folder**, `<project>/.ritam`, made the first time ritam runs in a project. It holds the project's own state:
+  - `ritam.db`, the database;
   - `team.json`, the project's team;
   - `sessions.json`, the agents' CLI sessions;
-  - `orch.yaml`, the project's settings, which override the global ones;
+  - `ritam.yaml`, the project's settings, which override the global ones;
   - `project.json`, the project's id, so a moved project keeps its backups;
   - `tmp/`, the agents' scratch folder.
 
-**Settings** are read in layers, each overriding the one before: the defaults, the app home's `orch.yaml`, then the project's (`orch.yaml` in the project folder and `.orch/orch.yaml`). Only what a file sets is overridden; a provider entry is merged field by field.
+**Settings** are read in layers, each overriding the one before: the defaults, the app home's `ritam.yaml`, then the project's (`ritam.yaml` in the project folder and `.ritam/ritam.yaml`). Only what a file sets is overridden; a provider entry is merged field by field.
 
 **Backups.** Each project's database is snapshotted into the app home:
 - when a task finishes;
-- when orch exits;
+- when ritam exits;
 - every `backups.interval` (10 minutes) while work is going on;
 - before the database is upgraded.
 
-A snapshot is skipped when nothing changed, so an idle project writes nothing. The newest `backups.keep` (5) are kept. Snapshots use SQLite's `VACUUM INTO`, so they are consistent while orch is running.
+A snapshot is skipped when nothing changed, so an idle project writes nothing. The newest `backups.keep` (5) are kept. Snapshots use SQLite's `VACUUM INTO`, so they are consistent while ritam is running.
 
-**Deleted projects.** If a project's hidden folder is deleted, orch finds the project again by its path the next time it starts there, keeps its id, and offers to restore the latest backup. If a project folder is deleted, orch says so at start (`backups.whenProjectDeleted: ask`) and keeps its backups until you choose, or keeps or deletes them automatically (`keep`, or `delete` after `backups.deleteAfterDays`).
+**Deleted projects.** If a project's hidden folder is deleted, ritam finds the project again by its path the next time it starts there, keeps its id, and offers to restore the latest backup. If a project folder is deleted, ritam says so at start (`backups.whenProjectDeleted: ask`) and keeps its backups until you choose, or keeps or deletes them automatically (`keep`, or `delete` after `backups.deleteAfterDays`).
 
-**Commands** (run in the project folder, with orch closed for those that change data):
+**Commands** (run in the project folder, with ritam closed for those that change data):
 
 | Command | Does |
 |---|---|
-| `orch where` | shows the app home, the project folder, the database, log and backups |
-| `orch backups` / `backups now` | lists this project's backups / takes one now |
-| `orch backups projects` | lists every known project, its backups, and whether it still exists |
-| `orch backups delete <project>` / `keep <project>` | deletes a project's backups / keeps a deleted project's backups without asking again |
-| `orch restore [latest\|<file>]` | restores this project from a backup or an archive; what it replaces is backed up first |
-| `orch archive [-clear]` | zips this project's tasks, team and sessions into the app home; `-clear` then starts the project fresh |
-| `orch rename -from <old>` | after the app is renamed, renames the app home and every known project's hidden folder made under the old name (also done automatically for names listed in `brand.FormerNames`) |
+| `ritam where` | shows the app home, the project folder, the database, log and backups |
+| `ritam backups` / `backups now` | lists this project's backups / takes one now |
+| `ritam backups projects` | lists every known project, its backups, and whether it still exists |
+| `ritam backups delete <project>` / `keep <project>` | deletes a project's backups / keeps a deleted project's backups without asking again |
+| `ritam restore [latest\|<file>]` | restores this project from a backup or an archive; what it replaces is backed up first |
+| `ritam archive [-clear]` | zips this project's tasks, team and sessions into the app home; `-clear` then starts the project fresh |
+| `ritam rename -from <old>` | after the app is renamed, renames the app home and every known project's hidden folder made under the old name (also done automatically for names listed in `brand.FormerNames`) |
 
 ### Storage and restarts
 
-- **Everything is kept in one SQLite file per project**, `.orch/orch.db` in the project's hidden folder: tasks, messages, events, decisions, disagreements, shared knowledge and artifacts. A completed task can be followed up in a later session; its agents resume their own CLI sessions (`.orch/sessions.json`), so they still remember it. Task numbers carry on from the last run. Set `storage.backend: memory` to keep nothing.
-- **Tasks running when orch exited come back `PAUSED`** with the reason `INTERRUPTED`. Their agents' turns in progress were lost. Resume the task (`r`) and each agent that still owes a reply is told what it owes; if nobody owes one, the authority is told to carry on. The same happens on resuming from any pause: a pause stops the agent processes, so whatever they were in the middle of is asked for again.
-- **One orch per database.** A second orch on the same file refuses to start and names the pid holding it. The lock is an OS lock, so a crashed orch never leaves it stuck.
+- **Everything is kept in one SQLite file per project**, `.ritam/ritam.db` in the project's hidden folder: tasks, messages, events, decisions, disagreements, shared knowledge and artifacts. A completed task can be followed up in a later session; its agents resume their own CLI sessions (`.ritam/sessions.json`), so they still remember it. Task numbers carry on from the last run. Set `storage.backend: memory` to keep nothing.
+- **Tasks running when ritam exited come back `PAUSED`** with the reason `INTERRUPTED`. Their agents' turns in progress were lost. Resume the task (`r`) and each agent that still owes a reply is told what it owes; if nobody owes one, the authority is told to carry on. The same happens on resuming from any pause: a pause stops the agent processes, so whatever they were in the middle of is asked for again.
+- **One ritam per database.** A second ritam on the same file refuses to start and names the pid holding it. The lock is an OS lock, so a crashed ritam never leaves it stuck.
 - **Inspecting it.** Messages and events have ordinary columns (`from_agent`, `to_agent`, `type`, `content`, ...), so any SQLite tool can read the history. Other records are JSON in a `data` column. The schema version is `PRAGMA user_version`; a build refuses a database newer than it understands rather than mangling it.
 
 ### Long tasks, consultations and limits
@@ -352,9 +354,9 @@ The **team** tab lists the team and every model the providers offer. Claude Code
 
 - **The same model, many agents.** Recruit `opus-2` alongside `opus`: two participants running the same model.
 - **Choose the team while creating a task.** The new-task form (`n`) starts with nobody on it. **Recruit** lists every model (models a CLI hides are left out): up/down to move, space to tick a model, left/right or a digit for how many agents of it. **Participants** is built only from that, every agent named after its model: Opus x2 and Sonnet give `opus-1`, `opus-2`, `sonnet-1`. No other agent is pulled in; a name of that form already on the team for the same model is simply used again (an agent is only a definition, and each task gets its own instance). The **authority** is ticked there by you; nobody is pre-selected, and the task needs one and at least two participants. On create the agents not yet on the team are recruited (able to write, within the workspace, unless their provider says `allowWrites: false`), join the task, and stay on the team for later tasks.
-- **Models your account cannot run.** A turn that fails because the account has no credits, the plan does not include the model, the CLI does not know it, it is not logged in, or a usage limit was hit is recognised and said plainly, instead of the agent being asked to reply again. A supporting agent that cannot run drops out and the authority is told to carry on without it; an authority that cannot run pauses the task with the reason and what to do. A model that failed for credits, plan or name is remembered as unavailable (in `.orch/models.json`) and marked in the team tab and the form, which will not let you pick it. `c` in the form's Recruit field, or `:check` in the team tab, makes one short call (a few cents) to check a model runs on your account; only when you ask.
+- **Models your account cannot run.** A turn that fails because the account has no credits, the plan does not include the model, the CLI does not know it, it is not logged in, or a usage limit was hit is recognised and said plainly, instead of the agent being asked to reply again. A supporting agent that cannot run drops out and the authority is told to carry on without it; an authority that cannot run pauses the task with the reason and what to do. A model that failed for credits, plan or name is remembered as unavailable (in `.ritam/models.json`) and marked in the team tab and the form, which will not let you pick it. `c` in the form's Recruit field, or `:check` in the team tab, makes one short call (a few cents) to check a model runs on your account; only when you ask.
 - **The same agent, many tasks.** Every task gets its own instance of each of its agents, with its own CLI processes and session, so one agent can work on several tasks at once (raise `maxConcurrentTasks`). The agents pane shows each agent's state on the selected task.
-- **Recruits are kept** in `.orch/team.json`, beside the database: each project has its own team. Settings files are never written to. `:dismiss` removes a recruit, not while it is working on a running task.
+- **Recruits are kept** in `.ritam/team.json`, beside the database: each project has its own team. Settings files are never written to. `:dismiss` removes a recruit, not while it is working on a running task.
 - **Changing the authority.** `:authority codex` hands the selected task's authority to another participant, mid-task or between follow-ups. Both agents and the rest of the team are told, and from then on only the new authority may issue the FINAL_DECISION.
 
 ### Watching the agents work
@@ -367,13 +369,13 @@ This output is presentation only: it is never persisted, never routed, and never
 
 **Which agents am I actually running?** The roster marks scripted agents `mock`, the inspector names each agent's CLI (`claude-code`, `codex`, `mock`), and the header shows a `MOCK AGENTS` banner when every agent is scripted. Mock replies are a fixed script that ignores your task entirely, and on screen they are indistinguishable from real ones — so check the pane before concluding anything from a run.
 
-`config.Default()` (used when no config file exists) and `orch.example.yaml` both default `tui.useMockAgents` to `true`, so a fresh checkout with no config never reaches a real CLI or the network by accident.
+`config.Default()` (used when no config file exists) and `ritam.example.yaml` both default `tui.useMockAgents` to `true`, so a fresh checkout with no config never reaches a real CLI or the network by accident.
 
 **`-real`** sets `useMockAgents = false` and raises `orchestrator.idleTimeout` to at least 10 minutes if it is lower — real CLI calls routinely take minutes and the idle timeout must not fire mid-answer. **`-mock`** forces the scripted agents and overrides the config; the two flags are mutually exclusive. **`-task`** (only meaningful with `-headless`) supplies the question to run instead of the built-in demo.
 
-### orch.yaml says how to run the providers, not who the agents are
+### ritam.yaml says how to run the providers, not who the agents are
 
-An "agent" is an orchestrator participant, not a CLI installation: one CLI backs as many agents as you recruit. `orch.yaml` defines no agents. It says how to start each provider's CLI, and every agent of that provider is started that way:
+An "agent" is an orchestrator participant, not a CLI installation: one CLI backs as many agents as you recruit. `ritam.yaml` defines no agents. It says how to start each provider's CLI, and every agent of that provider is started that way:
 
 ```yaml
 providers:
@@ -387,17 +389,17 @@ providers:
     responseTimeout: 5m
 ```
 
-Both entries are optional; left out, `claude` and `codex` on PATH are used. The team itself is recruited in the TUI (the new-task form, or the team tab) and kept in `.orch/team.json`. An older `agents:` section still loads, but is no longer needed: delete it and recruit from the form instead.
+Both entries are optional; left out, `claude` and `codex` on PATH are used. The team itself is recruited in the TUI (the new-task form, or the team tab) and kept in `.ritam/team.json`. An older `agents:` section still loads, but is no longer needed: delete it and recruit from the form instead.
 
-**Auth** is each CLI's own: run `claude /login` and `codex login` once, out of band, before using `-real`. No API key is ever read from `orch.yaml`, an environment variable, or any other config source by this project — see the constraints section below.
+**Auth** is each CLI's own: run `claude /login` and `codex login` once, out of band, before using `-real`. No API key is ever read from `ritam.yaml`, an environment variable, or any other config source by this project — see the constraints section below.
 
 **Read-only agents** (`providers.<name>.allowWrites: false`, or a recruit made without writes). Claude Code is launched with an explicit tool allowlist (`Read`,`Grep`,`Glob`) and denylist (`Bash`,`Edit`,`Write`,`MultiEdit`,`NotebookEdit`) plus `--permission-mode dontAsk`; Codex is launched with `--sandbox read-only`.
 
-**The workspace.** orch is meant to be launched inside a project folder. The workspace is the folder holding `orch.yaml` (or `workspace.root`): agents run there, an agent's `workingDir` must lie inside it, and an agent with `allowWrites` may write there and nowhere else. orch's own files stay in its `.orch` folder there too, temp files included. Launched at a global location (your home folder, a drive root, a system folder), every agent is read-only and the header says why; `workspace.allowGlobal: true` lets them write, but only into orch's own folder, `~/.orch/workspace`.
+**The workspace.** ritam is meant to be launched inside a project folder. The workspace is the folder holding `ritam.yaml` (or `workspace.root`): agents run there, an agent's `workingDir` must lie inside it, and an agent with `allowWrites` may write there and nowhere else. ritam's own files stay in its `.ritam` folder there too, temp files included. Launched at a global location (your home folder, a drive root, a system folder), every agent is read-only and the header says why; `workspace.allowGlobal: true` lets them write, but only into ritam's own folder, `~/.ritam/workspace`.
 
 **What a write-enabled agent may do.** Claude Code edits files with `--permission-mode acceptEdits` and may run only the shell commands listed in `workspace.allowedCommands` or the agent's `allowedCommands` (none by default), as `Bash(<command>:*)` rules; destructive commands (deleting, disks and system settings, permissions, killing processes, the network, rewriting git history, installing software) and the PowerShell tool are denied outright, and a deny rule wins over an allow rule. Codex runs in its `workspace-write` sandbox with writing to temp folders and network access turned off. Every write-enabled agent is told the rules in its brief. There is still no patch-review step (see [docs/future-integration.md](docs/future-integration.md#8-still-deferred--be-precise-about-this)), so writes belong in a human-supervised run.
 
-`go run ./cmd/orch -headless` runs the complete mock flow end to end and prints exactly this event sequence: task creation; `CREATED -> PLANNING`; a single `TASK_ASSIGNMENT` to the authority agent (supporting agents are not briefed — they act only once delegated to); an `opus -> codex DELEGATE`; `PLANNING -> INVESTIGATING`; `codex -> opus ANSWER`; `-> DELIBERATING`; `opus -> codex IMPLEMENT`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> codex REQUEST_CHANGE`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> * FINAL_DECISION`; `-> AWAITING_DECISION`; a `DecisionCreated D-001`; `DecisionAccepted`; `-> COMPLETED`.
+`go run ./cmd/ritam -headless` runs the complete mock flow end to end and prints exactly this event sequence: task creation; `CREATED -> PLANNING`; a single `TASK_ASSIGNMENT` to the authority agent (supporting agents are not briefed — they act only once delegated to); an `opus -> codex DELEGATE`; `PLANNING -> INVESTIGATING`; `codex -> opus ANSWER`; `-> DELIBERATING`; `opus -> codex IMPLEMENT`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> codex REQUEST_CHANGE`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> * FINAL_DECISION`; `-> AWAITING_DECISION`; a `DecisionCreated D-001`; `DecisionAccepted`; `-> COMPLETED`.
 
 ### Running tests
 
@@ -405,7 +407,7 @@ Both entries are optional; left out, `claude` and `codex` on PATH are used. The 
 go test ./...
 ```
 
-There are 14 packages with tests (`internal/agents/claude`, `internal/agents/codex`, `internal/agents/core`, `internal/agents/mock`, `internal/app`, `internal/config`, `internal/decisions`, `internal/domain`, `internal/knowledge`, `internal/logging`, `internal/orchestrator`, `internal/proxy`, `internal/storage`, `internal/tui`) plus two packages with no tests (`cmd/orch`, `internal/ports`); all 14 pass.
+There are 14 packages with tests (`internal/agents/claude`, `internal/agents/codex`, `internal/agents/core`, `internal/agents/mock`, `internal/app`, `internal/config`, `internal/decisions`, `internal/domain`, `internal/knowledge`, `internal/logging`, `internal/orchestrator`, `internal/proxy`, `internal/storage`, `internal/tui`) plus two packages with no tests (`cmd/ritam`, `internal/ports`); all 14 pass.
 
 On this Windows machine, an Application Control policy intermittently blocks a freshly built test binary from running (it varies which package is affected from run to run — sometimes none). If `go test ./...` reports a package failing to run for what looks like this reason, just re-run `go test ./...`; the blocked package is rarely the same one twice, and a clean run where all 14 packages pass is the expected end state, not the exception.
 
@@ -451,7 +453,7 @@ Two packages worth calling out specifically: `internal/logging/logging_test.go` 
 ## Directory structure
 
 ```
-cmd/orch/                 entry point: flag parsing, wiring, headless demo runner
+cmd/ritam/                 entry point: flag parsing, wiring, headless demo runner
 internal/domain/          dependency-free core types: Task, Message, Decision, Agent, Event, Artifact, Knowledge
 internal/ports/           interfaces connecting domain to storage, agents, proxy and the TUI
 internal/orchestrator/    coordination core: EventBus, AuthorityManager, TaskManager, MessageBus, Orchestrator
@@ -465,10 +467,10 @@ internal/storage/         repository implementations: SQLite (sqlite*.go) and in
 internal/proxy/           seam for the future local LLM proxy (not implemented)
 internal/app/             application service (ports.Service) and Build/wire.go
 internal/tui/             Bubble Tea terminal UI
-internal/config/          orch.yaml loading and validation
+internal/config/          ritam.yaml loading and validation
 internal/logging/         structured logging with credential redaction
 docs/                     detailed documentation (see links at the top of this file)
-orch.example.yaml         example configuration; copy to orch.yaml to use
+ritam.example.yaml         example configuration; copy to ritam.yaml to use
 ```
 
 ## Constraints

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Live agent activity (ports.AgentActivity, delivered as a domain.Event with

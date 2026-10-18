@@ -240,7 +240,7 @@ const (
 	PauseReasonMaxTotal    = "limit reached: maxTotalMessages over the task's life"
 	PauseReasonBudget      = "limit reached: spending budget"
 	PauseReasonHuman       = "paused by human"
-	// PauseReasonInterrupted marks a task that was running when orch last
+	// PauseReasonInterrupted marks a task that was running when ritam last
 	// exited. Its agents' in-flight turns were lost; resuming tells them so.
-	PauseReasonInterrupted = "INTERRUPTED: orch exited while this task was running; resume to continue"
+	PauseReasonInterrupted = "INTERRUPTED: ritam exited while this task was running; resume to continue"
 )

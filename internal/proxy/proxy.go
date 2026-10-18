@@ -29,10 +29,10 @@ import (
 	"fmt"
 	"sync"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // Proxy implements ports.LLMProxy. In this phase it only establishes the

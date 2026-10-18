@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"projectorch/internal/agents/core"
+	"ritam/internal/agents/core"
 )
 
 // realResult is a result envelope captured from Claude Code 2.1.284 (a resumed

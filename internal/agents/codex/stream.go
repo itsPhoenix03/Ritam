@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/ports"
 )
 
 // streamEvent is one line of `codex exec --json` output.

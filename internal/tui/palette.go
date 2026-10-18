@@ -10,8 +10,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // The ":" command line.
@@ -376,7 +376,7 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		}
 		path = strings.TrimSpace(unquote(path))
 		if path == "" {
-			path = "orch-events.jsonl"
+			path = "ritam-events.jsonl"
 		}
 		m.setStatus("exporting to %s...", path)
 		return m, exportEventsCmd(path, m.globalEvents)

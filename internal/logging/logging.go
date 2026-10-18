@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // Logger wraps slog with the orchestrator's correlation fields.

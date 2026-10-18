@@ -14,7 +14,7 @@ import (
 
 // DefaultPath is the configuration file looked up relative to the working
 // directory when no explicit path is given.
-const DefaultPath = "orch.yaml"
+const DefaultPath = "ritam.yaml"
 
 // AgentConfig configures one registered agent.
 //
@@ -50,8 +50,8 @@ type AgentConfig struct {
 	// write, as command prefixes ("go test"), on top of the workspace's.
 	// Destructive commands are refused whatever is listed here.
 	AllowedCommands []string `yaml:"allowedCommands"`
-	// ScratchDir is where orch keeps an agent's short-lived files (Codex's
-	// reply file). It is set from the workspace, never configured: orch
+	// ScratchDir is where ritam keeps an agent's short-lived files (Codex's
+	// reply file). It is set from the workspace, never configured: ritam
 	// writes nothing outside the workspace, temp folders included.
 	ScratchDir string `yaml:"-"`
 }
@@ -105,7 +105,7 @@ type KnowledgeConfig struct {
 // knowledge are kept.
 type StorageConfig struct {
 	// Backend is "sqlite" (persistent, the default) or "memory" (everything
-	// is lost when orch exits).
+	// is lost when ritam exits).
 	Backend string `yaml:"backend"`
 	// Path is the SQLite database file. Empty, the default, means the
 	// project's own database in its hidden folder.
@@ -207,7 +207,7 @@ type Config struct {
 	Providers map[string]ProviderConfig `yaml:"providers"`
 	// Agents is the older way of fixing the team in this file. Leave it out:
 	// the team is recruited from the new-task form and kept in
-	// .orch/team.json. Agents listed here still load.
+	// .ritam/team.json. Agents listed here still load.
 	Agents       map[string]AgentConfig `yaml:"agents"`
 	Orchestrator OrchestratorConfig     `yaml:"orchestrator"`
 	Knowledge    KnowledgeConfig        `yaml:"knowledge"`
@@ -236,7 +236,7 @@ type SessionsConfig struct {
 
 // Default returns the configuration used when no file is present. It defines
 // no agents: the team is recruited from the new-task form, one agent per
-// model picked, and kept in .orch/team.json.
+// model picked, and kept in .ritam/team.json.
 func Default() *Config {
 	return &Config{
 		Providers: map[string]ProviderConfig{

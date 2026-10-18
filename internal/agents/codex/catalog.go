@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"projectorch/internal/ports"
+	"ritam/internal/ports"
 )
 
 // Catalog lists the models Codex can run, from the CLI's own catalog:

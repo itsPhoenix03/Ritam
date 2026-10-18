@@ -14,23 +14,23 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/agents/claude"
-	"projectorch/internal/agents/codex"
-	"projectorch/internal/agents/core"
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/claude"
+	"ritam/internal/agents/codex"
+	"ritam/internal/agents/core"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
-// The team: the agents from orch.yaml plus the ones the human recruits.
+// The team: the agents from ritam.yaml plus the ones the human recruits.
 //
 // Recruiting picks a model from a provider's catalog and gives it a name and
 // a role; the new agent is an ordinary participant from then on. Several
 // agents may run the same model, and each agent gets its own instance on
 // every task it works on, so the same model can work on several tasks at
 // once. Recruited agents are kept in team.json beside the database -- never
-// written into orch.yaml, which stays the human's file.
+// written into ritam.yaml, which stays the human's file.
 
 // modelCacheFor is how long a fetched model list is reused.
 const modelCacheFor = 5 * time.Minute
@@ -103,7 +103,7 @@ func catalogsFor(cfg *config.Config) []ports.ModelCatalog {
 }
 
 // templateFor is the configuration a recruit of this provider starts from:
-// the provider's entry in orch.yaml, else (for an older config) a
+// the provider's entry in ritam.yaml, else (for an older config) a
 // configured agent of the same type, else the CLI's usual command.
 func templateFor(cfg *config.Config, provider string) config.AgentConfig {
 	if p, ok := cfg.Providers[provider]; ok {
@@ -425,7 +425,7 @@ func (tm *Team) Dismiss(_ context.Context, id domain.AgentID) error {
 	tm.mu.Unlock()
 	if !ok {
 		if _, known := tm.reg.Get(id); known {
-			return fmt.Errorf("%s comes from orch.yaml; only recruited agents can be dismissed", id)
+			return fmt.Errorf("%s comes from ritam.yaml; only recruited agents can be dismissed", id)
 		}
 		return fmt.Errorf("no such agent: %s", id)
 	}
@@ -455,13 +455,13 @@ func (tm *Team) register(r recruitRecord) (domain.Agent, error) {
 	if r.Provider != "claude-code" && r.Provider != "codex" {
 		return domain.Agent{}, fmt.Errorf("unknown provider %q (claude-code or codex)", r.Provider)
 	}
-	// An empty model means the CLI's own default, like an agent in orch.yaml
+	// An empty model means the CLI's own default, like an agent in ritam.yaml
 	// that sets none.
 	ac := templateFor(tm.cfg, r.Provider)
 	ac.Model = r.Model
 	ac.Role = r.Role
 	ac.Enabled = true
-	// orch.yaml can make a provider's agents read-only, whatever they were
+	// ritam.yaml can make a provider's agents read-only, whatever they were
 	// recruited with.
 	ac.AllowWrites = r.AllowWrites && tm.cfg.Providers[r.Provider].MayWrite()
 	ac, err := applyWorkspace(ac, tm.ws, tm.cfg)

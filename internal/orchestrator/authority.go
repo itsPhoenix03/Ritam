@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"fmt"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // ViolationKind classifies a rejected agent action.

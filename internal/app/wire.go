@@ -8,21 +8,21 @@ import (
 	"strings"
 	"sync"
 
-	"projectorch/internal/agents/claude"
-	"projectorch/internal/agents/codex"
-	"projectorch/internal/agents/core"
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/backup"
-	"projectorch/internal/brand"
-	"projectorch/internal/config"
-	"projectorch/internal/decisions"
-	"projectorch/internal/domain"
-	"projectorch/internal/knowledge"
-	"projectorch/internal/logging"
-	"projectorch/internal/orchestrator"
-	"projectorch/internal/ports"
-	"projectorch/internal/proxy"
-	"projectorch/internal/storage"
+	"ritam/internal/agents/claude"
+	"ritam/internal/agents/codex"
+	"ritam/internal/agents/core"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/backup"
+	"ritam/internal/brand"
+	"ritam/internal/config"
+	"ritam/internal/decisions"
+	"ritam/internal/domain"
+	"ritam/internal/knowledge"
+	"ritam/internal/logging"
+	"ritam/internal/orchestrator"
+	"ritam/internal/ports"
+	"ritam/internal/proxy"
+	"ritam/internal/storage"
 )
 
 // System is everything Build assembled, so a caller (the TUI, a test) can hold
@@ -35,7 +35,7 @@ type System struct {
 	Knowledge    *knowledge.Store
 	Proxy        ports.LLMProxy
 	Config       *config.Config
-	// Recovered lists the tasks that were mid-run when orch last exited and
+	// Recovered lists the tasks that were mid-run when ritam last exited and
 	// are now paused as INTERRUPTED.
 	Recovered []domain.TaskID
 	// Workspace is where the agents work and the only place they may write.
@@ -257,7 +257,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		}
 	})
 
-	// A task that was running when orch last exited has no run loop behind
+	// A task that was running when ritam last exited has no run loop behind
 	// it now; pause it so it says so and can be resumed.
 	recovered, err := orch.RecoverInterrupted(context.Background())
 	if err != nil {

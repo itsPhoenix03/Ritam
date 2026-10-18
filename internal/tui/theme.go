@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // This file is the single source of truth for the TUI's visual language:
@@ -50,7 +50,7 @@ const (
 //
 // It is read once at startup rather than per frame: the environment does not
 // change mid-run, and View() is called many times a second.
-var asciiOnly = os.Getenv("ORCH_ASCII") != "" || os.Getenv("NO_COLOR") != ""
+var asciiOnly = os.Getenv("RITAM_ASCII") != "" || os.Getenv("NO_COLOR") != ""
 
 // glyphs bundles every non-ASCII character the UI draws, so the fallback is a
 // single table swap instead of conditionals scattered through the renderers.

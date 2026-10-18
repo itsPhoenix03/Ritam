@@ -11,8 +11,8 @@ import (
 	"sort"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Store wraps a ports.KnowledgeRepository with validation and the

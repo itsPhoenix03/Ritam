@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"projectorch/internal/ports"
+	"ritam/internal/ports"
 )
 
 // Catalog lists the models Claude Code can run: what its /model picker

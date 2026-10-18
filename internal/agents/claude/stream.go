@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/ports"
 )
 
 // streamEnvelope is one line of `--output-format stream-json` output. Only the

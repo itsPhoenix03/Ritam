@@ -1,16 +1,16 @@
 # Build and Go caches
 .gotmp/
-/orch
-/orch.exe
+/ritam
+/ritam.exe
 *.test
 *.out
 
 # Local runtime state
-.orch/
+.ritam/
 *.db
 *.db-*
 *.lock
 *.log
 
-# Local configuration (copy orch.example.yaml to orch.yaml)
-orch.yaml
+# Local configuration (copy ritam.example.yaml to ritam.yaml)
+ritam.yaml

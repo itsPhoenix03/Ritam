@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Delivery: each agent's inbox.

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 func ctx() context.Context { return context.Background() }

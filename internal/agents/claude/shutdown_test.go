@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
+	"ritam/internal/config"
+	"ritam/internal/domain"
 )
 
 // TestStopKillsInFlightInvocation is a regression test for real token waste.
@@ -67,7 +67,7 @@ func TestStopKillsInFlightInvocation(t *testing.T) {
 // TestSleepHelper is the long-running child process. It is inert unless the
 // adapter invokes the test binary with -test.run pointed at it.
 func TestSleepHelper(t *testing.T) {
-	if os.Getenv("ORCH_SLEEP_HELPER") != "1" {
+	if os.Getenv("RITAM_SLEEP_HELPER") != "1" {
 		t.Skip("not running as the sleep helper")
 	}
 	time.Sleep(2 * time.Minute)

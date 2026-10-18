@@ -36,11 +36,11 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // defaultExecutable is looked up on PATH; never a hard-coded install path. On
@@ -596,7 +596,7 @@ func newLastMessageFile(dir string, id domain.AgentID) (string, func(), error) {
 			return "", func() {}, fmt.Errorf("creating output folder: %w", err)
 		}
 	}
-	f, err := os.CreateTemp(dir, fmt.Sprintf("orch-%s-*.txt", id))
+	f, err := os.CreateTemp(dir, fmt.Sprintf("ritam-%s-*.txt", id))
 	if err != nil {
 		return "", func() {}, fmt.Errorf("creating output file: %w", err)
 	}

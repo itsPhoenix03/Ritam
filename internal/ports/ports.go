@@ -12,7 +12,7 @@ import (
 	"errors"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // Common errors returned by port implementations.
@@ -374,9 +374,9 @@ type Service interface {
 	// Models lists every model each provider's CLI can run.
 	Models(ctx context.Context) ([]ModelInfo, error)
 	// Recruit adds an agent running a chosen model to the team. It is kept
-	// across restarts, alongside the agents in orch.yaml.
+	// across restarts, alongside the agents in ritam.yaml.
 	Recruit(ctx context.Context, in RecruitInput) (domain.Agent, error)
-	// Dismiss removes a recruited agent. Agents from orch.yaml stay.
+	// Dismiss removes a recruited agent. Agents from ritam.yaml stay.
 	Dismiss(ctx context.Context, id domain.AgentID) error
 	// CheckModel makes one short call to see whether this account can run a
 	// model, and remembers the answer. It costs a little, so it runs only

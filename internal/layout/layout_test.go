@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/brand"
+	"ritam/internal/brand"
 )
 
 func setHome(t *testing.T, name string) string {

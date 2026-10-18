@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/orchestrator"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/orchestrator"
+	"ritam/internal/ports"
 )
 
 // promptAgent stands in for a CLI agent: it reads a prompt (so it accepts

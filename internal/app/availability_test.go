@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 type fixedCatalog []ports.ModelInfo
@@ -20,7 +20,7 @@ func (f fixedCatalog) Models(context.Context) ([]ports.ModelInfo, error) { retur
 func testTeam(t *testing.T) *Team {
 	t.Helper()
 	cfg := config.Default()
-	cfg.Storage.Path = filepath.Join(t.TempDir(), "orch.db")
+	cfg.Storage.Path = filepath.Join(t.TempDir(), "ritam.db")
 	tm := &Team{path: teamFile(cfg), cfg: cfg, log: logging.NewDiscard(),
 		catalogs: []ports.ModelCatalog{fixedCatalog{
 			{Provider: "claude-code", ID: "opus"},

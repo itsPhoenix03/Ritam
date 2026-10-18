@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/agents/core"
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // TestOneAgentWorksOnTwoTasksAtOnce: each task gets its own instance of the

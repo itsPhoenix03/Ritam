@@ -28,7 +28,7 @@ func TestLoadMissingFileFallsBackToDefaults(t *testing.T) {
 
 func TestLoadOverridesDefaults(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "orch.yaml")
+	path := filepath.Join(dir, "ritam.yaml")
 	body := `
 agents:
   opus:
@@ -112,19 +112,19 @@ func TestValidateRejectsBadInput(t *testing.T) {
 }
 
 func TestResolvePath(t *testing.T) {
-	got := ResolvePath(filepath.Join("C:", "z", "orch.yaml"), "knowledge.db")
+	got := ResolvePath(filepath.Join("C:", "z", "ritam.yaml"), "knowledge.db")
 	want := filepath.Join("C:", "z", "knowledge.db")
 	if got != want {
 		t.Errorf("ResolvePath = %q, want %q", got, want)
 	}
 	abs := filepath.Join(t.TempDir(), "knowledge.db")
-	if ResolvePath("orch.yaml", abs) != abs {
+	if ResolvePath("ritam.yaml", abs) != abs {
 		t.Error("absolute paths must be returned unchanged")
 	}
 }
 
 func TestProvidersSayHowToRunEachCLI(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "orch.yaml")
+	path := filepath.Join(t.TempDir(), "ritam.yaml")
 	body := "providers:\n  codex:\n    executable: C:/tools/codex.exe\n    responseTimeout: 9m\n    allowWrites: false\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -152,9 +152,9 @@ func TestProvidersSayHowToRunEachCLI(t *testing.T) {
 
 // TestAProvidersOnlyFileLoads: the file the user keeps once the team is
 // recruited in the TUI: providers and limits, no agents, and an old
-// defaultAuthority line left behind does not stop orch starting.
+// defaultAuthority line left behind does not stop ritam starting.
 func TestAProvidersOnlyFileLoads(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "orch.yaml")
+	path := filepath.Join(t.TempDir(), "ritam.yaml")
 	body := "providers:\n  claude-code:\n    executable: claude\norchestrator:\n  defaultAuthority: opus\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

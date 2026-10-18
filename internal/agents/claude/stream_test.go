@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/config"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/config"
+	"ritam/internal/ports"
 )
 
 // The fixtures below are real lines captured from

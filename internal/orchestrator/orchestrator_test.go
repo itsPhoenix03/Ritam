@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/decisions"
-	"projectorch/internal/domain"
-	"projectorch/internal/knowledge"
-	"projectorch/internal/logging"
-	"projectorch/internal/orchestrator"
-	"projectorch/internal/ports"
-	"projectorch/internal/storage"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/decisions"
+	"ritam/internal/domain"
+	"ritam/internal/knowledge"
+	"ritam/internal/logging"
+	"ritam/internal/orchestrator"
+	"ritam/internal/ports"
+	"ritam/internal/storage"
 )
 
 // testGateway is a minimal AgentGateway over a set of adapters. The

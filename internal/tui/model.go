@@ -19,8 +19,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Options configures a TUI run.
@@ -32,7 +32,7 @@ type Options struct {
 	// DefaultAuthority pre-selects the authority agent in the task-creation
 	// form and is used as the authority for the demo task.
 	DefaultAuthority domain.AgentID
-	// WorkspaceNotice explains a workspace restriction (orch launched at a
+	// WorkspaceNotice explains a workspace restriction (ritam launched at a
 	// global location), shown in the header until the human acts on it.
 	WorkspaceNotice string
 	// Notices are things to know at start: a restore that is possible, a

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Prompt pieces shared by the CLI adapters.

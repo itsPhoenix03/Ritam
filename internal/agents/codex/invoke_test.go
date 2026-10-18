@@ -9,18 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // fakeModeEnv switches the test binary into a fake `codex` CLI. The adapter
 // is pointed at the test binary as its executable, so these tests exercise the
 // real spawn/stdin/kill path without the real CLI, a network or any cost.
 const (
-	fakeModeEnv = "ORCH_FAKE_CODEX_MODE"
-	fakeLogEnv  = "ORCH_FAKE_CODEX_LOG"
+	fakeModeEnv = "RITAM_FAKE_CODEX_MODE"
+	fakeLogEnv  = "RITAM_FAKE_CODEX_LOG"
 )
 
 func TestMain(m *testing.M) {

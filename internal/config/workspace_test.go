@@ -19,7 +19,7 @@ func TestAProjectFolderIsAWritableWorkspace(t *testing.T) {
 }
 
 // TestALaunchAtAGlobalLocationIsReadOnly: launched from the home folder or a
-// drive root, orch would hand agents everything below it.
+// drive root, ritam would hand agents everything below it.
 func TestALaunchAtAGlobalLocationIsReadOnly(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -37,7 +37,7 @@ func TestALaunchAtAGlobalLocationIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestAllowingAGlobalLaunchUsesOrchsOwnFolder(t *testing.T) {
+func TestAllowingAGlobalLaunchUsesRitamsOwnFolder(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", os.Getenv("HOME"))
 	home, _ := os.UserHomeDir()
@@ -45,9 +45,9 @@ func TestAllowingAGlobalLaunchUsesOrchsOwnFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(home, ".orch", "workspace")
+	want := filepath.Join(home, ".ritam", "workspace")
 	if !ws.Writable || ws.Root != want {
-		t.Errorf("allowed, the agents write only in orch's own folder %s: %+v", want, ws)
+		t.Errorf("allowed, the agents write only in ritam's own folder %s: %+v", want, ws)
 	}
 }
 
@@ -69,9 +69,9 @@ func TestAnAgentMayNotWorkOutsideTheWorkspace(t *testing.T) {
 
 // TestTheExampleConfigLoads: the shipped example, workspace section included.
 func TestTheExampleConfigLoads(t *testing.T) {
-	cfg, err := Load(filepath.Join("..", "..", "orch.example.yaml"))
+	cfg, err := Load(filepath.Join("..", "..", "ritam.example.yaml"))
 	if err != nil {
-		t.Fatalf("orch.example.yaml: %v", err)
+		t.Fatalf("ritam.example.yaml: %v", err)
 	}
 	if cfg.Workspace.AllowGlobal || len(cfg.Workspace.AllowedCommands) != 0 {
 		t.Errorf("the example must ship the restrictive workspace defaults: %+v", cfg.Workspace)

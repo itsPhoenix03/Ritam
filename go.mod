@@ -1,4 +1,4 @@
-module projectorch
+module ritam
 
 go 1.26.4
 

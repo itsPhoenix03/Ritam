@@ -3,7 +3,7 @@ package tui
 import (
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // The conversation lists what agents have said, so an agent that has been

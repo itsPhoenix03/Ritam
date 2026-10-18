@@ -110,13 +110,13 @@ Nothing about this prompt assumes the previous call happened at all — every fi
 ## 6. Running against the real CLIs
 
 ```powershell
-go run ./cmd/orch -real                                   # real Claude Code + Codex, TUI
-go run ./cmd/orch -real -headless -task "your question"   # one real task, headless, prints the event log
+go run ./cmd/ritam -real                                   # real Claude Code + Codex, TUI
+go run ./cmd/ritam -real -headless -task "your question"   # one real task, headless, prints the event log
 ```
 
-`-real` sets `cfg.TUI.UseMockAgents = false` and raises `cfg.Orchestrator.IdleTimeout` to at least 10 minutes if it is currently lower — real CLI calls routinely take minutes, and the idle timeout must not fire mid-answer. Without `-real`, `orch` always uses the in-process mock adapters regardless of `orch.yaml`'s `agents.*.type`.
+`-real` sets `cfg.TUI.UseMockAgents = false` and raises `cfg.Orchestrator.IdleTimeout` to at least 10 minutes if it is currently lower — real CLI calls routinely take minutes, and the idle timeout must not fire mid-answer. Without `-real`, `ritam` always uses the in-process mock adapters regardless of `ritam.yaml`'s `agents.*.type`.
 
-Auth is each CLI's own: `claude /login`, `codex login`. Nothing in this project ever reads or accepts an API key from `orch.yaml`, environment variables set by these packages, or any other config source — the CLI processes are launched and expected to already be authenticated out of band.
+Auth is each CLI's own: `claude /login`, `codex login`. Nothing in this project ever reads or accepts an API key from `ritam.yaml`, environment variables set by these packages, or any other config source — the CLI processes are launched and expected to already be authenticated out of band.
 
 Write access is off by default (`AgentConfig.AllowWrites` defaults false, the zero value, deliberately the safe one) and is config-gated per agent. It should stay off for any agent whose `IMPLEMENT` results are not being reviewed by a human before being trusted, since there is no patch-review step yet (section 7).
 

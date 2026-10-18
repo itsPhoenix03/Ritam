@@ -3,9 +3,9 @@ package core_test
 import (
 	"testing"
 
-	"projectorch/internal/agents/core"
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/domain"
+	"ritam/internal/agents/core"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/domain"
 )
 
 func newTestAgent(id domain.AgentID, role domain.AgentRole) (domain.Agent, *mockagent.Adapter) {

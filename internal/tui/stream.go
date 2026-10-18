@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // The activity stream: each agent's live CLI output (thinking, text, tool

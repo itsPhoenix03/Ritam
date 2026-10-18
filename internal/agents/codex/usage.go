@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/ports"
 )
 
 // threadTotals is what Codex reports in a `turn.completed` event: running

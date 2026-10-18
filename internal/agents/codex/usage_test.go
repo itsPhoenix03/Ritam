@@ -3,7 +3,7 @@ package codex
 import (
 	"testing"
 
-	"projectorch/internal/agents/core"
+	"ritam/internal/agents/core"
 )
 
 // realTurn is a turn.completed event captured from codex-cli 0.156.1.

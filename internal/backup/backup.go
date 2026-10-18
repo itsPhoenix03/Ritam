@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/logging"
-	"projectorch/internal/storage"
+	"ritam/internal/logging"
+	"ritam/internal/storage"
 )
 
 // suffix ends every snapshot's file name.

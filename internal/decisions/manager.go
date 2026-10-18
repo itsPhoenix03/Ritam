@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Manager coordinates decision lifecycle transitions over a

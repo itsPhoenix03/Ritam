@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // Behavior decides what an agent emits in response to an inbound message.

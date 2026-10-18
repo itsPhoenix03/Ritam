@@ -9,11 +9,11 @@ import (
 	"time"
 	"unicode"
 
-	"projectorch/internal/decisions"
-	"projectorch/internal/domain"
-	"projectorch/internal/knowledge"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/decisions"
+	"ritam/internal/domain"
+	"ritam/internal/knowledge"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // Deps are the collaborators an Orchestrator needs. Everything is an interface
@@ -1613,7 +1613,7 @@ func (o *Orchestrator) assign(ctx context.Context, t *domain.Task) error {
 }
 
 // checkTeam refuses to restart a task whose agents are no longer on the
-// team (dismissed, or defined in an orch.yaml that no longer lists them).
+// team (dismissed, or defined in an ritam.yaml that no longer lists them).
 // Starting it would fail at once and leave the task FAILED; refused, it
 // stays as it was and says why.
 func (o *Orchestrator) checkTeam(t *domain.Task) error {
@@ -1772,7 +1772,7 @@ func (o *Orchestrator) Resume(ctx context.Context, id domain.TaskID) error {
 	return nil
 }
 
-// RecoverInterrupted pauses every task that was mid-run when orch last
+// RecoverInterrupted pauses every task that was mid-run when ritam last
 // exited. Without it such a task would sit in a working state with no run
 // loop behind it: nothing would happen, and nothing would say why. Paused,
 // it shows as INTERRUPTED and the human resumes it when ready. Tasks waiting

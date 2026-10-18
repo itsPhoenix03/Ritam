@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // WriteIncoming writes what the agent is being asked to read this turn: one

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // Persistent agent sessions.

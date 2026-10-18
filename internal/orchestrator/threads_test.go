@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/domain"
-	"projectorch/internal/orchestrator"
-	"projectorch/internal/ports"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/domain"
+	"ritam/internal/orchestrator"
+	"ritam/internal/ports"
 )
 
 // These replay the shapes a follow-up can take once agents pass the human's

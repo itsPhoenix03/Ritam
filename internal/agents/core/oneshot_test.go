@@ -15,7 +15,7 @@ import (
 // exactly the assumption this package must not make — they re-invoke the test
 // binary itself as the child process.
 
-const helperEnv = "ORCH_ONESHOT_HELPER"
+const helperEnv = "RITAM_ONESHOT_HELPER"
 
 // TestHelperHandshake is the child process. It does nothing unless the
 // environment variable is set, so it is inert during a normal test run.
@@ -52,7 +52,7 @@ func TestHelperHandshake(t *testing.T) {
 		os.Stdout.WriteString("noise\nrate limited, try later\n\n")
 		os.Exit(2)
 	case "env":
-		os.Stdout.WriteString(os.Getenv("ORCH_TEST_VALUE"))
+		os.Stdout.WriteString(os.Getenv("RITAM_TEST_VALUE"))
 		os.Exit(0)
 	case "stream":
 		// Emit lines with gaps, so a buffered reader is distinguishable from a
@@ -201,7 +201,7 @@ func TestRunWritesStdin(t *testing.T) {
 
 func TestRunMergesEnvironment(t *testing.T) {
 	r := helperRunner(t, 30*time.Second)
-	r.Env["ORCH_TEST_VALUE"] = "from-config"
+	r.Env["RITAM_TEST_VALUE"] = "from-config"
 
 	res, err := r.Run(context.Background(), []string{"env"}, "")
 	if err != nil {

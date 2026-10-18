@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // OneShotResult is the outcome of a single CLI invocation.

@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"projectorch/internal/brand"
+	"ritam/internal/brand"
 )
 
 // Home is the app home.

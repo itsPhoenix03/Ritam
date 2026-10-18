@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // TestEndToEndThroughTheRealWiring exercises the whole stack the way the TUI

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 func TestACombinedDeliveryAndTheTeamBoardReachThePrompt(t *testing.T) {

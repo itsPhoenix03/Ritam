@@ -7,30 +7,30 @@ import (
 	"runtime"
 	"strings"
 
-	"projectorch/internal/brand"
+	"ritam/internal/brand"
 )
 
 // The workspace: where agents work, and the only place they may write.
 //
-// orch is meant to be launched inside a project folder, with that folder as
+// ritam is meant to be launched inside a project folder, with that folder as
 // the agents' context. The workspace is therefore the folder holding
-// orch.yaml (or workspace.root). Agents run there, and an agent allowed to
+// ritam.yaml (or workspace.root). Agents run there, and an agent allowed to
 // write may write there and nowhere else: not to temp folders, not to the
 // rest of the disk.
 //
-// Launching orch at a "global" level -- the home folder, a drive root, a
+// Launching ritam at a "global" level -- the home folder, a drive root, a
 // system folder -- would hand agents everything below it. That is refused by
-// default: the agents run read-only and orch says why. A user who really
+// default: the agents run read-only and ritam says why. A user who really
 // wants it sets workspace.allowGlobal, and even then agents write only into
-// orch's own folder (~/.orch/workspace), never into the folder orch was
+// ritam's own folder (~/.ritam/workspace), never into the folder ritam was
 // launched from.
 
 // WorkspaceConfig configures the workspace.
 type WorkspaceConfig struct {
-	// Root is the project folder. Empty means the folder holding orch.yaml.
+	// Root is the project folder. Empty means the folder holding ritam.yaml.
 	Root string `yaml:"root"`
 	// AllowGlobal permits write-enabled agents when the root is a global
-	// location. They then write only into orch's own workspace folder.
+	// location. They then write only into ritam's own workspace folder.
 	AllowGlobal bool `yaml:"allowGlobal"`
 	// AllowedCommands are shell commands every write-enabled agent may run,
 	// as command prefixes ("go test", "go build", "npm test"). Empty means
@@ -54,7 +54,7 @@ type Workspace struct {
 }
 
 // ResolveWorkspace works out the workspace from the configuration. An empty
-// root means the current directory (main sets it to orch.yaml's folder).
+// root means the current directory (main sets it to ritam.yaml's folder).
 func ResolveWorkspace(wc WorkspaceConfig) (Workspace, error) {
 	root := wc.Root
 	if root == "" {
@@ -75,9 +75,9 @@ func ResolveWorkspace(wc WorkspaceConfig) (Workspace, error) {
 	ws.Global = true
 	if !wc.AllowGlobal {
 		ws.Writable = false
-		ws.Notice = fmt.Sprintf("orch is running at a global location (%s): agents are read-only. "+
-			"Launch orch inside a project folder, or set workspace.allowGlobal to let agents write "+
-			"in orch's own workspace folder.", ws.Root)
+		ws.Notice = fmt.Sprintf("ritam is running at a global location (%s): agents are read-only. "+
+			"Launch ritam inside a project folder, or set workspace.allowGlobal to let agents write "+
+			"in ritam's own workspace folder.", ws.Root)
 		return ws, nil
 	}
 	own := wc.OwnDir
@@ -92,7 +92,7 @@ func ResolveWorkspace(wc WorkspaceConfig) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("workspace: %w", err)
 	}
 	ws.Root = own
-	ws.Notice = fmt.Sprintf("orch is running at a global location: agents work in %s, orch's own folder.", own)
+	ws.Notice = fmt.Sprintf("ritam is running at a global location: agents work in %s, ritam's own folder.", own)
 	return ws, nil
 }
 

@@ -3,7 +3,7 @@ package mockagent
 import (
 	"errors"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // counterpart returns the first task participant that is not self, or ""

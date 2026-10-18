@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // nextSequence atomically increments and returns a named counter.

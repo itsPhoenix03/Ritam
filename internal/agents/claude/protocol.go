@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // The reply header the orchestrator asks Claude Code to emit. It is our

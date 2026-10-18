@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/domain"
-	"projectorch/internal/orchestrator"
-	"projectorch/internal/ports"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/domain"
+	"ritam/internal/orchestrator"
+	"ritam/internal/ports"
 )
 
 // The human asks opus; opus asks scout and codex in parallel; scout replies,

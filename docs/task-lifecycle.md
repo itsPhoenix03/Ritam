@@ -61,7 +61,7 @@ Also note: `Orchestrator.handleOutbound` does not always call `Transition` even 
 
 ## 3. Happy-path ASCII diagram
 
-This is exactly the sequence `go run ./cmd/orch -headless` produces against the mock agents:
+This is exactly the sequence `go run ./cmd/ritam -headless` produces against the mock agents:
 
 ```
 CREATED

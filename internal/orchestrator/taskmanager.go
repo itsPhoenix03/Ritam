@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // TaskManager owns task records and the task state machine. It is the only

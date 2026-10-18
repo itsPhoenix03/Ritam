@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // Manager is the Agent Runtime Manager: it owns a Registry and drives every

@@ -3,7 +3,7 @@ package codex
 import (
 	"testing"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 func TestAReviewVerdictTravelsFromTheReplyHeader(t *testing.T) {

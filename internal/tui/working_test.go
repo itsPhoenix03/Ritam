@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // TestAWorkingAgentHasAThinkingEntry: an agent handed work has a thinking

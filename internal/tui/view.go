@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // The screen: header, body, command bar, help bar. The body's regions come
@@ -459,7 +459,7 @@ func (m Model) helpLines() []line {
 			" events: the audit log " + dot() + " decisions: every decision, accepted or superseded.",
 		"The decision box turns yellow when a decision waits on you: a approves, x rejects.",
 		"Click a tab, a task, an agent or a message to select it; the wheel scrolls what is under the pointer.",
-		"Set NO_COLOR or ORCH_ASCII=1 for a plain-ASCII, monochrome screen.",
+		"Set NO_COLOR or RITAM_ASCII=1 for a plain-ASCII, monochrome screen.",
 		"Tokens and cost are what the CLIs report; Codex reports tokens but not cost, so its cost reads " + unavailable + ".",
 	} {
 		for i, l := range wrapWords(note, 100) {

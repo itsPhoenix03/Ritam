@@ -14,7 +14,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go driver: no cgo, builds anywhere Go does
 
-	"projectorch/internal/ports"
+	"ritam/internal/ports"
 )
 
 // SQLite is the persistent store: one file holding every task, message,
@@ -227,7 +227,7 @@ func (s *SQLite) migrate(ctx context.Context) error {
 		return fmt.Errorf("sqlite: read schema version: %w", err)
 	}
 	if version > len(migrations) {
-		return fmt.Errorf("sqlite: %s has schema version %d, newer than this build understands (%d); upgrade orch",
+		return fmt.Errorf("sqlite: %s has schema version %d, newer than this build understands (%d); upgrade ritam",
 			s.path, version, len(migrations))
 	}
 	if version > 0 && version < len(migrations) && s.opts.BeforeUpgrade != nil {

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"projectorch/internal/brand"
+	"ritam/internal/brand"
 )
 
 // Renaming after the app changes its name.

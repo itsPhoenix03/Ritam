@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // The side columns: the task list on the left; agents, the current decision

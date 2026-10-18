@@ -9,18 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // fakeModeEnv switches the test binary into a fake `claude` CLI. The adapter
 // is pointed at the test binary as its executable, so these tests exercise the
 // real spawn/stdin/kill path without the real CLI, a network or any cost.
 const (
-	fakeModeEnv = "ORCH_FAKE_CLAUDE_MODE"
-	fakeLogEnv  = "ORCH_FAKE_CLAUDE_LOG"
+	fakeModeEnv = "RITAM_FAKE_CLAUDE_MODE"
+	fakeLogEnv  = "RITAM_FAKE_CLAUDE_LOG"
 )
 
 const fakeReply = `{"type":"result","subtype":"success","is_error":false,` +
@@ -99,7 +99,7 @@ func runFakeCostlyCLI() {
 
 // fakeMissingEnv names a session id the fake CLI pretends not to have, the way
 // the real one answers a --resume for a conversation that no longer exists.
-const fakeMissingEnv = "ORCH_FAKE_CLAUDE_MISSING"
+const fakeMissingEnv = "RITAM_FAKE_CLAUDE_MISSING"
 
 // runFakeSessionCLI records how it was called -- session flags, working
 // directory, which kind of prompt it got -- and answers like the real CLI,

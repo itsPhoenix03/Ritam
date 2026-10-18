@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // backends runs a test against every storage implementation, so the SQLite
@@ -15,7 +15,7 @@ import (
 func backends(t *testing.T, run func(t *testing.T, s *ports.Storage)) {
 	t.Run("memory", func(t *testing.T) { run(t, NewInMemory()) })
 	t.Run("sqlite", func(t *testing.T) {
-		db, err := OpenSQLite(filepath.Join(t.TempDir(), "orch.db"))
+		db, err := OpenSQLite(filepath.Join(t.TempDir(), "ritam.db"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,7 +259,7 @@ func hitIDs(hs []domain.KnowledgeHit) []domain.KnowledgeID {
 
 // TestSQLiteSurvivesReopen is the point of the SQLite store.
 func TestSQLiteSurvivesReopen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "orch.db")
+	path := filepath.Join(t.TempDir(), "nested", "ritam.db")
 	c := ctx()
 	db, err := OpenSQLite(path)
 	if err != nil {
@@ -292,7 +292,7 @@ func TestSQLiteSurvivesReopen(t *testing.T) {
 }
 
 func TestSQLiteRefusesANewerSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "orch.db")
+	path := filepath.Join(t.TempDir(), "ritam.db")
 	db, err := OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
@@ -304,8 +304,8 @@ func TestSQLiteRefusesANewerSchema(t *testing.T) {
 	}
 }
 
-func TestSQLiteAllowsOneOrchPerDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "orch.db")
+func TestSQLiteAllowsOneRitamPerDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ritam.db")
 	first, err := OpenSQLite(path)
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestSQLiteAllowsOneOrchPerDatabase(t *testing.T) {
 	_, err = OpenSQLite(path)
 	var locked *ErrLocked
 	if !errors.As(err, &locked) {
-		t.Fatalf("a second orch on the same database must be refused, got %v", err)
+		t.Fatalf("a second ritam on the same database must be refused, got %v", err)
 	}
 	if locked.Holder == "" {
 		t.Error("the refusal should name the pid holding the database")

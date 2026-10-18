@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/app"
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
-	"projectorch/internal/storage"
+	"ritam/internal/app"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
+	"ritam/internal/storage"
 )
 
 // testConfig is the default configuration plus two agents defined in the
@@ -28,7 +28,7 @@ func testConfig(t *testing.T) *config.Config {
 			Executable: "codex", ResponseTimeout: 5 * time.Minute},
 	}
 	cfg.Orchestrator.DefaultAuthority = "opus"
-	cfg.Storage.Path = filepath.Join(t.TempDir(), "orch.db")
+	cfg.Storage.Path = filepath.Join(t.TempDir(), "ritam.db")
 	cfg.Sessions.File = ""
 	cfg.Logging.File = ""
 	return cfg
@@ -64,7 +64,7 @@ func createDemoTask(t *testing.T, svc *app.Service) *domain.Task {
 }
 
 // TestATaskSurvivesARestart: a completed task, its messages and its
-// decision are all still there after orch exits and starts again, and new
+// decision are all still there after ritam exits and starts again, and new
 // tasks keep counting from where the last run stopped.
 func TestATaskSurvivesARestart(t *testing.T) {
 	cfg := mockConfig(t)
@@ -138,14 +138,14 @@ func TestAFollowUpWorksAfterARestart(t *testing.T) {
 	}
 }
 
-// TestATaskRunningAtExitComesBackPaused: a task left mid-run (orch was
+// TestATaskRunningAtExitComesBackPaused: a task left mid-run (ritam was
 // killed) must not sit in a working state with nothing driving it.
 func TestATaskRunningAtExitComesBackPaused(t *testing.T) {
 	cfg := mockConfig(t)
 	ctx := context.Background()
 
 	// Simulate the crash: write a task straight into the database in a
-	// working state, with a question still owed, as a killed orch leaves it.
+	// working state, with a question still owed, as a killed ritam leaves it.
 	db, err := storage.OpenSQLite(cfg.Storage.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -204,12 +204,12 @@ func TestATaskRunningAtExitComesBackPaused(t *testing.T) {
 	}
 }
 
-func TestASecondOrchOnTheSameDatabaseIsRefused(t *testing.T) {
+func TestASecondRitamOnTheSameDatabaseIsRefused(t *testing.T) {
 	cfg := mockConfig(t)
 	if _, err := build(t, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Build(cfg, logging.NewDiscard()); err == nil || !strings.Contains(err.Error(), "in use by another orch") {
+	if _, err := app.Build(cfg, logging.NewDiscard()); err == nil || !strings.Contains(err.Error(), "in use by another ritam") {
 		t.Fatalf("want a clear refusal, got %v", err)
 	}
 }

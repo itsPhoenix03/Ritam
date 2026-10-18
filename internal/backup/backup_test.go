@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/storage"
+	"ritam/internal/domain"
+	"ritam/internal/storage"
 )
 
 func openDB(t *testing.T, path string) *storage.SQLite {

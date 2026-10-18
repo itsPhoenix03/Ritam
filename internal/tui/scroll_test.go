@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // longText is a realistic agent-authored decision: multi-paragraph, embedded

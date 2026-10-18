@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 func task(id string, created time.Time) *domain.Task {
@@ -56,7 +56,7 @@ func TestARestartedTaskNumberDoesNotResumeAnOldSession(t *testing.T) {
 }
 
 func TestRegistrySurvivesARestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".orch", "sessions.json")
+	path := filepath.Join(t.TempDir(), ".ritam", "sessions.json")
 	t1 := task("TASK-001", time.Now())
 
 	r, err := OpenSessionRegistry(path)

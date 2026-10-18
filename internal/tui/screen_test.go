@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"projectorch/internal/domain"
+	"ritam/internal/domain"
 )
 
 // The screen as a whole: every size and state fits exactly, the responsive

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // No test in this file spawns a process or contacts a provider.

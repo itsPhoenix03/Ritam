@@ -35,11 +35,11 @@ import (
 	"sync"
 	"time"
 
-	"projectorch/internal/agents/core"
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/agents/core"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // defaultExecutable is looked up on PATH; it is never a hard-coded install
@@ -424,9 +424,9 @@ func (a *ClaudeCodeAdapter) sessionArgs(t *domain.Task, sess core.Session, resum
 	if resuming {
 		return []string{"--resume", sess.ID}
 	}
-	name := "orch " + string(a.id)
+	name := "ritam " + string(a.id)
 	if t != nil {
-		name = fmt.Sprintf("orch %s %s", t.ID, a.id)
+		name = fmt.Sprintf("ritam %s %s", t.ID, a.id)
 	}
 	return []string{"--session-id", sess.ID, "-n", name}
 }

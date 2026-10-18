@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/orchestrator"
+	"ritam/internal/domain"
+	"ritam/internal/orchestrator"
 )
 
 func verdictTask() *domain.Task {

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // MemDecisionRepository is an in-memory, goroutine-safe ports.DecisionRepository.

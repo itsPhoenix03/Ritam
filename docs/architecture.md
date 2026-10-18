@@ -27,7 +27,7 @@ storage    agents/*   knowledge,        proxy               config,
       internal/tui                 presentation only
             ^
             |
-      cmd/orch                     entry point
+      cmd/ritam                     entry point
 ```
 
 Rules, taken directly from the package doc comments:
@@ -62,7 +62,7 @@ Provider details (the `@@ORCH`/`##CODEX` wire formats, `exec.LookPath`-resolved 
 | `proxy.Proxy` | `internal/proxy/proxy.go` | Implements `ports.LLMProxy`. `Start` is a no-op when disabled and returns `ports.ErrNotImplemented` when enabled — the proxy is not wired into the orchestrator's request path at all in this phase. |
 | `app.Service` / `app.Build` | `internal/app/{service,wire}.go` | `Service` implements `ports.Service` on top of `*orchestrator.Orchestrator` and holds no state of its own. `Build` is the composition root: reads `config.Config`, registers agents (mock unless real adapters are explicitly enabled), constructs storage, knowledge, decisions and the orchestrator. |
 | `tui` | `internal/tui/*.go` | Bubble Tea model/update/view/commands. Talks only to `ports.Service`; subscribes to `Service.Subscribe` so the UI updates from live events instead of polling. |
-| `config` | `internal/config/config.go` | Loads/validates `orch.yaml`, falling back to `Default()` when absent. Deliberately does not check that agent executables exist, since the scaffold must start without Claude Code or Codex installed. |
+| `config` | `internal/config/config.go` | Loads/validates `ritam.yaml`, falling back to `Default()` when absent. Deliberately does not check that agent executables exist, since the scaffold must start without Claude Code or Codex installed. |
 | `logging` | `internal/logging/logging.go` | `slog`-based structured logger plus `Redact`, which strips credential-shaped substrings (API keys, bearer tokens, cookies) from any string before it is logged, since agent output is untrusted and may contain anything. |
 
 ## 3. Ports/adapters boundary
@@ -73,7 +73,7 @@ Provider details (the `@@ORCH`/`##CODEX` wire formats, `exec.LookPath`-resolved 
 
 `ports.Storage` bundles seven repository interfaces (`TaskRepository`, `MessageRepository`, `EventRepository`, `DecisionRepository`, `KnowledgeRepository`, `ArtifactRepository`, `DisagreementRepository`). `storage.NewInMemory()` is the only constructor; a SQLite-backed one would implement the same seven interfaces and be substituted in `app.Build`, "a change confined entirely to this package's constructor — no other package needs to change" (package doc, `internal/storage/doc.go`).
 
-`ports.LLMProxy` is the boundary for the not-yet-implemented local proxy. The orchestrator has zero references to it; only `cmd/orch/main.go` calls `sys.Proxy.Start`/`.Enabled()`, and only `app.Build` constructs it.
+`ports.LLMProxy` is the boundary for the not-yet-implemented local proxy. The orchestrator has zero references to it; only `cmd/ritam/main.go` calls `sys.Proxy.Start`/`.Enabled()`, and only `app.Build` constructs it.
 
 `ports.Service` is the boundary the TUI depends on; `app.Service` is the only implementation.
 
@@ -94,7 +94,7 @@ Provider details (the `@@ORCH`/`##CODEX` wire formats, `exec.LookPath`-resolved 
 4. **Event**: `events.emit(EvtAgentMessageSent, ...)`, plus type-specific events (`EvtAgentDelegatedTask`, `EvtAgentChallenged`).
 5. **State update**: `deliver()` hands the message to the recipient's adapter; back in `Orchestrator.handleOutbound`, `NoteMessage` and `StateForMessage`-driven `Transition` update the task record.
 
-**Agents cannot modify configuration.** No `ports.AgentAdapter` method or `ports.AgentRuntime` method accepts configuration; `config.Config` is loaded once at process start (`cmd/orch/main.go`) and handed to `app.Build`, which is not reachable from any agent-facing interface.
+**Agents cannot modify configuration.** No `ports.AgentAdapter` method or `ports.AgentRuntime` method accepts configuration; `config.Config` is loaded once at process start (`cmd/ritam/main.go`) and handed to `app.Build`, which is not reachable from any agent-facing interface.
 
 **Agents cannot invoke each other's OS processes.** Every agent is a distinct `core.ProcessRuntime` (or, for tests, a distinct in-process `mockagent.Adapter`) with its own stdin/stdout. The only component that ever reads one agent's `Outbound()`/`Output()` channel or writes to another's `Send`/`SendMessage` is the orchestrator (see the concurrency section below on why `mergeOutbound` is the sole consumer). There is no code path by which one adapter can reach another adapter's process handle.
 
@@ -203,4 +203,4 @@ Note this is about *in-flight* calls, not orphaned processes: no leak was ever o
 
 ## 9. Extensibility: adding a third agent
 
-Adding a new agent is configuration, not code, provided its adapter kind (`claude-code`, `codex`, or `mock`) already exists. `orch.example.yaml` documents this directly with a commented-out `reviewer` entry. Mechanically: `app.Build` iterates `cfg.Agents` in sorted-name order, and for each enabled entry calls `buildAdapter` (switches only on `ac.Type`) and `registry.Register` — nothing in `app.Build`, `Orchestrator`, `MessageBus`, or `AuthorityManager` assumes exactly two participants or hard-codes `"opus"`/`"codex"` as identifiers anywhere (`mockagent.counterpart`, for instance, finds "the other agent" generically by scanning `Task.Participants`). The only place agent count matters is `TaskManager.Create`'s soft warning ("A single-agent task is legal but pointless for deliberation") when fewer than two participants are given, and `runHeadlessDemo`'s check for "at least two enabled agents" — both are guardrails, not hard requirements of the coordination core itself.
+Adding a new agent is configuration, not code, provided its adapter kind (`claude-code`, `codex`, or `mock`) already exists. `ritam.example.yaml` documents this directly with a commented-out `reviewer` entry. Mechanically: `app.Build` iterates `cfg.Agents` in sorted-name order, and for each enabled entry calls `buildAdapter` (switches only on `ac.Type`) and `registry.Register` — nothing in `app.Build`, `Orchestrator`, `MessageBus`, or `AuthorityManager` assumes exactly two participants or hard-codes `"opus"`/`"codex"` as identifiers anywhere (`mockagent.counterpart`, for instance, finds "the other agent" generically by scanning `Task.Participants`). The only place agent count matters is `TaskManager.Create`'s soft warning ("A single-agent task is legal but pointless for deliberation") when fewer than two participants are given, and `runHeadlessDemo`'s check for "at least two enabled agents" — both are guardrails, not hard requirements of the coordination core itself.

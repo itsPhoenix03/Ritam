@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"projectorch/internal/domain"
-	"projectorch/internal/ports"
+	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // MemDisagreementRepository is an in-memory, goroutine-safe

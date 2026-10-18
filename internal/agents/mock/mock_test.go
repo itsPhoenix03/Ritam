@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	mockagent "projectorch/internal/agents/mock"
-	"projectorch/internal/domain"
+	mockagent "ritam/internal/agents/mock"
+	"ritam/internal/domain"
 )
 
 func drain(t *testing.T, a *mockagent.Adapter) []domain.Message {

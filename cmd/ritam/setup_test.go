@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"projectorch/internal/brand"
+	"ritam/internal/brand"
 )
 
 // inProject runs the test with a temporary app home and a temporary project

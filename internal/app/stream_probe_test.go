@@ -6,26 +6,26 @@ import (
 	"testing"
 	"time"
 
-	"projectorch/internal/app"
-	"projectorch/internal/config"
-	"projectorch/internal/domain"
-	"projectorch/internal/logging"
-	"projectorch/internal/ports"
+	"ritam/internal/app"
+	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
+	"ritam/internal/ports"
 )
 
 // TestLiveStreamingActivity proves the adapters really stream: it runs a real
 // CLI task and asserts that activity arrives *before* the task finishes.
 //
-// It is skipped unless ORCH_LIVE=1, so the normal suite stays offline and free.
+// It is skipped unless RITAM_LIVE=1, so the normal suite stays offline and free.
 // Run it with:
 //
-//	$env:ORCH_LIVE="1"; go test -run TestLiveStreamingActivity ./internal/app/ -v
+//	$env:RITAM_LIVE="1"; go test -run TestLiveStreamingActivity ./internal/app/ -v
 func TestLiveStreamingActivity(t *testing.T) {
-	if os.Getenv("ORCH_LIVE") != "1" {
-		t.Skip("set ORCH_LIVE=1 to run against the real CLIs")
+	if os.Getenv("RITAM_LIVE") != "1" {
+		t.Skip("set RITAM_LIVE=1 to run against the real CLIs")
 	}
 
-	cfg, err := config.Load("../../orch.yaml")
+	cfg, err := config.Load("../../ritam.yaml")
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestLiveStreamingActivity(t *testing.T) {
 	})
 	defer unsub()
 
-	title := os.Getenv("ORCH_LIVE_TASK")
+	title := os.Getenv("RITAM_LIVE_TASK")
 	if title == "" {
 		title = "Name one exported function in internal/domain/task.go."
 	}
