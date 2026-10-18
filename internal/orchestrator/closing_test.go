@@ -160,3 +160,45 @@ func TestADecisionDoesNotDropTheHumansOpenQuestion(t *testing.T) {
 		t.Errorf("state = %s, want COMPLETED", got.State)
 	}
 }
+
+// TestADecisionWaitsWhileAnAgentWaitsForTheHuman: in test6 the authority
+// asked the human to run the build, then closed the task without the
+// answer. A decision taken while an agent waits for the human now waits for
+// the human too.
+func TestADecisionWaitsWhileAnAgentWaitsForTheHuman(t *testing.T) {
+	authority := func(self domain.AgentID, tk *domain.Task, in domain.Message) []domain.Message {
+		if in.Type != domain.MsgTaskAssignment {
+			return nil
+		}
+		return []domain.Message{
+			{ToAgent: domain.HumanAgentID, Type: domain.MsgQuestion, Content: "Please run cmake --build and send me the output."},
+			{ToAgent: domain.BroadcastAgentID, Type: domain.MsgFinalDecision, Content: "Approved, but not yet built."},
+		}
+	}
+	gw := newGateway()
+	gw.add(mockagent.New("opus", domain.AgentKindMock, authority), domain.RoleAuthority)
+	gw.add(mockagent.New("codex", domain.AgentKindMock, mockagent.ImplementerBehavior()), domain.RoleImplementer)
+	h := newHarness(t, defaultLimits(), 2*time.Second, gw)
+	task := createTask(t, h, "opus", "opus", "codex")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = h.orch.RunTask(ctx, task.ID)
+
+	got, _ := h.orch.Tasks.Get(ctx, task.ID)
+	if got.State == domain.TaskCompleted {
+		t.Fatal("the task must not close while the authority waits for the human's answer")
+	}
+	d, _ := h.orch.Decisions.Latest(ctx, task.ID)
+	if d == nil || d.Status != domain.DecisionProposed {
+		t.Fatalf("the decision waits for the human: %+v", d)
+	}
+	if !h.hasEvent(domain.EvtDecisionCaveat) {
+		t.Error("the hold is recorded")
+	}
+	if err := h.orch.Approve(ctx, task.ID, "built fine"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = h.orch.Tasks.Get(ctx, task.ID); got.State != domain.TaskCompleted {
+		t.Errorf("approving completes it: %s", got.State)
+	}
+}

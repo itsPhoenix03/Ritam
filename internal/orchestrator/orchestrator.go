@@ -126,10 +126,14 @@ func New(d Deps) *Orchestrator {
 // decisionCompletesTask reports whether m is a FINAL_DECISION that will be
 // auto-accepted, ending the task as soon as it is routed. Recipients then have
 // nothing left to contribute, so the bus must not invoke them. With human
-// approval required the task stays open awaiting the human, and recipients may
-// legitimately still CHALLENGE, so they are delivered to as usual.
-func (o *Orchestrator) decisionCompletesTask(_ *domain.Task, m *domain.Message) bool {
-	return m.Type == domain.MsgFinalDecision && !o.requireHumanApproval
+// approval required -- or an agent still waiting for the human's answer --
+// the task stays open awaiting the human, and recipients may legitimately
+// still CHALLENGE, so they are delivered to as usual.
+func (o *Orchestrator) decisionCompletesTask(t *domain.Task, m *domain.Message) bool {
+	if m.Type != domain.MsgFinalDecision || o.requireHumanApproval {
+		return false
+	}
+	return t == nil || len(o.awaitingTheHuman(context.Background(), t)) == 0
 }
 
 // knowledgeContextLimit bounds how many knowledge entries are attached to a
@@ -908,7 +912,19 @@ func (o *Orchestrator) handleFinalDecision(ctx context.Context, t *domain.Task, 
 	// The authority's decision is the resolution of any conflict still open.
 	o.resolveDisagreements(ctx, t, m.FromAgent, d.Decision)
 
-	if o.requireHumanApproval {
+	// A decision taken while an agent waits for the human's answer -- say,
+	// to "run the build and tell me the result" -- cannot close the task:
+	// the answer may change it. It waits for the human like one that needs
+	// approval.
+	held := o.requireHumanApproval
+	if askers := o.awaitingTheHuman(ctx, t); len(askers) > 0 {
+		held = true
+		o.Events.emit(ctx, domain.EvtDecisionCaveat, t.ID, m.FromAgent,
+			fmt.Sprintf("decision held for you: %s asked you something you have not answered; "+
+				"answer it, approve or reject", listAgents(askers)),
+			map[string]string{"kind": "AWAITING_HUMAN_ANSWER"})
+	}
+	if held {
 		o.Events.emit(ctx, domain.EvtDecisionCreated, t.ID, m.FromAgent,
 			"final decision awaiting human approval", map[string]string{"decisionId": string(d.ID)})
 		// TODO(phase-next): keep the run loop alive so that a human REJECT can
@@ -937,6 +953,25 @@ func (o *Orchestrator) handleFinalDecision(ctx context.Context, t *domain.Task, 
 		return false, nil
 	}
 	return true, o.completeAfterDecision(ctx, t.ID, m.FromAgent)
+}
+
+// awaitingTheHuman lists the participants waiting for the human to answer
+// a request they sent.
+func (o *Orchestrator) awaitingTheHuman(ctx context.Context, t *domain.Task) []domain.AgentID {
+	ledger, err := o.ledger(ctx, t.ID)
+	if err != nil {
+		return nil
+	}
+	var out []domain.AgentID
+	seen := map[domain.AgentID]bool{}
+	for _, r := range domain.OpenRequests(ledger) {
+		q := r.Message
+		if q.ToAgent == domain.HumanAgentID && q.FromAgent != domain.HumanAgentID && !seen[q.FromAgent] {
+			seen[q.FromAgent] = true
+			out = append(out, q.FromAgent)
+		}
+	}
+	return out
 }
 
 // owingTheHuman lists the participants that owe the human a reply.
