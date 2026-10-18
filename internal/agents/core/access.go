@@ -89,9 +89,17 @@ type Grant struct {
 	Commands []string
 	// AnyCommand lets the agent run anything but the blocked commands.
 	AnyCommand bool
-	// Builders are the task's agents that may build, named to an agent that
-	// may not, at the sandboxed builder level.
+	// Builders are the task's agents that build, named to an agent that
+	// does not.
 	Builders []domain.AgentID
+	// Manual says the human runs builds and tests on this task.
+	Manual bool
+	// BuildDir is where this agent builds, when it may: build/<agent>, so
+	// builders never mix their outputs.
+	BuildDir string
+	// Assigns tells the authority that several agents build and it hands
+	// out the build and test work.
+	Assigns []domain.AgentID
 }
 
 // RunsCommands reports whether the grant allows running anything at all.
@@ -110,29 +118,79 @@ func (a *Access) GrantFor(t *domain.Task, id domain.AgentID, extra []string) Gra
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	g := Grant{Level: a.level}
-	listed := func() []string {
-		cmds, _ := SafeCommands(CleanCommands(append(append([]string(nil), a.commands...), extra...)))
-		return cmds
+	builders, everyone := a.buildersLocked(t)
+	g.Manual = !everyone && len(builders) == 0
+	if everyone || slices.Contains(builders, id) {
+		switch a.level {
+		case domain.AccessAnyCommand:
+			g.AnyCommand = true
+		default:
+			g.Commands, _ = SafeCommands(CleanCommands(append(append([]string(nil), a.commands...), extra...)))
+		}
+		g.BuildDir = "build/" + string(id)
 	}
-	switch a.level {
-	case domain.AccessSandboxedBuilder:
-		if a.sandboxed[id] {
-			g.Commands = listed()
-			break
+	for _, b := range builders {
+		if b != id {
+			g.Builders = append(g.Builders, b)
 		}
-		if t != nil {
-			for _, p := range append([]domain.AgentID{t.AuthorityAgent}, t.Participants...) {
-				if p != id && a.sandboxed[p] && !slices.Contains(g.Builders, p) {
-					g.Builders = append(g.Builders, p)
-				}
-			}
+	}
+	if t != nil && t.AuthorityAgent == id {
+		if everyone {
+			builders = t.Participants
 		}
-	case domain.AccessBuildAndTest:
-		g.Commands = listed()
-	case domain.AccessAnyCommand:
-		g.AnyCommand = true
+		if len(builders) > 1 {
+			g.Assigns = builders
+		}
 	}
 	return g
+}
+
+// BuildersFor reports who builds on task t: the agents named, everyone the
+// level lets run commands, or (neither) the human.
+func (a *Access) BuildersFor(t *domain.Task) (builders []domain.AgentID, everyone bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.buildersLocked(t)
+}
+
+// buildersLocked works out who builds on task t: the agents named, or
+// everyone the level lets run commands.
+//
+// The task's builder mode narrows the level, never widens it. Manual leaves
+// builds to the human. A named participant builds alone, and at the
+// sandboxed builder level only if its sandbox was verified. Auto follows
+// the level: at level 1 the verified sandboxed participants, at levels 2 and
+// 3 every agent; at level 0 nobody.
+func (a *Access) buildersLocked(t *domain.Task) (builders []domain.AgentID, everyone bool) {
+	if a.level == domain.AccessFilesOnly {
+		return nil, false
+	}
+	mode := domain.BuilderAuto
+	if t != nil {
+		mode = t.Builder
+	}
+	switch mode {
+	case domain.BuilderManual:
+		return nil, false
+	case domain.BuilderAuto:
+		if a.level != domain.AccessSandboxedBuilder {
+			return nil, true
+		}
+		if t == nil {
+			return nil, false
+		}
+		for _, p := range append([]domain.AgentID{t.AuthorityAgent}, t.Participants...) {
+			if a.sandboxed[p] && !slices.Contains(builders, p) {
+				builders = append(builders, p)
+			}
+		}
+		return builders, false
+	}
+	named := domain.AgentID(mode)
+	if a.level == domain.AccessSandboxedBuilder && !a.sandboxed[named] {
+		return nil, false
+	}
+	return []domain.AgentID{named}, false
 }
 
 // CleanCommands trims the commands and drops blank and repeated ones.

@@ -42,7 +42,7 @@ func TestOnlySandboxedAgentsBuildAtTheSandboxedBuilderLevel(t *testing.T) {
 	if !slices.Equal(other.Builders, []domain.AgentID{"codex"}) {
 		t.Errorf("it is told who builds: %v", other.Builders)
 	}
-	if r := WriteRules("/p", other); !strings.Contains(r, "codex") || !strings.Contains(r, "sandbox") {
+	if r := WriteRules("/p", other); !strings.Contains(r, "codex") || !strings.Contains(r, "ask them") {
 		t.Errorf("the brief names the builder:\n%s", r)
 	}
 
@@ -95,5 +95,63 @@ func TestANilAccessKeepsTheAgentsOwnList(t *testing.T) {
 	g := acc.GrantFor(nil, "opus", []string{"go test", "rm x"})
 	if !slices.Equal(g.Commands, []string{"go test"}) {
 		t.Errorf("an adapter built outside the app runs its own safe list: %v", g.Commands)
+	}
+}
+
+func TestManualLeavesBuildsToTheHumanAtEveryLevel(t *testing.T) {
+	task := accessTask()
+	task.Builder = domain.BuilderManual
+	acc := NewAccess(domain.AccessAnyCommand, []string{"cmake"})
+	acc.SetSandboxed("codex", true)
+	for _, id := range []domain.AgentID{"opus", "codex"} {
+		g := acc.GrantFor(task, id, nil)
+		if g.RunsCommands() || !g.Manual {
+			t.Errorf("%s: manual means no agent builds: %+v", id, g)
+		}
+	}
+	if r := WriteRules("/p", acc.GrantFor(task, "opus", nil)); !strings.Contains(r, "run by the human") || !strings.Contains(r, "stays open") {
+		t.Errorf("the brief sends builds to the human:\n%s", r)
+	}
+}
+
+func TestANamedBuilderBuildsAlone(t *testing.T) {
+	task := accessTask()
+	task.Builder = "sonnet"
+	acc := NewAccess(domain.AccessBuildAndTest, []string{"cmake"})
+	if g := acc.GrantFor(task, "sonnet", nil); !slices.Equal(g.Commands, []string{"cmake"}) || g.BuildDir != "build/sonnet" {
+		t.Errorf("the named builder runs the list in its own folder: %+v", g)
+	}
+	g := acc.GrantFor(task, "opus", nil)
+	if g.RunsCommands() || !slices.Equal(g.Builders, []domain.AgentID{"sonnet"}) {
+		t.Errorf("the others ask it: %+v", g)
+	}
+
+	// At level 1 a named builder must have passed the sandbox check.
+	acc.Set(domain.AccessSandboxedBuilder, []string{"cmake"})
+	if g := acc.GrantFor(task, "sonnet", nil); g.RunsCommands() || !g.Manual {
+		t.Errorf("an unverified agent does not build at level 1: %+v", g)
+	}
+}
+
+func TestSeveralBuildersEachGetAFolderAndTheAuthorityAssigns(t *testing.T) {
+	task := &domain.Task{AuthorityAgent: "opus", Participants: []domain.AgentID{"opus", "codex-1", "codex-2"}}
+	acc := NewAccess(domain.AccessSandboxedBuilder, []string{"cmake"})
+	acc.SetSandboxed("codex-1", true)
+	acc.SetSandboxed("codex-2", true)
+
+	one := acc.GrantFor(task, "codex-1", nil)
+	if one.BuildDir != "build/codex-1" || !slices.Equal(one.Builders, []domain.AgentID{"codex-2"}) {
+		t.Errorf("each builder has its own folder and knows the other: %+v", one)
+	}
+	r := WriteRules("/p", one)
+	if !strings.Contains(r, "build/codex-1/") || !strings.Contains(r, "do not divide the work") {
+		t.Errorf("the builder brief:\n%s", r)
+	}
+	auth := acc.GrantFor(task, "opus", nil)
+	if !slices.Equal(auth.Assigns, []domain.AgentID{"codex-1", "codex-2"}) {
+		t.Errorf("the authority assigns the builders: %+v", auth)
+	}
+	if r := WriteRules("/p", auth); !strings.Contains(r, "you assign the build and test work") {
+		t.Errorf("the authority brief:\n%s", r)
 	}
 }

@@ -415,6 +415,18 @@ A project's settings files travel with it, so a level they ask for is only grant
 
 Claude Code has no sandbox here, so at level 2 it runs the listed commands directly on your machine and level 3 means you trust these agents: the blocked list is a deny list, not a sandbox.
 
+**Builders.** The new-task form's **Builder** field says who runs builds and tests: **Auto** (the default) follows the access level, **Manual** leaves them to you, or pick one participant. The choice narrows the level, never widens it:
+
+- At level 1, Auto means the participants whose CLI passed the sandbox check; a named participant must have passed it too. With none, you build.
+- At levels 2 and 3, Auto means every agent; a named participant builds alone.
+- At level 0, or with Manual, you build. The agents are told to ask you with the exact commands.
+
+Every agent that builds uses its own folder, `build/<agent>/`, so outputs never mix. When several agents build, the authority hands out the work; they do not divide it among themselves.
+
+A decision cannot close a task while an agent is waiting for your answer, for example to "run the build and send me the output". It is held for you to answer, approve or reject.
+
+**The sandbox check.** Each adapter declares whether its CLI runs commands in a sandbox: Codex does (`workspace-write`), Claude Code does not. Ritam checks the claim itself. The agent is asked to write one file inside the workspace and one in the app home's `canary/` folder, and Ritam judges the files it finds, not the agent's reply. The file inside must be there (the agent really ran the commands) and the file outside must not (the sandbox stopped it). The result is kept per model in `models.json` with the CLI's version and checked again when the version changes. It runs when a task that could use the model as a builder starts, or with `:check`. Models that passed are tagged **builds & tests** in Recruit and the team tab. Leftover canary files are cleared at every start.
+
 **What a write-enabled agent may do.** Claude Code edits files with `--permission-mode acceptEdits` and may run what the access level grants: no shell at level 0 (and at level 1, having no sandbox), the listed commands plus the agent's own `allowedCommands` as `Bash(<command>:*)` rules at level 2, any `Bash` command at level 3; destructive commands (deleting, disks and system settings, permissions, killing processes, the network, rewriting git history, installing software) and the PowerShell tool are denied outright, and a deny rule wins over an allow rule. Codex runs in its `workspace-write` sandbox with writing to temp folders and network access turned off, at every level; the level decides what its brief allows it to run. Every write-enabled agent is told the rules in its brief, on every turn. There is still no patch-review step (see [docs/future-integration.md](docs/future-integration.md#8-still-deferred--be-precise-about-this)), so writes belong in a human-supervised run.
 
 `go run ./cmd/ritam -headless` runs the complete mock flow end to end and prints exactly this event sequence: task creation; `CREATED -> PLANNING`; a single `TASK_ASSIGNMENT` to the authority agent (supporting agents are not briefed — they act only once delegated to); an `opus -> codex DELEGATE`; `PLANNING -> INVESTIGATING`; `codex -> opus ANSWER`; `-> DELIBERATING`; `opus -> codex IMPLEMENT`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> codex REQUEST_CHANGE`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> * FINAL_DECISION`; `-> AWAITING_DECISION`; a `DecisionCreated D-001`; `DecisionAccepted`; `-> COMPLETED`.

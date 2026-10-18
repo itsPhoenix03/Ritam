@@ -86,6 +86,23 @@ func (h Home) ModelsFile() string { return filepath.Join(h.Root, "models.json") 
 // CanaryDir is where sandbox checks try to write.
 func (h Home) CanaryDir() string { return filepath.Join(h.Root, "canary") }
 
+// ClearCanary empties the canary folder, creating it if needed: a check cut
+// short may have left a file there, and a stale file must not be mistaken
+// for the next check's.
+func ClearCanary(h Home) error {
+	dir := h.CanaryDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("canary: %w", err)
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return fmt.Errorf("canary: %w", err)
+		}
+	}
+	return os.MkdirAll(dir, 0o700)
+}
+
 // OwnWorkspace is where agents work when the app is launched at a global
 // location (the home folder, a drive root) and that is allowed.
 func (h Home) OwnWorkspace() string { return filepath.Join(h.Root, "workspace") }

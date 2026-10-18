@@ -120,28 +120,3 @@ func TestAGlobalLaunchStaysAtLevelZero(t *testing.T) {
 		t.Error("and cannot be raised")
 	}
 }
-
-// TestCodexAgentsAreTheSandboxedBuilders: each adapter declares whether its
-// CLI runs commands in a sandbox; Codex does, Claude Code does not.
-func TestCodexAgentsAreTheSandboxedBuilders(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.TUI.UseMockAgents = false
-	sys, err := build(t, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if _, err := sys.Service.Recruit(ctx, ports.RecruitInput{Name: "gpt-1", Provider: "codex", Model: "gpt-6-sol", AllowWrites: true}); err != nil {
-		t.Fatal(err)
-	}
-	info, _ := sys.Service.Access(ctx)
-	if !slices.Equal(info.Builders, []domain.AgentID{"codex", "gpt-1"}) {
-		t.Errorf("the Codex agents are the builders: %v", info.Builders)
-	}
-	if err := sys.Service.Dismiss(ctx, "gpt-1"); err != nil {
-		t.Fatal(err)
-	}
-	if info, _ = sys.Service.Access(ctx); slices.Contains(info.Builders, "gpt-1") {
-		t.Errorf("a dismissed agent is no longer a builder: %v", info.Builders)
-	}
-}

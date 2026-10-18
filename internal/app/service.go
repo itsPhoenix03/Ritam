@@ -32,9 +32,12 @@ var _ ports.Service = (*Service)(nil)
 
 // CreateTask records a new task without starting it.
 func (s *Service) CreateTask(ctx context.Context, in ports.CreateTaskInput) (*domain.Task, error) {
+	if err := s.prepareBuilder(ctx, in); err != nil {
+		return nil, err
+	}
 	t, err := s.orch.CreateTask(ctx, in)
 	if err == nil && s.access != nil {
-		s.access.recordStart(t.ID)
+		s.access.recordStart(t)
 	}
 	return t, err
 }

@@ -49,3 +49,26 @@ func TestAnApprovalCoversOneFolderOnly(t *testing.T) {
 		t.Error("opening the project again keeps its approval")
 	}
 }
+
+// TestLeftoverCanaryFilesAreClearedAtStart: a sandbox check cut short can
+// leave its file; the next start removes it so it is never mistaken for a
+// new check's.
+func TestLeftoverCanaryFilesAreClearedAtStart(t *testing.T) {
+	h := Home{Root: setHome(t, brand.Name)}
+	if err := ClearCanary(h); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(h.CanaryDir(), "canary-old.txt")
+	if err := os.WriteFile(stale, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearCanary(h); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("the leftover file should be gone: %v", err)
+	}
+	if fi, err := os.Stat(h.CanaryDir()); err != nil || !fi.IsDir() {
+		t.Errorf("the canary folder stays: %v", err)
+	}
+}

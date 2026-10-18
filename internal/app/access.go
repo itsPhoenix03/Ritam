@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -61,7 +62,7 @@ func (c *accessControl) info() ports.AccessInfo {
 	level, cmds := c.live.Get()
 	_, blocked := core.SafeCommands(cmds)
 	return ports.AccessInfo{Level: level, Commands: cmds, Blocked: blocked, Locked: c.locked,
-		HeldBack: c.held, File: c.file, Builders: c.live.Builders()}
+		HeldBack: c.held, File: c.file, Builders: c.live.Builders(), Missing: missingPrograms(cmds)}
 }
 
 // set changes the level and the command list.
@@ -116,15 +117,78 @@ func (c *accessControl) set(ctx context.Context, in ports.AccessChange) (ports.A
 	return c.info(), nil
 }
 
-// recordStart notes the level a task starts at in its events.
-func (c *accessControl) recordStart(id domain.TaskID) {
+// recordStart notes in a new task's events the level it starts at and who
+// builds on it.
+func (c *accessControl) recordStart(t *domain.Task) {
 	if c.publish == nil {
 		return
 	}
 	level, cmds := c.live.Get()
-	c.publish(domain.Event{Type: domain.EvtAccessLevel, TaskID: id,
-		Summary: fmt.Sprintf("access level %s", level),
-		Details: map[string]string{"level": fmt.Sprint(int(level)), "commands": strings.Join(cmds, ", ")}})
+	builds := c.whoBuilds(t)
+	c.publish(domain.Event{Type: domain.EvtAccessLevel, TaskID: t.ID,
+		Summary: fmt.Sprintf("access level %s; builder %s: %s", level, domain.BuilderLabel(t.Builder), builds),
+		Details: map[string]string{"level": fmt.Sprint(int(level)), "commands": strings.Join(cmds, ", "),
+			"builder": t.Builder, "builds": builds}})
+}
+
+// whoBuilds says in words who builds on task t.
+func (c *accessControl) whoBuilds(t *domain.Task) string {
+	builders, everyone := c.live.BuildersFor(t)
+	switch {
+	case everyone:
+		return "every agent builds, each in build/<agent>/"
+	case len(builders) == 0:
+		return "the human builds and tests; the task stays open until they answer"
+	}
+	names := make([]string, len(builders))
+	for i, b := range builders {
+		names[i] = string(b)
+	}
+	return strings.Join(names, ", ") + " build" + map[bool]string{true: "s", false: ""}[len(builders) == 1]
+}
+
+// prepareBuilder checks a new task's builder choice and, where a
+// participant could build, has its sandbox checked first.
+func (s *Service) prepareBuilder(ctx context.Context, in ports.CreateTaskInput) error {
+	if s.access == nil {
+		return nil
+	}
+	level, _ := s.access.live.Get()
+	participants := append([]domain.AgentID{in.Authority}, in.Participants...)
+	switch in.Builder {
+	case domain.BuilderAuto, domain.BuilderManual:
+	default:
+		named := domain.AgentID(in.Builder)
+		if !slices.Contains(participants, named) {
+			return fmt.Errorf("builder %s is not a participant of the task", named)
+		}
+		if level == domain.AccessFilesOnly {
+			return fmt.Errorf("at access level 0 no agent may build: choose Manual, or raise the level in :settings")
+		}
+		participants = []domain.AgentID{named}
+	}
+	if level == domain.AccessSandboxedBuilder && in.Builder != domain.BuilderManual && s.team != nil {
+		s.team.verifyCandidates(ctx, participants)
+	}
+	if level == domain.AccessSandboxedBuilder && in.Builder != domain.BuilderAuto && in.Builder != domain.BuilderManual &&
+		!s.access.live.Sandboxed(domain.AgentID(in.Builder)) {
+		return fmt.Errorf("%s has not passed the sandbox check, and at access level 1 only sandboxed agents build: "+
+			"choose Auto or Manual, or raise the level in :settings", in.Builder)
+	}
+	return nil
+}
+
+// missingPrograms lists the commands whose program is not on PATH, so the
+// settings tab can say "cmake is not installed" before an agent finds out.
+func missingPrograms(cmds []string) []string {
+	var out []string
+	for _, c := range cmds {
+		prog, _, _ := strings.Cut(c, " ")
+		if _, err := exec.LookPath(prog); err != nil {
+			out = append(out, prog)
+		}
+	}
+	return out
 }
 
 func listOrNone(cmds []string) string {

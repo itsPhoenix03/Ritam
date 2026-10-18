@@ -312,6 +312,9 @@ type CreateTaskInput struct {
 	Authority    domain.AgentID
 	Participants []domain.AgentID
 	Limits       *domain.TaskLimits
+	// Builder is who runs builds: domain.BuilderAuto (the default),
+	// domain.BuilderManual, or a participant's id.
+	Builder string
 }
 
 // ModelInfo is one model a provider's CLI can run, as its catalog lists it.
@@ -333,6 +336,11 @@ type ModelInfo struct {
 	Reason      string
 	// Checked marks a model a check call ran successfully for this account.
 	Checked bool
+	// Builds marks a model whose CLI passed the sandbox check: agents on it
+	// can build and test at the sandboxed builder level. SandboxNote says
+	// what the check found when it failed or could not decide.
+	Builds      bool
+	SandboxNote string
 }
 
 // ModelCatalog lists the models one provider's CLI can run. Each provider
@@ -374,6 +382,8 @@ type AccessInfo struct {
 	// Builders are the team's agents whose CLI runs commands in a sandbox:
 	// the ones that build and test at the sandboxed builder level.
 	Builders []domain.AgentID
+	// Missing are listed commands whose program is not found on PATH.
+	Missing []string
 }
 
 // AccessChange is the human's choice of level and command list.

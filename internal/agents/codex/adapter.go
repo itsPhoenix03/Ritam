@@ -141,6 +141,10 @@ func (a *CodexAdapter) RunsInSandbox() bool { return true }
 // changes is what the brief allows the agent to run.
 func (a *CodexAdapter) UseAccess(acc *core.Access) { a.access = acc }
 
+// CanaryArgs is how the sandbox check runs this CLI: exactly as a builder
+// runs, with its reply written to replyFile.
+func (a *CodexAdapter) CanaryArgs(replyFile string) []string { return a.buildArgs(replyFile) }
+
 // ID returns the agent's identity.
 func (a *CodexAdapter) ID() domain.AgentID { return a.id }
 

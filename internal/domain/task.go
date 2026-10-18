@@ -150,7 +150,11 @@ type Task struct {
 	// AuthorityAgent holds final decision-making responsibility for this task.
 	AuthorityAgent AgentID
 	Participants   []AgentID
-	State          TaskState
+	// Builder says who runs builds and tests: BuilderAuto (follow the
+	// workspace's access level), BuilderManual (the human), or one
+	// participant's id.
+	Builder string
+	State   TaskState
 	// PreviousState records where the task was before it was paused.
 	PreviousState TaskState
 	Limits        TaskLimits
@@ -230,6 +234,27 @@ func (t *Task) Clone() *Task {
 		cp.CompletedAt = &v
 	}
 	return &cp
+}
+
+// Builder modes besides a participant's id.
+const (
+	// BuilderAuto follows the access level: at the sandboxed builder level
+	// the participants whose sandbox was verified build; with none, or at
+	// level 0, the human does.
+	BuilderAuto = ""
+	// BuilderManual leaves builds and tests to the human, at every level.
+	BuilderManual = "manual"
+)
+
+// BuilderLabel names a builder mode for the UI and the events.
+func BuilderLabel(b string) string {
+	switch b {
+	case BuilderAuto:
+		return "auto"
+	case BuilderManual:
+		return "manual (you build)"
+	}
+	return b
 }
 
 // PauseReasonLimit describes a loop-protection pause.

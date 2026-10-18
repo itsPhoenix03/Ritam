@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"strings"
+
+	"ritam/internal/domain"
 )
 
 // Command safety for agents allowed to write.
@@ -64,6 +66,14 @@ func SafeCommands(cmds []string) (kept, dropped []string) {
 	return kept, dropped
 }
 
+func joinIDs(ids []domain.AgentID) string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = string(id)
+	}
+	return strings.Join(out, ", ")
+}
+
 // WriteRules is the brief's statement of what a write-enabled agent may do
 // under its grant.
 func WriteRules(workspace string, g Grant) string {
@@ -82,20 +92,26 @@ func WriteRules(workspace string, g Grant) string {
 	case len(g.Commands) > 0:
 		fmt.Fprintf(&b, "- Apart from reading, the only commands you may run are: %s.\n", strings.Join(g.Commands, ", "))
 	case len(g.Builders) > 0:
-		names := make([]string, len(g.Builders))
-		for i, id := range g.Builders {
-			names[i] = string(id)
-		}
 		b.WriteString("- Apart from reading, you may not run commands. Builds and tests on this task are run by\n")
-		fmt.Fprintf(&b, "  %s, whose CLI runs them in a sandbox: ask them (to=<agent>) with the exact commands\n", strings.Join(names, ", "))
-		b.WriteString("  and wait for the output. Never call work built or tested until one of them has run it.\n")
-	case g.Level.UsesCommandList():
-		b.WriteString("- Apart from reading, you may not run commands: no builds, tests or scripts are allowed to you\n")
-		b.WriteString("  on this task. If the work needs one, ask the human (to=human) to run it and wait for the result.\n")
+		fmt.Fprintf(&b, "  %s: ask them (to=<agent>) with the exact commands and wait for the output.\n", joinIDs(g.Builders))
+		b.WriteString("  Never call work built or tested until one of them has run it.\n")
 	default:
 		b.WriteString("- Apart from reading, you may not run commands: no builds, tests or scripts.\n")
-		b.WriteString("  If the work needs a build or test, ask the human (to=human) to run it, and do not call the work\n")
-		b.WriteString("  built or tested until they answer.\n")
+		b.WriteString("  Builds and tests on this task are run by the human: ask the human (to=human) with the exact\n")
+		b.WriteString("  commands, and do not call the work built or tested until they answer. The task stays open\n")
+		b.WriteString("  until they do.\n")
+	}
+	if g.BuildDir != "" {
+		fmt.Fprintf(&b, "- Build into %s/ only (for example cmake -B %s), never into another agent's build folder,\n", g.BuildDir, g.BuildDir)
+		b.WriteString("  and report the exact commands you ran with their output.\n")
+		if len(g.Builders) > 0 {
+			fmt.Fprintf(&b, "  %s also build%s here; the authority decides who builds what, so do not divide the work yourselves.\n",
+				joinIDs(g.Builders), map[bool]string{true: "s", false: ""}[len(g.Builders) == 1])
+		}
+	}
+	if len(g.Assigns) > 1 {
+		fmt.Fprintf(&b, "- As the authority, you assign the build and test work: %s may build, each in its own\n", joinIDs(g.Assigns))
+		b.WriteString("  build/<agent>/ folder. Tell each one what to build or test; they do not negotiate among themselves.\n")
 	}
 	b.WriteString("- Never delete files you did not create in this task, change system settings or permissions,\n")
 	b.WriteString("  kill processes, use the network, install software, or rewrite version-control history.\n")

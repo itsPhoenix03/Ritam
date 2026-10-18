@@ -70,6 +70,10 @@ type Team struct {
 	avail map[string]availability
 	// probe runs one short CLI call to check a model; replaced in tests.
 	probe func(ctx context.Context, provider, model string) (ok bool, kind domain.FailureKind, detail string, err error)
+	// canary runs the sandbox check for a model (canary.go); replaced in
+	// tests. versions caches each provider CLI's --version.
+	canary   func(ctx context.Context, provider, model string) (sandboxed bool, note string, err error)
+	versions map[string]string
 }
 
 // availability is what a failed turn or a check found out about a model.
@@ -78,6 +82,8 @@ type availability struct {
 	Kind   string    `json:"kind,omitempty"`
 	Reason string    `json:"reason,omitempty"`
 	At     time.Time `json:"at"`
+	// Sandbox is what the sandbox check found (canary.go).
+	Sandbox *sandboxRecord `json:"sandbox,omitempty"`
 }
 
 func availKey(provider, model string) string { return provider + "|" + model }
@@ -210,6 +216,7 @@ func (tm *Team) withAvailabilityLocked(models []ports.ModelInfo) []ports.ModelIn
 		if a, ok := tm.avail[availKey(out[i].Provider, out[i].ID)]; ok {
 			out[i].Unavailable, out[i].Checked = !a.OK, a.OK
 			out[i].Reason = a.Reason
+			out[i] = withSandbox(out[i], a)
 		}
 	}
 	return out
@@ -228,6 +235,10 @@ func (tm *Team) setAvailability(provider, model string, a availability) {
 	tm.mu.Lock()
 	if tm.avail == nil {
 		tm.avail = map[string]availability{}
+	}
+	if a.Sandbox == nil {
+		// Whether the account can run a model says nothing about its sandbox.
+		a.Sandbox = tm.avail[availKey(provider, model)].Sandbox
 	}
 	tm.avail[availKey(provider, model)] = a
 	tm.mu.Unlock()
@@ -254,6 +265,16 @@ func (tm *Team) CheckModel(ctx context.Context, provider, model string) (ports.M
 	case ok:
 		tm.setAvailability(provider, model, availability{OK: true, At: time.Now()})
 		info.Checked = true
+		// A CLI that declares a sandbox has it checked too, so the model
+		// can be offered as one that builds and tests.
+		if tm.declaresSandbox(provider) {
+			rec, err := tm.VerifySandbox(ctx, provider, model, true)
+			if err != nil {
+				info.SandboxNote = err.Error()
+			} else {
+				info.Builds, info.SandboxNote = rec.Sandboxed, rec.Note
+			}
+		}
 		return info, nil
 	case kind.MarksModelUnavailable():
 		reason := kind.Advice()
@@ -473,7 +494,7 @@ func (tm *Team) register(r recruitRecord) (domain.Agent, error) {
 		return domain.Agent{}, err
 	}
 	role := parseRole(r.Role)
-	ad, kind, err := buildAdapter(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.log)
+	_, kind, err := buildAdapter(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.log)
 	if err != nil {
 		return domain.Agent{}, err
 	}
@@ -482,9 +503,7 @@ func (tm *Team) register(r recruitRecord) (domain.Agent, error) {
 	if err := tm.reg.RegisterFactory(a, agentFactory(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.log)); err != nil {
 		return domain.Agent{}, err
 	}
-	if tm.access != nil {
-		tm.access.SetSandboxed(id, runsInSandbox(ad))
-	}
+	tm.syncBuilders()
 	tm.mu.Lock()
 	tm.recruited[id] = r
 	tm.mu.Unlock()

@@ -154,6 +154,8 @@ type Runtime struct {
 	// ProjectConfig is the project's settings file, where the settings tab
 	// saves the access level.
 	ProjectConfig string
+	// CanaryDir is where sandbox checks try to write, outside the workspace.
+	CanaryDir string
 	// GlobalAccess is the access the global settings file alone sets: the
 	// user's own file on this machine, trusted as it is.
 	GlobalAccess AccessConfig

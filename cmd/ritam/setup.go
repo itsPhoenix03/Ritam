@@ -108,6 +108,11 @@ func prepare(configPath string) (*config.Config, place, error) {
 	}
 	pl.place(cfg, root)
 	pl.trustAccess(cfg, global.Access)
+	// A sandbox check that was cut short can leave its file behind; clear
+	// them at every start, so nothing else has to.
+	if err := layout.ClearCanary(home); err != nil {
+		return nil, pl, err
+	}
 	pl.adoptOldModelsFile()
 	pl.notices = append(pl.notices, pl.offerRestore()...)
 	pl.notices = append(pl.notices, pl.handleMissing(cfg.Backups)...)
@@ -141,6 +146,7 @@ func (pl *place) place(cfg *config.Config, root string) {
 		ScratchDir:    p.TmpDir(),
 		TeamFile:      p.TeamFile(),
 		ProjectConfig: p.ConfigPath(),
+		CanaryDir:     h.CanaryDir(),
 	}
 	set := func(field *string, fallback string) {
 		switch {

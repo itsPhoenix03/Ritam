@@ -74,6 +74,7 @@ func (tm *TaskManager) Create(ctx context.Context, in ports.CreateTaskInput) (*d
 		Title:          in.Title,
 		Description:    in.Description,
 		AuthorityAgent: in.Authority,
+		Builder:        in.Builder,
 		Participants:   participants,
 		State:          domain.TaskCreated,
 		Limits:         limits,

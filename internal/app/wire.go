@@ -171,11 +171,10 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 
 		// Built once here to validate the config and learn its kind; each
 		// task the agent works on then gets a fresh adapter from the factory.
-		ad, kind, err := buildAdapter(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, log)
+		_, kind, err := buildAdapter(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, log)
 		if err != nil {
 			return nil, err
 		}
-		acc.SetSandboxed(id, runsInSandbox(ad))
 		factory := agentFactory(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, log)
 
 		display := ac.DisplayName
@@ -253,6 +252,9 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	if err := team.load(); err != nil {
 		return nil, err
 	}
+	// Agents may build at the sandboxed builder level once their model
+	// passed the sandbox check (canary.go).
+	team.syncBuilders()
 	// A turn that showed the account cannot run a model marks it so the
 	// team view says why and the form will not offer it.
 	orch.Events.Subscribe(func(e domain.Event) {

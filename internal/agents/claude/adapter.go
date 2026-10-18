@@ -81,6 +81,12 @@ func (a *ClaudeCodeAdapter) RunsInSandbox() bool { return false }
 // every turn.
 func (a *ClaudeCodeAdapter) UseAccess(acc *core.Access) { a.access = acc }
 
+// CanaryArgs is how the sandbox check runs this CLI: as a builder at the
+// any-command level, the most a builder is ever allowed.
+func (a *ClaudeCodeAdapter) CanaryArgs(string) []string {
+	return a.buildArgsFor(core.Grant{Level: domain.AccessAnyCommand, AnyCommand: true})
+}
+
 // grant is what the agent may run on task t under the current policy.
 func (a *ClaudeCodeAdapter) grant(t *domain.Task) core.Grant {
 	return a.access.GrantFor(t, a.id, a.cfg.AllowedCommands)
