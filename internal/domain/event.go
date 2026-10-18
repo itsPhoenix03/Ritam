@@ -61,6 +61,10 @@ const (
 	// owing the reply stayed silent after a reminder.
 	EvtRequestAbandoned EventType = "RequestAbandoned"
 	EvtHumanOverride    EventType = "HumanOverride"
+	// EvtAccessLevel records the workspace's access level on a task: when
+	// the task starts, and on every change the human makes. Details: level,
+	// from (on a change), commands.
+	EvtAccessLevel EventType = "AccessLevel"
 	// EvtAgentActivity carries live agent output for display. It is published
 	// ephemerally: never stored, never logged, never acted on.
 	EvtAgentActivity    EventType = "AgentActivity"

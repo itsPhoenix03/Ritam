@@ -73,7 +73,7 @@ func TestTheExampleConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ritam.example.yaml: %v", err)
 	}
-	if cfg.Workspace.AllowGlobal || len(cfg.Workspace.AllowedCommands) != 0 {
-		t.Errorf("the example must ship the restrictive workspace defaults: %+v", cfg.Workspace)
+	if cfg.Workspace.AllowGlobal || cfg.Access.Level != 0 || len(cfg.Access.Commands) != 0 {
+		t.Errorf("the example must ship the restrictive defaults: %+v %+v", cfg.Workspace, cfg.Access)
 	}
 }

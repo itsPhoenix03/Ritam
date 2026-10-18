@@ -7,8 +7,9 @@ import (
 
 // Command safety for agents allowed to write.
 //
-// An agent that may write edits files inside the workspace and may run only
-// the commands it was explicitly allowed (none by default). Commands that
+// An agent that may write edits files inside the workspace and may run what
+// the workspace's access level grants it (see Access): nothing by default,
+// the listed commands, or any command. Commands that
 // could harm the system or anything outside the workspace are refused even
 // if a configuration lists them: deleting files, changing system settings
 // or permissions, killing processes, reaching the network, and rewriting
@@ -63,20 +64,38 @@ func SafeCommands(cmds []string) (kept, dropped []string) {
 	return kept, dropped
 }
 
-// WriteRules is the brief's statement of what a write-enabled agent may do.
-func WriteRules(workspace string, commands []string) string {
+// WriteRules is the brief's statement of what a write-enabled agent may do
+// under its grant.
+func WriteRules(workspace string, g Grant) string {
 	var b strings.Builder
-	b.WriteString("\nWRITE RULES (enforced by the orchestrator):\n")
+	fmt.Fprintf(&b, "\nWRITE RULES (enforced by the orchestrator; access level %s):\n", g.Level)
 	fmt.Fprintf(&b, "- You may create and edit files only inside the project folder %s.\n", workspace)
 	b.WriteString("  Never write anywhere else: not temp folders, not your home folder, not system folders.\n")
 	// Reading is never restricted: an agent whose only file reader is a shell
 	// command (Codex's) must still be able to read the code it is editing.
 	b.WriteString("- You may always read and search files, with your file tools or read-only commands\n")
 	b.WriteString("  (cat, ls, rg, grep, sed -n, Get-Content, Select-String).\n")
-	if len(commands) == 0 {
+	switch {
+	case g.AnyCommand:
+		b.WriteString("- You may run any command you need inside the project folder (builds, tests, scripts),\n")
+		b.WriteString("  except the blocked ones below.\n")
+	case len(g.Commands) > 0:
+		fmt.Fprintf(&b, "- Apart from reading, the only commands you may run are: %s.\n", strings.Join(g.Commands, ", "))
+	case len(g.Builders) > 0:
+		names := make([]string, len(g.Builders))
+		for i, id := range g.Builders {
+			names[i] = string(id)
+		}
+		b.WriteString("- Apart from reading, you may not run commands. Builds and tests on this task are run by\n")
+		fmt.Fprintf(&b, "  %s, whose CLI runs them in a sandbox: ask them (to=<agent>) with the exact commands\n", strings.Join(names, ", "))
+		b.WriteString("  and wait for the output. Never call work built or tested until one of them has run it.\n")
+	case g.Level.UsesCommandList():
+		b.WriteString("- Apart from reading, you may not run commands: no builds, tests or scripts are allowed to you\n")
+		b.WriteString("  on this task. If the work needs one, ask the human (to=human) to run it and wait for the result.\n")
+	default:
 		b.WriteString("- Apart from reading, you may not run commands: no builds, tests or scripts.\n")
-	} else {
-		fmt.Fprintf(&b, "- Apart from reading, the only commands you may run are: %s.\n", strings.Join(commands, ", "))
+		b.WriteString("  If the work needs a build or test, ask the human (to=human) to run it, and do not call the work\n")
+		b.WriteString("  built or tested until they answer.\n")
 	}
 	b.WriteString("- Never delete files you did not create in this task, change system settings or permissions,\n")
 	b.WriteString("  kill processes, use the network, install software, or rewrite version-control history.\n")

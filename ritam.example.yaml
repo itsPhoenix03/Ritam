@@ -29,7 +29,8 @@ providers:
     # Agents may edit files, only ever inside the workspace (the folder ritam
     # runs in). false makes this provider's agents read-only.
     allowWrites: true
-    # Commands these agents may run besides workspace.allowedCommands.
+    # Commands these agents may run besides access.commands (at the access
+    # levels that use the list).
     allowedCommands: []
 
   codex:
@@ -134,10 +135,25 @@ tui:
 workspace:
   root: ""
   allowGlobal: false
-  # Shell commands a write-enabled agent may run, as prefixes. Empty: it may
-  # edit files but run nothing. Destructive commands (rm, del, git push,
-  # curl, sudo, ...) are refused even if listed. Per-agent `allowedCommands`
-  # add to this list.
-  allowedCommands: []
-  #  - go build
-  #  - go test
+
+# What agents may run beyond editing files, chosen per workspace. Set it from
+# the TUI's settings tab (:settings), which saves it to .ritam/ritam.yaml;
+# the project's settings override these global ones.
+#   0  Files only         edit files, run read-only commands (the default)
+#   1  Sandboxed builder  only agents whose CLI runs in a sandbox (Codex) may
+#                         build and test, with the commands below; the others
+#                         ask them
+#   2  Build and test     every agent may run the commands below
+#   3  Any command        anything inside the workspace except the blocked list
+# Always blocked, at every level: deleting files, system settings,
+# permissions, killing processes, network access, installing software,
+# rewriting git history. A global launch stays at level 0. A level a
+# project's own settings ask for is granted only once you approved it on this
+# machine for that folder (a clone or copy starts at 0). Claude Code has no
+# sandbox here: at level 2 it runs the listed commands directly on this
+# machine, and level 3 means you trust these agents.
+access:
+  level: 0
+  commands: []
+  #  - cmake
+  #  - ctest

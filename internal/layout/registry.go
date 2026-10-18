@@ -33,6 +33,49 @@ type Entry struct {
 	MissingSince time.Time `json:"missingSince,omitzero"`
 	// Keep records the human's choice to keep a missing project's backups.
 	Keep bool `json:"keep,omitempty"`
+	// Access is the access level the human approved for the project on
+	// this machine. A project's own settings files travel with it (a clone,
+	// a copy), so what they ask for is granted only up to what was approved
+	// here, for this project in this folder.
+	Access *AccessGrant `json:"access,omitempty"`
+}
+
+// AccessGrant is an access level approved for one project folder.
+type AccessGrant struct {
+	// Path is the folder it was approved for: a copy elsewhere is not
+	// covered.
+	Path     string    `json:"path"`
+	Level    int       `json:"level"`
+	Commands []string  `json:"commands,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+// Grant returns the access approved for project id in folder path.
+func (r *Registry) Grant(id, path string) (AccessGrant, bool) {
+	if r == nil {
+		return AccessGrant{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.ID == id && e.Access != nil && samePath(e.Access.Path, path) {
+			return *e.Access, true
+		}
+	}
+	return AccessGrant{}, false
+}
+
+// SetGrant records the access approved for project id.
+func (r *Registry) SetGrant(id string, g AccessGrant) error {
+	r.mu.Lock()
+	for i := range r.entries {
+		if r.entries[i].ID == id {
+			g := g
+			r.entries[i].Access = &g
+		}
+	}
+	r.mu.Unlock()
+	return r.Save()
 }
 
 // Key names the project's folders in the app home.

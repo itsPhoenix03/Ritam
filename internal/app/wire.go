@@ -40,6 +40,8 @@ type System struct {
 	Recovered []domain.TaskID
 	// Workspace is where the agents work and the only place they may write.
 	Workspace config.Workspace
+	// Access is the workspace's live access policy.
+	Access *core.Access
 	// Backups snapshots the project's database into the app home; nil when
 	// backups are off or there is no app home (as in tests).
 	Backups *backup.Manager
@@ -146,6 +148,8 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	if ws.Notice != "" {
 		log.Warn(ws.Notice)
 	}
+	access := newAccessControl(cfg, ws)
+	acc := access.live
 
 	// Register in a stable order so the TUI and the logs are reproducible.
 	names := make([]string, 0, len(cfg.Agents))
@@ -167,11 +171,12 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 
 		// Built once here to validate the config and learn its kind; each
 		// task the agent works on then gets a fresh adapter from the factory.
-		_, kind, err := buildAdapter(id, ac, role, cfg.TUI.UseMockAgents, sessions, log)
+		ad, kind, err := buildAdapter(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, log)
 		if err != nil {
 			return nil, err
 		}
-		factory := agentFactory(id, ac, role, cfg.TUI.UseMockAgents, sessions, log)
+		acc.SetSandboxed(id, runsInSandbox(ad))
+		factory := agentFactory(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, log)
 
 		display := ac.DisplayName
 		if display == "" {
@@ -240,7 +245,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 
 	// Agents recruited in earlier sessions rejoin the team.
 	team := &Team{
-		path: teamFile(cfg), reg: registry, cfg: cfg, ws: ws, sessions: sessions, log: log,
+		path: teamFile(cfg), reg: registry, cfg: cfg, ws: ws, sessions: sessions, access: acc, log: log,
 		catalogs: catalogsFor(cfg),
 		publish:  func(e domain.Event) { orch.Events.Publish(context.Background(), e) },
 		inUse:    orch.AgentInUse,
@@ -259,6 +264,22 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 
 	// A task that was running when ritam last exited has no run loop behind
 	// it now; pause it so it says so and can be resumed.
+	access.publish = func(e domain.Event) { orch.Events.Publish(context.Background(), e) }
+	access.openTasks = func(ctx context.Context) []domain.TaskID {
+		tasks, err := store.Tasks.List(ctx)
+		if err != nil {
+			log.Warn("listing tasks to record an access change", "error", err)
+			return nil
+		}
+		var ids []domain.TaskID
+		for _, t := range tasks {
+			if !t.State.IsTerminal() {
+				ids = append(ids, t.ID)
+			}
+		}
+		return ids
+	}
+
 	recovered, err := orch.RecoverInterrupted(context.Background())
 	if err != nil {
 		return nil, err
@@ -270,8 +291,9 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	sys := &System{
 		Recovered:    recovered,
 		Workspace:    ws,
+		Access:       acc,
 		closeStore:   closeStore,
-		Service:      &Service{orch: orch, storage: *store, knowledge: know, team: team},
+		Service:      &Service{orch: orch, storage: *store, knowledge: know, team: team, access: access},
 		Orchestrator: orch,
 		Agents:       agentMgr,
 		Storage:      *store,
@@ -332,10 +354,10 @@ func scratchDir(cfg *config.Config, ws config.Workspace) string {
 }
 
 // applyWorkspace confines an agent to the workspace: it runs there (or in a
-// folder inside it), may write only when the workspace allows writing at
-// all, and may run the workspace's allowed commands plus its own.
+// folder inside it), and may write only when the workspace allows writing at
+// all. What it may run is the workspace's access policy (core.Access), with
+// its own commands added to the workspace's list.
 func applyWorkspace(ac config.AgentConfig, ws config.Workspace, cfg *config.Config) (config.AgentConfig, error) {
-	wc := cfg.Workspace
 	dir, err := ws.AgentDir(ac.WorkingDir)
 	if err != nil {
 		return ac, err
@@ -345,23 +367,14 @@ func applyWorkspace(ac config.AgentConfig, ws config.Workspace, cfg *config.Conf
 	if !ws.Writable {
 		ac.AllowWrites = false
 	}
-	seen := map[string]bool{}
-	var cmds []string
-	for _, c := range append(append([]string(nil), wc.AllowedCommands...), ac.AllowedCommands...) {
-		c = strings.TrimSpace(c)
-		if c != "" && !seen[c] {
-			seen[c] = true
-			cmds = append(cmds, c)
-		}
-	}
-	ac.AllowedCommands = cmds
+	ac.AllowedCommands = core.CleanCommands(ac.AllowedCommands)
 	return ac, nil
 }
 
 // agentFactory makes a fresh adapter for agent id, one per task it works on.
-func agentFactory(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, log *logging.Logger) core.AdapterFactory {
+func agentFactory(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, acc *core.Access, log *logging.Logger) core.AdapterFactory {
 	return func() (ports.AgentAdapter, error) {
-		ad, _, err := buildAdapter(id, ac, role, forceMock, sessions, log)
+		ad, _, err := buildAdapter(id, ac, role, forceMock, sessions, acc, log)
 		return ad, err
 	}
 }
@@ -369,7 +382,7 @@ func agentFactory(id domain.AgentID, ac config.AgentConfig, role domain.AgentRol
 // buildAdapter selects the adapter implementation for one agent. Mock agents
 // are the default in the scaffold so that the orchestration flow can be
 // exercised end to end without any provider access.
-func buildAdapter(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, log *logging.Logger) (ports.AgentAdapter, domain.AgentKind, error) {
+func buildAdapter(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, acc *core.Access, log *logging.Logger) (ports.AgentAdapter, domain.AgentKind, error) {
 	if forceMock || ac.Type == "mock" {
 		// A mock plays whichever part it has on the task: the task's
 		// authority can be any participant, and can change mid-task.
@@ -387,10 +400,12 @@ func buildAdapter(id domain.AgentID, ac config.AgentConfig, role domain.AgentRol
 	case "claude-code":
 		a := claude.New(id, ac, log)
 		a.UseSessions(sessions)
+		a.UseAccess(acc)
 		return a, domain.AgentKindClaudeCode, nil
 	case "codex":
 		a := codex.New(id, ac, log)
 		a.UseSessions(sessions)
+		a.UseAccess(acc)
 		return a, domain.AgentKindCodex, nil
 	default:
 		return nil, "", fmt.Errorf("agent %s: unknown type %q", id, ac.Type)

@@ -355,6 +355,33 @@ type RecruitInput struct {
 	AllowWrites bool
 }
 
+// AccessInfo is the workspace's access level as the settings tab shows it.
+type AccessInfo struct {
+	Level domain.AccessLevel
+	// Commands are the listed command prefixes, as saved.
+	Commands []string
+	// Blocked are listed commands that are refused whatever the level.
+	Blocked []string
+	// Locked says why the level cannot be changed, "" when it can: a global
+	// launch (the home folder, a drive root) stays at level 0.
+	Locked string
+	// HeldBack says what the project's settings asked for but was never
+	// approved for this folder on this machine (a cloned or copied project),
+	// "" when nothing was held back.
+	HeldBack string
+	// File is the settings file a change is saved to.
+	File string
+	// Builders are the team's agents whose CLI runs commands in a sandbox:
+	// the ones that build and test at the sandboxed builder level.
+	Builders []domain.AgentID
+}
+
+// AccessChange is the human's choice of level and command list.
+type AccessChange struct {
+	Level    domain.AccessLevel
+	Commands []string
+}
+
 // Service is the application-layer facade. The TUI talks to this and never to
 // the domain or to HTTP.
 type Service interface {
@@ -382,6 +409,13 @@ type Service interface {
 	// model, and remembers the answer. It costs a little, so it runs only
 	// when asked.
 	CheckModel(ctx context.Context, provider, model string) (ModelInfo, error)
+
+	// Access reports the workspace's access level and command list.
+	Access(ctx context.Context) (AccessInfo, error)
+	// SetAccess changes them, saves them to the project's settings, and
+	// records the change in the events of every open task. It applies from
+	// each agent's next turn.
+	SetAccess(ctx context.Context, in AccessChange) (AccessInfo, error)
 
 	// Human override surface. The human is always able to intervene.
 	Pause(ctx context.Context, id domain.TaskID, reason string) error

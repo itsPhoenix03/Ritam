@@ -59,14 +59,31 @@ var writeTools = []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"}
 // editTools are what a write-enabled agent may always use.
 var editTools = []string{"Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "NotebookEdit"}
 
-// writeModeTools is editTools plus a Bash rule per allowed command.
-func (a *ClaudeCodeAdapter) writeModeTools() []string {
+// writeModeTools is editTools plus what the grant lets the agent run: a
+// Bash rule per allowed command, or Bash itself at the any-command level
+// (the deny rules still refuse the destructive commands: a deny wins).
+func writeModeTools(g core.Grant) []string {
 	tools := append([]string(nil), editTools...)
-	cmds, _ := core.SafeCommands(a.cfg.AllowedCommands)
-	for _, c := range cmds {
+	if g.AnyCommand {
+		return append(tools, "Bash")
+	}
+	for _, c := range g.Commands {
 		tools = append(tools, "Bash("+c+":*)")
 	}
 	return tools
+}
+
+// RunsInSandbox reports whether the CLI runs the agent's commands in a
+// sandbox. Claude Code's commands run directly on the machine here.
+func (a *ClaudeCodeAdapter) RunsInSandbox() bool { return false }
+
+// UseAccess points the adapter at the workspace's access policy, read on
+// every turn.
+func (a *ClaudeCodeAdapter) UseAccess(acc *core.Access) { a.access = acc }
+
+// grant is what the agent may run on task t under the current policy.
+func (a *ClaudeCodeAdapter) grant(t *domain.Task) core.Grant {
+	return a.access.GrantFor(t, a.id, a.cfg.AllowedCommands)
 }
 
 // deniedInWriteMode refuses every destructive command, in Bash and in
@@ -107,6 +124,9 @@ type ClaudeCodeAdapter struct {
 	// sessions maps (task, agent) to the Claude session holding this agent's
 	// conversation, so each turn resumes it instead of starting from nothing.
 	sessions *core.SessionRegistry
+	// access is the workspace's access policy; nil means the agent's own
+	// command list (see core.Access.GrantFor).
+	access *core.Access
 }
 
 // New builds an adapter for id using cfg. When cfg.Executable is empty, the
@@ -389,11 +409,11 @@ func (a *ClaudeCodeAdapter) runTurn(ctx context.Context, t *domain.Task, m domai
 	if resuming {
 		prompt = core.RenderTurn(t, m, a.cfg.AllowWrites, headerMarker)
 	}
+	g := a.grant(t)
 	if a.cfg.AllowWrites {
-		cmds, _ := core.SafeCommands(a.cfg.AllowedCommands)
-		prompt += core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), cmds)
+		prompt += core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), g)
 	}
-	args := append(a.buildArgs(), a.sessionArgs(t, sess, resuming)...)
+	args := append(a.buildArgsFor(g), a.sessionArgs(t, sess, resuming)...)
 
 	// Claude files sessions by working directory and cannot resume one from
 	// anywhere else, so every turn runs where the session was created.
@@ -495,7 +515,10 @@ func reportedSessionID(stdout string) string {
 // stream-json is used rather than plain json so the UI can show the agent
 // working; --verbose is required by the CLI alongside it, and
 // --include-partial-messages is what turns whole messages into token deltas.
-func (a *ClaudeCodeAdapter) buildArgs() []string {
+func (a *ClaudeCodeAdapter) buildArgs() []string { return a.buildArgsFor(a.grant(nil)) }
+
+// buildArgsFor is buildArgs under a given grant.
+func (a *ClaudeCodeAdapter) buildArgsFor(g core.Grant) []string {
 	args := []string{
 		"-p",
 		"--output-format", "stream-json",
@@ -505,12 +528,12 @@ func (a *ClaudeCodeAdapter) buildArgs() []string {
 
 	if a.cfg.AllowWrites {
 		// File edits are accepted (Claude Code keeps them inside the working
-		// directory, which is the workspace). Shell commands run only when
-		// allowed by name, and destructive ones are denied outright: a deny
-		// rule wins over an allow rule.
+		// directory, which is the workspace). Shell commands run only as the
+		// access level allows -- none, by name, or any -- and destructive
+		// ones are denied outright: a deny rule wins over an allow rule.
 		args = append(args,
 			"--permission-mode", "acceptEdits",
-			"--allowedTools", strings.Join(a.writeModeTools(), ","),
+			"--allowedTools", strings.Join(writeModeTools(g), ","),
 			"--disallowedTools", strings.Join(deniedInWriteMode(), ","),
 		)
 	} else {

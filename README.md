@@ -218,7 +218,7 @@ Tokens and cost are what the CLIs report, and read `--` until they report someth
 
 | | |
 |---|---|
-| `tab` `shift+tab` | switch the centre view: conversation, activity, events, decisions, team |
+| `tab` `shift+tab` | switch the centre view: conversation, activity, events, decisions, team, settings |
 | `]` `[` | move keyboard focus between panes: tasks, centre, agents, decision, inspector |
 | `j` `k` `↑` `↓` | in a list (tasks, agents, conversation, decisions): move the selection; in text: scroll |
 | `pgup` `pgdn` `g` `G` | page / jump to either end |
@@ -253,6 +253,9 @@ models                   list every model you can recruit (the team tab)
 recruit <provider> <model> [name] [role] [writes]
                          add an agent running a model to the team
 dismiss <agent>          remove a recruited agent
+settings                 the workspace's access level and command list
+access <0-3>             set the access level (raising it asks you to type yes)
+allow | disallow <cmd>   add a command to the list · take one off
 export jsonl [path]      dump the event log this session has seen
 ```
 
@@ -383,7 +386,7 @@ providers:
     executable: claude      # on PATH, or an absolute path
     responseTimeout: 5m
     allowWrites: true       # false: this provider's agents are read-only
-    allowedCommands: []     # extra commands, besides workspace.allowedCommands
+    allowedCommands: []     # extra commands, besides access.commands
   codex:
     executable: codex
     responseTimeout: 5m
@@ -397,7 +400,22 @@ Both entries are optional; left out, `claude` and `codex` on PATH are used. The 
 
 **The workspace.** ritam is meant to be launched inside a project folder. The workspace is the folder holding `ritam.yaml` (or `workspace.root`): agents run there, an agent's `workingDir` must lie inside it, and an agent with `allowWrites` may write there and nowhere else. ritam's own files stay in its `.ritam` folder there too, temp files included. Launched at a global location (your home folder, a drive root, a system folder), every agent is read-only and the header says why; `workspace.allowGlobal: true` lets them write, but only into ritam's own folder, `~/.ritam/workspace`.
 
-**What a write-enabled agent may do.** Claude Code edits files with `--permission-mode acceptEdits` and may run only the shell commands listed in `workspace.allowedCommands` or the agent's `allowedCommands` (none by default), as `Bash(<command>:*)` rules; destructive commands (deleting, disks and system settings, permissions, killing processes, the network, rewriting git history, installing software) and the PowerShell tool are denied outright, and a deny rule wins over an allow rule. Codex runs in its `workspace-write` sandbox with writing to temp folders and network access turned off. Every write-enabled agent is told the rules in its brief. There is still no patch-review step (see [docs/future-integration.md](docs/future-integration.md#8-still-deferred--be-precise-about-this)), so writes belong in a human-supervised run.
+**Access levels.** What a write-enabled agent may run is the workspace's access level, chosen in the settings tab (`:settings`, or `:access <0-3>`) and saved to `.ritam/ritam.yaml`:
+
+| Level | | What agents may run |
+|---|---|---|
+| 0 | Files only (default) | edit files, run read-only commands; a build or test is asked of you |
+| 1 | Sandboxed builder | only agents whose CLI runs in a sandbox (Codex) run the listed commands; the others are told to ask them |
+| 2 | Build and test | every agent runs the listed commands (`:allow cmake`, `:disallow cmake`) |
+| 3 | Any command | anything inside the workspace except the always-blocked list |
+
+Raising the level asks you to type `yes`, after saying plainly what it hands the agents; lowering applies at once. A change applies from each agent's next turn, the header shows the current level, and each task's events record the level it started at and every change. A global launch stays at level 0.
+
+A project's settings files travel with it, so a level they ask for is only granted once you approved it on this machine, for this project in this folder. The approval is recorded in the app home (`projects.json`) when you choose a level in the settings tab. A cloned or copied project, or one moved to another folder, starts at level 0, and a notice says what was held back until you approve it. Levels set in the global settings (the app home's `ritam.yaml`) are your own and need no approval.
+
+Claude Code has no sandbox here, so at level 2 it runs the listed commands directly on your machine and level 3 means you trust these agents: the blocked list is a deny list, not a sandbox.
+
+**What a write-enabled agent may do.** Claude Code edits files with `--permission-mode acceptEdits` and may run what the access level grants: no shell at level 0 (and at level 1, having no sandbox), the listed commands plus the agent's own `allowedCommands` as `Bash(<command>:*)` rules at level 2, any `Bash` command at level 3; destructive commands (deleting, disks and system settings, permissions, killing processes, the network, rewriting git history, installing software) and the PowerShell tool are denied outright, and a deny rule wins over an allow rule. Codex runs in its `workspace-write` sandbox with writing to temp folders and network access turned off, at every level; the level decides what its brief allows it to run. Every write-enabled agent is told the rules in its brief, on every turn. There is still no patch-review step (see [docs/future-integration.md](docs/future-integration.md#8-still-deferred--be-precise-about-this)), so writes belong in a human-supervised run.
 
 `go run ./cmd/ritam -headless` runs the complete mock flow end to end and prints exactly this event sequence: task creation; `CREATED -> PLANNING`; a single `TASK_ASSIGNMENT` to the authority agent (supporting agents are not briefed — they act only once delegated to); an `opus -> codex DELEGATE`; `PLANNING -> INVESTIGATING`; `codex -> opus ANSWER`; `-> DELIBERATING`; `opus -> codex IMPLEMENT`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> codex REQUEST_CHANGE`; `-> IMPLEMENTING`; `codex -> opus IMPLEMENTATION_RESULT`; `-> REVIEWING`; `opus -> * FINAL_DECISION`; `-> AWAITING_DECISION`; a `DecisionCreated D-001`; `DecisionAccepted`; `-> COMPLETED`.
 

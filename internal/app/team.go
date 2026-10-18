@@ -55,6 +55,7 @@ type Team struct {
 	cfg       *config.Config
 	ws        config.Workspace
 	sessions  *core.SessionRegistry
+	access    *core.Access
 	log       *logging.Logger
 	catalogs  []ports.ModelCatalog
 	recruited map[domain.AgentID]recruitRecord
@@ -433,6 +434,9 @@ func (tm *Team) Dismiss(_ context.Context, id domain.AgentID) error {
 		return fmt.Errorf("%s is working on a running task; dismiss it once that task stops", id)
 	}
 	tm.reg.Unregister(id)
+	if tm.access != nil {
+		tm.access.Forget(id)
+	}
 	tm.mu.Lock()
 	delete(tm.recruited, id)
 	tm.mu.Unlock()
@@ -469,14 +473,17 @@ func (tm *Team) register(r recruitRecord) (domain.Agent, error) {
 		return domain.Agent{}, err
 	}
 	role := parseRole(r.Role)
-	_, kind, err := buildAdapter(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.log)
+	ad, kind, err := buildAdapter(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.log)
 	if err != nil {
 		return domain.Agent{}, err
 	}
 	a := domain.Agent{ID: id, DisplayName: strings.ToUpper(r.Name), Kind: kind, Role: role, Model: r.Model,
 		Enabled: true, State: domain.AgentStateStopped}
-	if err := tm.reg.RegisterFactory(a, agentFactory(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.log)); err != nil {
+	if err := tm.reg.RegisterFactory(a, agentFactory(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.log)); err != nil {
 		return domain.Agent{}, err
+	}
+	if tm.access != nil {
+		tm.access.SetSandboxed(id, runsInSandbox(ad))
 	}
 	tm.mu.Lock()
 	tm.recruited[id] = r

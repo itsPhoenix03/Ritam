@@ -3,6 +3,8 @@ package core
 import (
 	"strings"
 	"testing"
+
+	"ritam/internal/domain"
 )
 
 func TestDestructiveCommandsAreRefusedWhateverIsConfigured(t *testing.T) {
@@ -21,13 +23,13 @@ func TestDestructiveCommandsAreRefusedWhateverIsConfigured(t *testing.T) {
 }
 
 func TestTheWriteRulesNameTheFolderAndTheCommands(t *testing.T) {
-	r := WriteRules(`C:\z\project-orch`, []string{"go test"})
-	for _, want := range []string{`C:\z\project-orch`, "not temp folders", "go test", "blocked"} {
+	r := WriteRules(`C:\z\project-orch`, Grant{Level: domain.AccessBuildAndTest, Commands: []string{"go test"}})
+	for _, want := range []string{`C:\z\project-orch`, "not temp folders", "go test", "blocked", "Build and test"} {
 		if !strings.Contains(r, want) {
 			t.Errorf("rules missing %q:\n%s", want, r)
 		}
 	}
-	if r := WriteRules("/p", nil); !strings.Contains(r, "may not run commands") || !strings.Contains(r, "always read and search files") {
+	if r := WriteRules("/p", Grant{}); !strings.Contains(r, "may not run commands") || !strings.Contains(r, "always read and search files") {
 		t.Error("with no allowed commands the agent runs nothing but may still read")
 	}
 }

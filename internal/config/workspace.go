@@ -32,10 +32,6 @@ type WorkspaceConfig struct {
 	// AllowGlobal permits write-enabled agents when the root is a global
 	// location. They then write only into ritam's own workspace folder.
 	AllowGlobal bool `yaml:"allowGlobal"`
-	// AllowedCommands are shell commands every write-enabled agent may run,
-	// as command prefixes ("go test", "go build", "npm test"). Empty means
-	// none: such an agent edits files but runs nothing.
-	AllowedCommands []string `yaml:"allowedCommands"`
 	// OwnDir is the app's own workspace folder in the app home, used after
 	// a global launch. Set at start, never configured.
 	OwnDir string `yaml:"-"`

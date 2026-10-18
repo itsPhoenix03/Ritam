@@ -20,6 +20,7 @@ type Service struct {
 	storage   ports.Storage
 	knowledge *knowledge.Store
 	team      *Team
+	access    *accessControl
 }
 
 // NewService builds the application service.
@@ -31,7 +32,11 @@ var _ ports.Service = (*Service)(nil)
 
 // CreateTask records a new task without starting it.
 func (s *Service) CreateTask(ctx context.Context, in ports.CreateTaskInput) (*domain.Task, error) {
-	return s.orch.CreateTask(ctx, in)
+	t, err := s.orch.CreateTask(ctx, in)
+	if err == nil && s.access != nil {
+		s.access.recordStart(t.ID)
+	}
+	return t, err
 }
 
 // RunTask drives a task's deliberation. It blocks until the task reaches a

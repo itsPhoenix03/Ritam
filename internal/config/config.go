@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"ritam/internal/domain"
 )
 
 // DefaultPath is the configuration file looked up relative to the working
@@ -149,6 +151,16 @@ type Runtime struct {
 	ScratchDir string
 	// TeamFile records the project's recruited agents.
 	TeamFile string
+	// ProjectConfig is the project's settings file, where the settings tab
+	// saves the access level.
+	ProjectConfig string
+	// GlobalAccess is the access the global settings file alone sets: the
+	// user's own file on this machine, trusted as it is.
+	GlobalAccess AccessConfig
+	// Grant is the access approved on this machine for this project in this
+	// folder, nil when none was. SaveGrant records a new approval.
+	Grant     *AccessConfig
+	SaveGrant func(AccessConfig) error
 }
 
 // ProxyConfig configures the future local LLM proxy. The proxy is not the
@@ -217,6 +229,7 @@ type Config struct {
 	Sessions     SessionsConfig         `yaml:"sessions"`
 	Storage      StorageConfig          `yaml:"storage"`
 	Workspace    WorkspaceConfig        `yaml:"workspace"`
+	Access       AccessConfig           `yaml:"access"`
 	Backups      BackupConfig           `yaml:"backups"`
 
 	// Runtime is filled in at start, not configured.
@@ -351,6 +364,9 @@ func (c *Config) Validate() error {
 	case "sqlite", "memory": // an empty sqlite path means the project's database
 	default:
 		return fmt.Errorf("storage.backend must be sqlite or memory, got %q", c.Storage.Backend)
+	}
+	if !domain.AccessLevel(c.Access.Level).Valid() {
+		return fmt.Errorf("access.level must be 0 to 3, got %d", c.Access.Level)
 	}
 	switch c.Backups.WhenProjectDeleted {
 	case "", "ask", "keep", "delete":

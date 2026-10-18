@@ -100,6 +100,10 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		return err
 	}
 	defer sys.Close()
+	if info, err := sys.Service.Access(context.Background()); err == nil && info.HeldBack != "" {
+		log.Warn("access held back", "reason", info.HeldBack)
+		pl.notices = append(pl.notices, "access "+info.HeldBack)
+	}
 
 	// The local LLM proxy is optional and disabled by default. It is not the
 	// orchestrator: it only handles provider traffic.

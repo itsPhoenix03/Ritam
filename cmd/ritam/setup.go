@@ -99,10 +99,15 @@ func prepare(configPath string) (*config.Config, place, error) {
 	if cfg, err = config.LoadLayers(home.ConfigPath(), visible, pl.proj.ConfigPath()); err != nil {
 		return nil, pl, err
 	}
+	global, err := config.LoadLayers(home.ConfigPath())
+	if err != nil {
+		return nil, pl, err
+	}
 	if _, err := resolveWorkspace(cfg, root, home); err != nil {
 		return nil, pl, err
 	}
 	pl.place(cfg, root)
+	pl.trustAccess(cfg, global.Access)
 	pl.adoptOldModelsFile()
 	pl.notices = append(pl.notices, pl.offerRestore()...)
 	pl.notices = append(pl.notices, pl.handleMissing(cfg.Backups)...)
@@ -127,14 +132,15 @@ func resolveWorkspace(cfg *config.Config, root string, home layout.Home) (config
 func (pl *place) place(cfg *config.Config, root string) {
 	h, p := pl.home, pl.proj
 	cfg.Runtime = config.Runtime{
-		HomeDir:      h.Root,
-		ModelsFile:   h.ModelsFile(),
-		OwnWorkspace: h.OwnWorkspace(),
-		ProjectID:    p.ID,
-		ProjectName:  p.Name,
-		BackupDir:    h.BackupDir(p),
-		ScratchDir:   p.TmpDir(),
-		TeamFile:     p.TeamFile(),
+		HomeDir:       h.Root,
+		ModelsFile:    h.ModelsFile(),
+		OwnWorkspace:  h.OwnWorkspace(),
+		ProjectID:     p.ID,
+		ProjectName:   p.Name,
+		BackupDir:     h.BackupDir(p),
+		ScratchDir:    p.TmpDir(),
+		TeamFile:      p.TeamFile(),
+		ProjectConfig: p.ConfigPath(),
 	}
 	set := func(field *string, fallback string) {
 		switch {
@@ -147,6 +153,20 @@ func (pl *place) place(cfg *config.Config, root string) {
 	set(&cfg.Storage.Path, p.DBPath())
 	set(&cfg.Sessions.File, p.SessionsFile())
 	set(&cfg.Logging.File, h.LogPath(p))
+}
+
+// trustAccess tells the run what access is trusted on this machine: the
+// global settings, and what the human approved for this project in this
+// folder, which a new approval updates.
+func (pl *place) trustAccess(cfg *config.Config, global config.AccessConfig) {
+	cfg.Runtime.GlobalAccess = global
+	if g, ok := pl.reg.Grant(pl.proj.ID, pl.proj.Root); ok {
+		cfg.Runtime.Grant = &config.AccessConfig{Level: g.Level, Commands: g.Commands}
+	}
+	id, root, reg := pl.proj.ID, pl.proj.Root, pl.reg
+	cfg.Runtime.SaveGrant = func(a config.AccessConfig) error {
+		return reg.SetGrant(id, layout.AccessGrant{Path: root, Level: a.Level, Commands: a.Commands, At: time.Now()})
+	}
 }
 
 // adoptOldModelsFile moves what an older version learned about models from

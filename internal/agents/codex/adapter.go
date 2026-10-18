@@ -73,6 +73,9 @@ type CodexAdapter struct {
 	// sessions maps (task, agent) to the Codex thread holding this agent's
 	// conversation, so each turn resumes it instead of starting from nothing.
 	sessions *core.SessionRegistry
+	// access is the workspace's access policy; nil means the agent's own
+	// command list (see core.Access.GrantFor).
+	access *core.Access
 }
 
 // New builds an adapter for id using cfg. When cfg.Executable is empty, the
@@ -126,6 +129,17 @@ func (a *CodexAdapter) UseSessions(r *core.SessionRegistry) {
 		a.sessions = r
 	}
 }
+
+// RunsInSandbox reports whether the CLI runs the agent's commands in a
+// sandbox. Codex does: a write-enabled agent runs in workspace-write, which
+// keeps writes inside the workspace, with the network and temp folders off
+// (see writeConfinement).
+func (a *CodexAdapter) RunsInSandbox() bool { return true }
+
+// UseAccess points the adapter at the workspace's access policy, read on
+// every turn. Codex's sandbox is the same at every level; what the level
+// changes is what the brief allows the agent to run.
+func (a *CodexAdapter) UseAccess(acc *core.Access) { a.access = acc }
 
 // ID returns the agent's identity.
 func (a *CodexAdapter) ID() domain.AgentID { return a.id }
@@ -351,8 +365,7 @@ func (a *CodexAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Mes
 		}
 	}
 	if a.cfg.AllowWrites {
-		cmds, _ := core.SafeCommands(a.cfg.AllowedCommands)
-		prompt += core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), cmds)
+		prompt += core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), a.access.GrantFor(t, a.id, a.cfg.AllowedCommands))
 	}
 
 	res, runErr = runner.RunStreaming(ctx, args, prompt, func(line string) {
