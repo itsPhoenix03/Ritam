@@ -363,6 +363,11 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 			u.CostUSD = sess.CostSince(u.CostUSD)
 			a.saveSession(sess)
 			defer a.emit(ports.Outbound{AgentID: a.id, Usage: u})
+		} else if u := partialUsage(res.Stdout); u != nil {
+			// Killed before the result: its tokens, cost unknown. The
+			// session's running cost is left as it was, so the next turn's
+			// result is not charged twice.
+			defer a.emit(ports.Outbound{AgentID: a.id, Usage: u})
 		}
 	}
 

@@ -65,6 +65,11 @@ func runFakeCLI(mode string) {
 		runFakeSessionCLI()
 	case "costly":
 		runFakeCostlyCLI()
+	case "killedmidway":
+		// A turn that dies after streaming some calls, before any result.
+		_ = readAll(os.Stdin)
+		_, _ = os.Stdout.WriteString(killedStream)
+		os.Exit(1)
 	case "overbudget":
 		// What the real CLI does when --max-budget-usd stops a turn: an
 		// error result that still carries the cost, and a non-zero exit.
