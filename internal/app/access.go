@@ -84,7 +84,9 @@ func (c *accessControl) set(ctx context.Context, in ports.AccessChange) (ports.A
 	}
 	cmds := core.CleanCommands(in.Commands)
 	if _, blocked := core.SafeCommands(cmds); len(blocked) > 0 {
-		return c.info(), fmt.Errorf("%s: always blocked, at every level", strings.Join(blocked, ", "))
+		return c.info(), fmt.Errorf("%s: always blocked, at every level (destructive, or a bare interpreter "+
+			"or shell that would run anything: name the tool instead, such as python -m pytest)",
+			strings.Join(blocked, ", "))
 	}
 	from, before := c.live.Get()
 	if in.Level != from && c.locked != "" {

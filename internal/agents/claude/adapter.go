@@ -99,12 +99,24 @@ func (a *ClaudeCodeAdapter) grant(t *domain.Task) core.Grant {
 	return a.access.GrantFor(t, a.id, a.cfg.AllowedCommands)
 }
 
-// deniedInWriteMode refuses every destructive command, in Bash and in
-// PowerShell, and the PowerShell tool itself (allowed commands run in Bash).
+// deniedInWriteMode refuses every refused command (core.RefusedCommands) in
+// Bash, and the PowerShell tool itself (allowed commands run in Bash). A
+// pattern with a "*" keeps it: Claude Code reads one as any text, so "find *
+// -delete" denies find with -delete anywhere after it.
+//
+// Claude Code matches the words as written, where IsDangerousCommand first
+// drops git's global options: so the options that point git at another
+// folder or program are refused outright here, or "git -C . push" would get
+// past "git push".
 func deniedInWriteMode() []string {
-	out := []string{"PowerShell"}
-	for _, c := range core.DangerousCommands {
-		out = append(out, "Bash("+c+":*)")
+	out := []string{"PowerShell", "Bash(git -C:*)", "Bash(git --git-dir:*)", "Bash(git --work-tree:*)",
+		"Bash(git --exec-path:*)"}
+	for _, c := range core.RefusedCommands() {
+		if strings.Contains(c, "*") {
+			out = append(out, "Bash("+c+"*)")
+		} else {
+			out = append(out, "Bash("+c+":*)")
+		}
 	}
 	return out
 }

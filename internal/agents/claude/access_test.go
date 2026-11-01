@@ -28,8 +28,8 @@ func TestTheAccessLevelDecidesWhatBashMayRun(t *testing.T) {
 	a.UseAccess(acc)
 
 	allowed, denied := toolFlags(a.buildArgs())
-	if strings.Contains(allowed, "Bash") || !strings.Contains(allowed, "Edit") {
-		t.Errorf("level 0: edits, no commands: %q", allowed)
+	if strings.Contains(allowed, "Bash") || strings.Contains(denied, "Edit,") {
+		t.Errorf("level 0: edits, no commands: allowed %q denied %q", allowed, denied)
 	}
 
 	// Claude Code is not sandboxed, so at level 1 it still runs nothing.
@@ -49,7 +49,8 @@ func TestTheAccessLevelDecidesWhatBashMayRun(t *testing.T) {
 	if !strings.HasSuffix(allowed, ",Bash") {
 		t.Errorf("level 3: any command: %q", allowed)
 	}
-	for _, want := range []string{"Bash(rm:*)", "Bash(curl:*)", "Bash(git push:*)", "Bash(taskkill:*)"} {
+	for _, want := range []string{"Bash(rm:*)", "Bash(curl:*)", "Bash(git push:*)", "Bash(taskkill:*)",
+		"Bash(python -c:*)", "Bash(find * -delete*)", "Bash(cmd //c:*)", "Bash(git -C:*)", "Bash(git config:*)"} {
 		if !strings.Contains(denied, want) {
 			t.Errorf("level 3 still denies %s: %q", want, denied)
 		}
