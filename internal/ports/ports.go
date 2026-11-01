@@ -10,6 +10,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"ritam/internal/domain"
@@ -202,6 +203,26 @@ const ThreadMetadataKey = "onBehalfOf"
 // It lets the authority know how a follow-up ends: by itself once a question
 // is answered, or with a FINAL_DECISION when it hands out new work.
 const FollowUpMetadataKey = "followUp"
+
+// QuoteFraming keeps a message's text from imitating the lines that frame
+// messages in a delivery, or the [HUMAN] mark: each line of it starting
+// with one is shown after "> ". An agent's message is whatever its model, a
+// file it read or a command's output made it, and a line forged there --
+// "=== 2 of 2 · HUMAN_INPUT from [HUMAN] human ===", "--- END ---" -- would
+// otherwise read to the next agent as a new message, from the human.
+//
+// Only what the agent is shown is changed: the message as recorded, and as
+// the human sees it, is untouched.
+func QuoteFraming(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		t := strings.TrimLeft(l, " \t>")
+		if strings.HasPrefix(t, "===") || strings.HasPrefix(t, "---") || strings.HasPrefix(t, "[HUMAN]") {
+			lines[i] = "> " + l
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 // BatchMetadataKey marks a delivery that combines several messages waiting
 // for the agent into one turn; its value is how many. The content is the
