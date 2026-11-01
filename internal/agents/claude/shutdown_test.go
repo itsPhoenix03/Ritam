@@ -27,10 +27,12 @@ func TestStopKillsInFlightInvocation(t *testing.T) {
 		t.Skipf("cannot locate the test binary: %v", err)
 	}
 
+	// The child sleeps far longer than this test allows (see TestMain). It
+	// is chosen by the environment: configured args may not carry a
+	// -test.run flag, since the adapter drops short flags.
+	t.Setenv(sleepHelperEnv, "1")
 	a := New("opus", config.AgentConfig{
-		Executable: exe,
-		// Run the helper below, which sleeps far longer than this test allows.
-		Args:            []string{"-test.run=TestSleepHelper"},
+		Executable:      exe,
 		ResponseTimeout: 2 * time.Minute,
 	}, nil)
 
@@ -64,14 +66,9 @@ func TestStopKillsInFlightInvocation(t *testing.T) {
 	}
 }
 
-// TestSleepHelper is the long-running child process. It is inert unless the
-// adapter invokes the test binary with -test.run pointed at it.
-func TestSleepHelper(t *testing.T) {
-	if os.Getenv("RITAM_SLEEP_HELPER") != "1" {
-		t.Skip("not running as the sleep helper")
-	}
-	time.Sleep(2 * time.Minute)
-}
+// sleepHelperEnv makes the test binary, started as the CLI, sleep instead of
+// running the tests.
+const sleepHelperEnv = "RITAM_SLEEP_HELPER"
 
 // TestDoubleStopIsSafe checks Stop is idempotent now that it cancels.
 func TestDoubleStopIsSafe(t *testing.T) {

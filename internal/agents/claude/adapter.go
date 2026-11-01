@@ -31,6 +31,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -74,8 +78,11 @@ func writeModeTools(g core.Grant) []string {
 }
 
 // RunsInSandbox reports whether the CLI runs the agent's commands in a
-// sandbox. Claude Code's commands run directly on the machine here.
-func (a *ClaudeCodeAdapter) RunsInSandbox() bool { return false }
+// sandbox. Every invocation turns Claude Code's own sandbox on (see
+// settings), but it exists only on macOS, Linux and WSL2: on native Windows
+// the commands run directly on the machine. Where it is declared, the canary
+// check still verifies it before the agent may build.
+func (a *ClaudeCodeAdapter) RunsInSandbox() bool { return runtime.GOOS != "windows" }
 
 // UseAccess points the adapter at the workspace's access policy, read on
 // every turn.
@@ -181,6 +188,10 @@ func New(id domain.AgentID, cfg config.AgentConfig, log *logging.Logger) *Claude
 	})
 	return a
 }
+
+// UseGuard has ritam's own files checked after every CLI invocation, and
+// put back if the agent changed them (see core.FileGuard).
+func (a *ClaudeCodeAdapter) UseGuard(g *core.FileGuard) { a.runner.Guard = g }
 
 // UseSessions points the adapter at the shared, persistent session registry.
 func (a *ClaudeCodeAdapter) UseSessions(r *core.SessionRegistry) {
@@ -399,10 +410,20 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 // pointed at whatever the CLI managed to save.
 func (a *ClaudeCodeAdapter) openSession(t *domain.Task) (core.Session, bool) {
 	key := core.SessionKeyFor(t, a.id)
-	if sess, ok := a.sessions.Get(key); ok && sess.Kind == domain.AgentKindClaudeCode && sess.ID != "" {
-		return sess, true
+	sess, ok := a.sessions.Get(key)
+	if ok && sess.Kind == domain.AgentKindClaudeCode && sess.ID != "" {
+		if sess.ResumableIn(core.WorkspaceRoot(a.cfg)) {
+			return sess, true
+		}
+		a.log.ForAgent(a.id).Warn("claude session was made outside the workspace; starting a new one",
+			"session", sess.ID, "workingDir", sess.WorkingDir)
+		a.activity.Emit(ports.ActivityStatus, "previous session is outside the workspace; re-briefing in a new one")
+		sess.Replace(core.NewSessionUUID(), core.SessionRebuilt)
+		sess.WorkingDir = core.ResolveWorkingDir(a.cfg.WorkingDir)
+		a.saveSession(sess)
+		return sess, false
 	}
-	sess := core.NewSession(key, domain.AgentKindClaudeCode, core.NewSessionUUID(),
+	sess = core.NewSession(key, domain.AgentKindClaudeCode, core.NewSessionUUID(),
 		core.ResolveWorkingDir(a.cfg.WorkingDir), a.cfg.Model)
 	a.saveSession(sess)
 	return sess, false
@@ -524,23 +545,38 @@ func reportedSessionID(stdout string) string {
 func (a *ClaudeCodeAdapter) buildArgs() []string { return a.buildArgsFor(a.grant(nil)) }
 
 // buildArgsFor is buildArgs under a given grant.
+//
+// The configured args go first and ritam's own flags after them, so a later
+// flag of ritam's wins any conflict; the configured ones are filtered as
+// well (safeExtraArgs). --verbose leads ritam's flags: should a configured
+// flag at the end be waiting for a value, it is the flag swallowed, which
+// fails the turn visibly instead of loosening anything.
 func (a *ClaudeCodeAdapter) buildArgsFor(g core.Grant) []string {
-	args := []string{
+	args := append(a.safeExtraArgs(),
+		"--verbose",
 		"-p",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
-		"--verbose",
+		// Only ritam's settings and MCP servers: none from the user's or the
+		// project's settings files, whose allow rules, hooks and servers
+		// would widen what the grant lets the agent do.
+		"--setting-sources", "",
+		"--strict-mcp-config",
+	)
+	if settings := a.settingsArg(); settings != "" {
+		args = append(args, "--settings", settings)
 	}
 
 	if a.cfg.AllowWrites {
 		// File edits are accepted (Claude Code keeps them inside the working
-		// directory, which is the workspace). Shell commands run only as the
-		// access level allows -- none, by name, or any -- and destructive
-		// ones are denied outright: a deny rule wins over an allow rule.
+		// directory, which is the workspace), except to ritam's own files.
+		// Shell commands run only as the access level allows -- none, by
+		// name, or any -- and destructive ones are denied outright: a deny
+		// rule wins over an allow rule.
 		args = append(args,
 			"--permission-mode", "acceptEdits",
 			"--allowedTools", strings.Join(writeModeTools(g), ","),
-			"--disallowedTools", strings.Join(deniedInWriteMode(), ","),
+			"--disallowedTools", strings.Join(append(deniedInWriteMode(), protectedRules(a.cfg.Protected)...), ","),
 		)
 	} else {
 		args = append(args,
@@ -552,7 +588,142 @@ func (a *ClaudeCodeAdapter) buildArgsFor(g core.Grant) []string {
 	if a.cfg.Model != "" {
 		args = append(args, "--model", a.cfg.Model)
 	}
-	return append(args, a.cfg.Args...)
+	return args
+}
+
+// protectedRules deny the file tools ritam's own files and folders: its
+// settings, database, sessions and team. An Edit rule covers every tool that
+// edits files. Without them an agent could rewrite the settings ritam starts
+// its agents with next time, or the folder a session resumes in.
+func protectedRules(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		r := rulePath(p)
+		out = append(out, "Edit("+r+")", "Edit("+r+"/**)")
+	}
+	return out
+}
+
+// rulePath writes an absolute path the way Claude Code's permission rules
+// take one: "//" then the path in POSIX form, with a Windows drive letter as
+// a lower-case first folder (D:\proj becomes //d/proj).
+func rulePath(p string) string {
+	p = filepath.ToSlash(filepath.Clean(p))
+	if len(p) >= 2 && p[1] == ':' {
+		return "//" + strings.ToLower(p[:1]) + p[2:]
+	}
+	return "/" + p
+}
+
+// settings is what ritam sets through --settings: Claude Code's sandbox for
+// the agent's commands where the platform has one, and the file tools held
+// to the working folder when reads are confined.
+func (a *ClaudeCodeAdapter) settings() map[string]any {
+	out := map[string]any{}
+	if a.RunsInSandbox() {
+		out["sandbox"] = map[string]any{
+			"enabled": true,
+			// Bash still needs ritam's allow rules: being sandboxed does not
+			// stand in for the grant.
+			"autoAllowBashIfSandboxed": false,
+			// A command the sandbox refuses is refused, not retried outside.
+			"allowUnsandboxedCommands": false,
+			// No network: no domain is allowed, and none can be asked for.
+			"network": map[string]any{"allowedDomains": []string{}, "strictAllowlist": true},
+		}
+	}
+	if a.cfg.ConfineReads {
+		out["permissions"] = map[string]any{"blockReadsOutsideWorkingDirectories": true}
+	}
+	return out
+}
+
+// settingsArg is the --settings value: a file in the workspace's scratch
+// folder, rewritten when it changes, or "" when there is nothing to set.
+//
+// A file rather than inline JSON: on Windows an npm-installed CLI is a .cmd
+// shim, and cmd.exe re-parses the command line, quotes included. Without a
+// scratch folder (tests) the JSON is passed inline.
+func (a *ClaudeCodeAdapter) settingsArg() string {
+	s := a.settings()
+	if len(s) == 0 {
+		return ""
+	}
+	data, _ := json.Marshal(s)
+	if a.cfg.ScratchDir == "" {
+		return string(data)
+	}
+	path := filepath.Join(a.cfg.ScratchDir, "claude-"+string(a.id)+".settings.json")
+	if old, err := os.ReadFile(path); err == nil && string(old) == string(data) {
+		return path
+	}
+	err := os.MkdirAll(a.cfg.ScratchDir, 0o700)
+	if err == nil {
+		tmp := path + ".tmp"
+		if err = os.WriteFile(tmp, data, 0o600); err == nil {
+			if err = os.Rename(tmp, path); err == nil {
+				return path
+			}
+			_ = os.Remove(tmp)
+		}
+	}
+	a.log.ForAgent(a.id).Warn("writing the agent's settings file; passing them inline", "error", err)
+	return string(data)
+}
+
+// blockedFlags change the permissions, the tools, the settings or MCP
+// servers loaded, the session, or the output ritam parses. They are refused
+// in configured args whatever their order: a later flag wins, so appending
+// ritam's own is not by itself a defence. Compared without regard to case,
+// --flag and --flag=value alike.
+var blockedFlags = []string{
+	"--permission-mode", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
+	"--permission-prompt-tool", "--permission-prompts",
+	"--allowedtools", "--allowed-tools", "--disallowedtools", "--disallowed-tools", "--tools",
+	"--add-dir", "--settings", "--setting-sources", "--mcp-config", "--strict-mcp-config",
+	"--agents", "--agent", "--plugin-dir", "--plugin-url", "--bare", "--safe-mode", "--restricted",
+	"--session-id", "--resume", "--continue", "--fork-session", "--from-pr", "--no-session-persistence", "--name",
+	"--print", "--output-format", "--input-format", "--json-schema", "--include-partial-messages", "--verbose",
+	"--worktree", "--tmux", "--bg", "--background", "--cloud", "--remote-control", "--teleport", "--desktop",
+	"--chrome", "--ide", "--file",
+}
+
+// safeExtraArgs drops configured arguments that would change what ritam
+// decides (see blockedFlags), the same way the Codex adapter does. Short
+// flags are dropped too: they combine (-cp is -c -p), and the ones that
+// matter (-p, -c, -r, -n, -w) are all refused. Bare positional arguments are
+// dropped, since Claude would read one as the prompt -- the orphaned value
+// of a refused flag included.
+func (a *ClaudeCodeAdapter) safeExtraArgs() []string {
+	args := a.cfg.Args
+	out := make([]string, 0, len(args))
+	takesValue := func(i int, hasInline bool) bool {
+		return !hasInline && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-")
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			a.log.ForAgent(a.id).Warn(
+				"ignoring configured positional argument: Claude would read it as the prompt", "argument", arg)
+			continue
+		}
+		name, _, hasInline := strings.Cut(arg, "=")
+		if !strings.HasPrefix(name, "--") || slices.Contains(blockedFlags, strings.ToLower(name)) {
+			a.log.ForAgent(a.id).Warn(
+				"ignoring configured argument: it would override ritam's permissions, settings, session or output",
+				"argument", name)
+			if takesValue(i, hasInline) {
+				i++ // drop its value too
+			}
+			continue
+		}
+		out = append(out, arg)
+		if takesValue(i, hasInline) {
+			i++
+			out = append(out, args[i])
+		}
+	}
+	return out
 }
 
 // Interrupt is a no-op for one-shot invocations: cancelling the context passed

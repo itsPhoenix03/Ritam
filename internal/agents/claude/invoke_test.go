@@ -27,6 +27,10 @@ const fakeReply = `{"type":"result","subtype":"success","is_error":false,` +
 	`"result":"@@ORCH type=ANSWER to=human\nok"}` + "\n"
 
 func TestMain(m *testing.M) {
+	if os.Getenv(sleepHelperEnv) == "1" {
+		time.Sleep(2 * time.Minute)
+		os.Exit(0)
+	}
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		runFakeCLI(mode)
 		os.Exit(0)
