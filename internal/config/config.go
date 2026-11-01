@@ -56,6 +56,16 @@ type AgentConfig struct {
 	// reply file). It is set from the workspace, never configured: ritam
 	// writes nothing outside the workspace, temp folders included.
 	ScratchDir string `yaml:"-"`
+	// WorkspaceRoot is the workspace the agent is confined to; a saved
+	// session made anywhere else is never resumed. Set from the workspace.
+	WorkspaceRoot string `yaml:"-"`
+	// ConfineReads keeps the agent's file tools reading inside its working
+	// folder (workspace.confineReads). Set from the workspace.
+	ConfineReads bool `yaml:"-"`
+	// Protected are ritam's own files and folders inside the workspace (its
+	// settings, database, sessions and team), which the agent's file tools
+	// may not edit. Set from the workspace.
+	Protected []string `yaml:"-"`
 }
 
 // OrchestratorConfig holds coordination and loop-protection settings.

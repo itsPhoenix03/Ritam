@@ -52,6 +52,9 @@ type OneShotRunner struct {
 	Env map[string]string
 	// Timeout bounds a single invocation.
 	Timeout time.Duration
+	// Guard, when set, puts back any of ritam's own files the invocation
+	// changed, once the process has exited (see FileGuard).
+	Guard *FileGuard
 }
 
 // ErrTimeout reports that a CLI invocation exceeded its configured timeout.
@@ -118,6 +121,7 @@ func (r *OneShotRunner) Run(ctx context.Context, args []string, stdin string) (*
 
 	start := time.Now()
 	runErr := cmd.Run()
+	r.Guard.Check(r.AgentID)
 	res := &OneShotResult{
 		Stdout:   out.String(),
 		Stderr:   errBuf.String(),
@@ -179,6 +183,7 @@ func (r *OneShotRunner) RunStreaming(ctx context.Context, args []string, stdin s
 	stdoutText, scanErr := readLines(runCtx, stdout, onLine)
 
 	runErr := cmd.Wait()
+	r.Guard.Check(r.AgentID)
 	res := &OneShotResult{
 		Stdout:   stdoutText,
 		Stderr:   errBuf.String(),

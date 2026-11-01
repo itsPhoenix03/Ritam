@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ritam/internal/config"
 	"ritam/internal/domain"
 )
 
@@ -136,6 +137,16 @@ type SessionRegistry struct {
 	path    string
 	mu      sync.Mutex
 	entries map[SessionKey]Session
+	// guard learns of every write, so the file is not taken for an
+	// agent's edit (see FileGuard).
+	guard *FileGuard
+}
+
+// UseGuard routes the registry's writes through g.
+func (r *SessionRegistry) UseGuard(g *FileGuard) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.guard = g
 }
 
 // OpenSessionRegistry loads the registry at path, creating it on first save.
@@ -183,7 +194,7 @@ func (r *SessionRegistry) Save(s Session) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries[s.Key] = s
-	return r.flushLocked()
+	return r.guard.Write(r.path, r.flushLocked)
 }
 
 // flushLocked writes the registry atomically: a temporary file in the same
@@ -254,4 +265,24 @@ func ResolveWorkingDir(dir string) string {
 		return abs
 	}
 	return dir
+}
+
+// ResumableIn reports whether the session may be resumed by an agent
+// confined to the workspace at root. Both CLIs resume a session in the
+// folder it was made in, so a session recorded anywhere else -- a project
+// that moved, a changed workspace.root, a sessions file edited by hand or by
+// an agent -- would run the agent outside the workspace. Such a session is
+// not resumed; the agent starts a new one. A session that recorded no
+// folder runs in the agent's own, which is inside.
+func (s Session) ResumableIn(root string) bool {
+	return s.WorkingDir == "" || root == "" || config.Within(root, s.WorkingDir)
+}
+
+// WorkspaceRoot is the workspace an agent configured with cfg is confined
+// to: the one it was given, else its own working folder.
+func WorkspaceRoot(cfg config.AgentConfig) string {
+	if cfg.WorkspaceRoot != "" {
+		return cfg.WorkspaceRoot
+	}
+	return ResolveWorkingDir(cfg.WorkingDir)
 }

@@ -19,11 +19,14 @@ type Access struct {
 	level     domain.AccessLevel
 	commands  []string
 	sandboxed map[domain.AgentID]bool
+	// writers are the agents allowed to write, so the ones that would run
+	// commands unsandboxed can be named to the human.
+	writers map[domain.AgentID]bool
 }
 
 // NewAccess builds the policy at a level with a command list.
 func NewAccess(level domain.AccessLevel, commands []string) *Access {
-	a := &Access{sandboxed: map[domain.AgentID]bool{}}
+	a := &Access{sandboxed: map[domain.AgentID]bool{}, writers: map[domain.AgentID]bool{}}
 	a.Set(level, commands)
 	return a
 }
@@ -53,11 +56,36 @@ func (a *Access) SetSandboxed(id domain.AgentID, sandboxed bool) {
 	a.sandboxed[id] = sandboxed
 }
 
+// SetWrites records whether an agent may write, and so run what the level
+// grants.
+func (a *Access) SetWrites(id domain.AgentID, writes bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.writers[id] = writes
+}
+
 // Forget drops an agent that left the team.
 func (a *Access) Forget(id domain.AgentID) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.sandboxed, id)
+	delete(a.writers, id)
+}
+
+// Unsandboxed lists, sorted, the agents among ids (every writer when ids is
+// empty) that may write but whose sandbox was not verified: what the level
+// lets them run, they run directly on this machine.
+func (a *Access) Unsandboxed(ids ...domain.AgentID) []domain.AgentID {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var out []domain.AgentID
+	for id, w := range a.writers {
+		if w && !a.sandboxed[id] && (len(ids) == 0 || slices.Contains(ids, id)) {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Sandboxed reports whether an agent's CLI runs its commands in a sandbox.
