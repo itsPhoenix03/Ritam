@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -365,6 +366,15 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 		}
 	}
 
+	if errors.Is(streamErr, errBudgetStopped) {
+		// Not a failure, though the CLI exits non-zero: the turn reached the
+		// task's spending limit (budgetArgs). The usage reported on return
+		// pauses the task for the human.
+		a.log.ForAgent(a.id).Warn("claude-code turn stopped at the task's spending limit")
+		a.activity.Emit(ports.ActivityStatus, "stopped: the task's spending limit was reached")
+		return
+	}
+
 	if err != nil {
 		if errors.Is(err, core.ErrCancelled) {
 			// The task ended or the adapter stopped; nobody is waiting for
@@ -457,6 +467,7 @@ func (a *ClaudeCodeAdapter) runTurn(ctx context.Context, t *domain.Task, m domai
 		prompt += core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), g)
 	}
 	args := append(a.buildArgsFor(g), a.sessionArgs(t, sess, resuming)...)
+	args = append(args, budgetArgs(t)...)
 
 	// Claude files sessions by working directory and cannot resume one from
 	// anywhere else, so every turn runs where the session was created.
@@ -606,6 +617,28 @@ func (a *ClaudeCodeAdapter) buildArgsFor(g core.Grant) []string {
 		args = append(args, "--model", a.cfg.Model)
 	}
 	return args
+}
+
+// budgetStopped is the result subtype of a turn the CLI stopped at
+// --max-budget-usd, and errBudgetStopped what the adapter makes of it.
+const budgetStopped = "error_max_budget_usd"
+
+var errBudgetStopped = errors.New("claude-code adapter: turn stopped at the spending limit")
+
+// budgetArgs caps one turn's spending at what is left of the task's budget.
+// The orchestrator checks the budget between turns; without this, one turn
+// -- minutes of a model calling tools -- could run far past it before the
+// check. The CLI stops a turn once a call takes it over, so a task ends at
+// most one API call over its budget per agent at work.
+//
+// The CLI counts the cap per invocation, not over the resumed session, so
+// what is left of the task's budget is the right figure for every turn.
+func budgetArgs(t *domain.Task) []string {
+	if t == nil || t.Limits.MaxCostUSD <= 0 {
+		return nil
+	}
+	left := max(t.Limits.MaxCostUSD-t.CostUSD, 0.01)
+	return []string{"--max-budget-usd", strconv.FormatFloat(left, 'f', 4, 64)}
 }
 
 // protectedRules deny the file tools ritam's own files and folders: its
@@ -822,6 +855,9 @@ func extractResult(stdout string) (string, error) {
 		if !found {
 			return "", fmt.Errorf("claude-code adapter: output was not the expected JSON envelope: %w", err)
 		}
+	}
+	if env.Subtype == budgetStopped {
+		return "", errBudgetStopped
 	}
 	if env.IsError || env.Subtype == "error" {
 		return "", fmt.Errorf("claude-code adapter: CLI reported an error: %s", truncate(env.Result, 300))
