@@ -71,12 +71,20 @@ func prepare(configPath string) (*config.Config, place, error) {
 		pl.notices = append(pl.notices, done...)
 	}
 
+	// The global settings are the user's own; the project's travel with it,
+	// and what they may decide is restricted (see RestrictProject).
+	global, err := config.LoadLayers(home.ConfigPath())
+	if err != nil {
+		return nil, pl, err
+	}
+
 	// The workspace decides the project: normally the folder ritam started
 	// in; after a global launch, ritam's own folder in the app home.
 	cfg, err := config.LoadLayers(home.ConfigPath(), visible)
 	if err != nil {
 		return nil, pl, err
 	}
+	cfg.RestrictProject(global, root)
 	ws, err := resolveWorkspace(cfg, root, home)
 	if err != nil {
 		return nil, pl, err
@@ -99,9 +107,8 @@ func prepare(configPath string) (*config.Config, place, error) {
 	if cfg, err = config.LoadLayers(home.ConfigPath(), visible, pl.proj.ConfigPath()); err != nil {
 		return nil, pl, err
 	}
-	global, err := config.LoadLayers(home.ConfigPath())
-	if err != nil {
-		return nil, pl, err
+	if msg := config.HeldNotice(cfg.RestrictProject(global, root), home.ConfigPath()); msg != "" {
+		pl.notices = append(pl.notices, msg)
 	}
 	if _, err := resolveWorkspace(cfg, root, home); err != nil {
 		return nil, pl, err
