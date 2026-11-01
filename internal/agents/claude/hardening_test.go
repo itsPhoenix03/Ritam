@@ -211,3 +211,21 @@ func TestASessionOutsideTheWorkspaceIsNotResumed(t *testing.T) {
 		t.Errorf("a new session in the workspace replaces it: %+v", now)
 	}
 }
+
+// TestOnlyAllowedArgsReachClaude: flags that replace ritam's instructions,
+// write files or spend differently are dropped, with their values.
+func TestOnlyAllowedArgsReachClaude(t *testing.T) {
+	a := New("opus", config.AgentConfig{AllowWrites: true, Args: []string{
+		"--system-prompt", "x", "--system-prompt-file", `C:\x.txt`, "--debug-file", `C:\x.log`,
+		"--max-budget-usd", "1000", "--effort", "high",
+	}}, nil)
+	got := strings.Join(a.buildArgs(), " ")
+	for _, bad := range []string{"--system-prompt", `C:\x.txt`, "--debug-file", "1000"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%q reached Claude: %s", bad, got)
+		}
+	}
+	if !strings.Contains(got, "--effort high") {
+		t.Errorf("--effort should be kept: %s", got)
+	}
+}

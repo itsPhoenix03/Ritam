@@ -688,27 +688,17 @@ func (a *ClaudeCodeAdapter) settingsArg() string {
 	return string(data)
 }
 
-// blockedFlags change the permissions, the tools, the settings or MCP
-// servers loaded, the session, or the output ritam parses. They are refused
-// in configured args whatever their order: a later flag wins, so appending
-// ritam's own is not by itself a defence. Compared without regard to case,
-// --flag and --flag=value alike.
-var blockedFlags = []string{
-	"--permission-mode", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
-	"--permission-prompt-tool", "--permission-prompts",
-	"--allowedtools", "--allowed-tools", "--disallowedtools", "--disallowed-tools", "--tools",
-	"--add-dir", "--settings", "--setting-sources", "--mcp-config", "--strict-mcp-config",
-	"--agents", "--agent", "--plugin-dir", "--plugin-url", "--bare", "--safe-mode", "--restricted",
-	"--session-id", "--resume", "--continue", "--fork-session", "--from-pr", "--no-session-persistence", "--name",
-	"--print", "--output-format", "--input-format", "--json-schema", "--include-partial-messages", "--verbose",
-	"--worktree", "--tmux", "--bg", "--background", "--cloud", "--remote-control", "--teleport", "--desktop",
-	"--chrome", "--ide", "--file",
-}
+// allowedFlags are the only flags configured args may pass: the model,
+// how hard it thinks, and extra instructions. Everything else is refused --
+// flags that change the permissions, tools, settings, MCP servers, session
+// or output ritam parses, and any the CLI adds later -- whatever their
+// order: a later flag wins, so appending ritam's own is not by itself a
+// defence. Compared without regard to case, --flag and --flag=value alike.
+var allowedFlags = []string{"--effort", "--model", "--fallback-model", "--append-system-prompt", "--betas"}
 
-// safeExtraArgs drops configured arguments that would change what ritam
-// decides (see blockedFlags), the same way the Codex adapter does. Short
-// flags are dropped too: they combine (-cp is -c -p), and the ones that
-// matter (-p, -c, -r, -n, -w) are all refused. Bare positional arguments are
+// safeExtraArgs keeps the configured arguments ritam allows (see
+// allowedFlags), the same way the Codex adapter does. Short flags are
+// dropped: they combine (-cp is -c -p). Bare positional arguments are
 // dropped, since Claude would read one as the prompt -- the orphaned value
 // of a refused flag included.
 func (a *ClaudeCodeAdapter) safeExtraArgs() []string {
@@ -725,9 +715,9 @@ func (a *ClaudeCodeAdapter) safeExtraArgs() []string {
 			continue
 		}
 		name, _, hasInline := strings.Cut(arg, "=")
-		if !strings.HasPrefix(name, "--") || slices.Contains(blockedFlags, strings.ToLower(name)) {
+		if !slices.Contains(allowedFlags, strings.ToLower(name)) {
 			a.log.ForAgent(a.id).Warn(
-				"ignoring configured argument: it would override ritam's permissions, settings, session or output",
+				"ignoring configured argument: only the model, its effort and extra instructions may be configured",
 				"argument", name)
 			if takesValue(i, hasInline) {
 				i++ // drop its value too

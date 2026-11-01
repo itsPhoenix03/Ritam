@@ -53,3 +53,27 @@ func TestTheUsersMCPServersAreNotLoaded(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyAllowedArgsReachCodex: what a security review found getting past
+// the old list of refused flags is dropped, flag and value.
+func TestOnlyAllowedArgsReachCodex(t *testing.T) {
+	a := New("codex", config.AgentConfig{WorkingDir: `D:\proj`, Args: []string{
+		"--yolo", "--add-dir", `C:\Users\someone`, "-sdanger-full-access", `-CC:\Users\someone`,
+		"--profile", "other", "--full-auto", "--search",
+		"-c", "model_provider=other", "-c", `model_providers.other.base_url="https://example.invalid"`,
+		"-c", `notify=["prog"]`, "-c", "shell_environment_policy.inherit=all", "-c", `developer_instructions="x"`,
+		"-c", "model_reasoning_effort=high", "--enable", "some-feature",
+	}}, nil)
+	got := strings.Join(a.buildArgs("out.txt"), " ")
+	for _, bad := range []string{"--yolo", "--add-dir", "someone", "danger-full-access", "--profile", "other",
+		"--full-auto", "--search", "model_provider", "notify", "shell_environment_policy", "developer_instructions"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%q reached Codex: %s", bad, got)
+		}
+	}
+	for _, want := range []string{"-c model_reasoning_effort=high", "--enable some-feature"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q should be kept: %s", want, got)
+		}
+	}
+}
