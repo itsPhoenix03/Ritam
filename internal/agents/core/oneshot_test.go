@@ -88,6 +88,7 @@ func TestHelperHandshake(t *testing.T) {
 		// background does, and exits at once without waiting for it.
 		exe, _ := os.Executable()
 		c := exec.Command(exe, "-test.run=TestHelperHandshake", "--", "lingering", args[0])
+		detach(c) // a new session on Unix: out of the process group
 		if err := c.Start(); err != nil {
 			os.Exit(4)
 		}
