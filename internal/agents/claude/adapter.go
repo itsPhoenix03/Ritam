@@ -60,14 +60,18 @@ var readOnlyTools = []string{"Read", "Grep", "Glob"}
 // nobody present to answer it.
 var writeTools = []string{"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"}
 
-// editTools are what a write-enabled agent may always use.
-var editTools = []string{"Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "NotebookEdit"}
-
-// writeModeTools is editTools plus what the grant lets the agent run: a
-// Bash rule per allowed command, or Bash itself at the any-command level
-// (the deny rules still refuse the destructive commands: a deny wins).
+// writeModeTools is what a write-enabled agent is allowed outright: the
+// read tools, and what the grant lets it run -- a Bash rule per allowed
+// command, or Bash itself at the any-command level (the deny rules still
+// refuse the destructive commands: a deny wins).
+//
+// The edit tools are deliberately not in the list. acceptEdits accepts an
+// edit inside the working folder without asking, and asks for one anywhere
+// else, which in headless mode means it is refused. An allow rule for Edit
+// or Write would accept edits anywhere, and with no sandbox (native
+// Windows) nothing else keeps them in the workspace.
 func writeModeTools(g core.Grant) []string {
-	tools := append([]string(nil), editTools...)
+	tools := append([]string(nil), readOnlyTools...)
 	if g.AnyCommand {
 		return append(tools, "Bash")
 	}
@@ -580,11 +584,12 @@ func (a *ClaudeCodeAdapter) buildArgsFor(g core.Grant) []string {
 	}
 
 	if a.cfg.AllowWrites {
-		// File edits are accepted (Claude Code keeps them inside the working
-		// directory, which is the workspace), except to ritam's own files.
-		// Shell commands run only as the access level allows -- none, by
-		// name, or any -- and destructive ones are denied outright: a deny
-		// rule wins over an allow rule.
+		// File edits inside the working directory, which is the workspace,
+		// are accepted without asking; anywhere else they are refused (see
+		// writeModeTools), and so are edits to ritam's own files and the
+		// other protected paths. Shell commands run only as the access level
+		// allows -- none, by name, or any -- and refused ones are denied
+		// outright: a deny rule wins over an allow rule.
 		args = append(args,
 			"--permission-mode", "acceptEdits",
 			"--allowedTools", strings.Join(writeModeTools(g), ","),

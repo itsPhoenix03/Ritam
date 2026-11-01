@@ -258,9 +258,14 @@ func TestBuildArgsHonoursAllowWrites(t *testing.T) {
 			denied = argv[i+1]
 		}
 	}
-	for _, want := range []string{"Edit", "Write", "Bash(go test:*)"} {
-		if !strings.Contains(allowed, want) {
-			t.Errorf("a write-enabled agent may use %s: allowed=%q", want, allowed)
+	if !strings.Contains(allowed, "Bash(go test:*)") {
+		t.Errorf("a write-enabled agent may run its commands: allowed=%q", allowed)
+	}
+	// Edits are accepted by acceptEdits inside the workspace only; an allow
+	// rule for an edit tool would accept them anywhere.
+	for _, tool := range strings.Split(allowed, ",") {
+		if slices.Contains(writeTools[1:], tool) {
+			t.Errorf("%s allowed outright would let edits leave the workspace: %q", tool, allowed)
 		}
 	}
 	if strings.Contains(allowed, "rm -rf") {
