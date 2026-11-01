@@ -130,11 +130,15 @@ tui:
 # The workspace: where agents work, and the only place an agent with
 # allowWrites may write. It is the folder holding this file unless set here.
 # Launched at a global location (your home folder, a drive root, a system
-# folder), agents are read-only; allowGlobal lets them write, but only into
-# ritam's own folder (~/.ritam/workspace). Nothing is written to temp folders.
+# folder), agents work read-only in ritam's own folder (~/.ritam/workspace);
+# allowGlobal lets them write there. Nothing is written to temp folders.
+# confineReads keeps Claude Code's file tools reading inside the agent's
+# working folder (always on after a global launch); off, agents may read
+# anywhere you can.
 workspace:
   root: ""
   allowGlobal: false
+  confineReads: false
 
 # What agents may run beyond editing files, chosen per workspace. Set it from
 # the TUI's settings tab (:settings), which saves it to .ritam/ritam.yaml;
