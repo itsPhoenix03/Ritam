@@ -62,6 +62,15 @@ func listOrNone(cmds []string) string {
 	return strings.Join(cmds, ", ")
 }
 
+// unsandboxedRunners are the agents that would run commands with no
+// sandbox: none unless the global settings allow it.
+func unsandboxedRunners(a ports.AccessInfo) []domain.AgentID {
+	if !a.AllowUnsandboxed {
+		return nil
+	}
+	return a.Unsandboxed
+}
+
 // accessRisk says plainly what raising to a level hands the agents, naming
 // those that would run commands with no sandbox.
 func accessRisk(l domain.AccessLevel, cmds []string, unsandboxed []domain.AgentID) string {
@@ -113,7 +122,7 @@ func (m Model) chooseLevel(l domain.AccessLevel) (Model, tea.Cmd) {
 		m.mode = modePrompt
 		m.inputSelected = false
 		m.prompt = promptState{action: ActionSetAccess, access: l,
-			label: fmt.Sprintf("raise access to level %s? %s. Type yes to confirm:", l, accessRisk(l, m.access.Commands, m.access.Unsandboxed))}
+			label: fmt.Sprintf("raise access to level %s? %s. Type yes to confirm:", l, accessRisk(l, m.access.Commands, unsandboxedRunners(m.access)))}
 		return m, nil
 	}
 	m.setStatus("lowering access to level %s...", l)
@@ -174,7 +183,7 @@ func (m Model) accessChip() line {
 	if !m.accessLoaded {
 		return nil
 	}
-	if m.access.Level == domain.AccessAnyCommand && len(m.access.Unsandboxed) > 0 {
+	if m.access.Level == domain.AccessAnyCommand && len(unsandboxedRunners(m.access)) > 0 {
 		return line{m.accessCell(), st(" no sandbox: "+joinAgentIDs(m.access.Unsandboxed)+" ", badgeErrStyle), txt(" ")}
 	}
 	return line{m.accessCell(), txt(" ")}
@@ -289,7 +298,13 @@ func (m Model) settingsLines(inner int) ([]line, []int) {
 	para("A listed build or test command runs the project's build files and tests, which the agents can edit: "+
 		"allowing one lets an agent run code it wrote. The always-blocked list is matched on the command, "+
 		"so it cannot see inside a script; only a sandbox can.", dimStyle)
-	if len(a.Unsandboxed) > 0 {
+	if len(a.Unsandboxed) > 0 && !a.AllowUnsandboxed {
+		para(joinAgentIDs(a.Unsandboxed)+" have no sandbox (Claude Code has none on native Windows), so at no "+
+			"level do they run commands: they ask an agent that has a sandbox, or you. To let them run commands "+
+			"directly on this machine at levels 2 and 3, set access.allowUnsandboxed: true in your global settings "+
+			"(a project's settings cannot).", warnStyle)
+	}
+	if len(a.Unsandboxed) > 0 && a.AllowUnsandboxed {
 		para("Level 3 means \"I trust these agents\" for "+joinAgentIDs(a.Unsandboxed)+": they have no sandbox "+
 			"(Claude Code has none on Windows), so the blocked list is a deny list, not a sandbox. At level 2 "+
 			"they run the listed commands directly on this machine.", warnStyle)

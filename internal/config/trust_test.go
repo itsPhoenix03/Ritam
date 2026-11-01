@@ -31,6 +31,7 @@ storage: {path: "../outside.db"}
 sessions: {file: "inside/sessions.json"}
 orchestrator: {maxTaskCostUSD: 0, maxTotalMessages: 1000000, maxMessages: 50, maxTaskDuration: 0s}
 backups: {whenProjectDeleted: delete, deleteAfterDays: 0}
+access: {allowUnsandboxed: true}
 `), 0o600)
 
 	global, err := LoadLayers(globalFile)
@@ -70,6 +71,9 @@ backups: {whenProjectDeleted: delete, deleteAfterDays: 0}
 	}
 	if o.MaxMessages != 50 {
 		t.Errorf("a tighter limit is kept: %d", o.MaxMessages)
+	}
+	if cfg.Access.AllowUnsandboxed {
+		t.Error("only the global settings may let agents with no sandbox run commands")
 	}
 	if cfg.Backups.WhenProjectDeleted != "ask" {
 		t.Errorf("the backups of every project are not a project's to delete: %+v", cfg.Backups)

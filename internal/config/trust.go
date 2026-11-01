@@ -149,6 +149,10 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		o.RequireHumanApproval = true
 	}
 
+	if c.Access.AllowUnsandboxed && !global.Access.AllowUnsandboxed {
+		hold("access.allowUnsandboxed")
+		c.Access.AllowUnsandboxed = false
+	}
 	if c.Backups != global.Backups {
 		hold("backups")
 		c.Backups = global.Backups

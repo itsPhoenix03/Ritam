@@ -38,7 +38,13 @@ func TestTheAccessLevelDecidesWhatBashMayRun(t *testing.T) {
 		t.Errorf("level 1: an unsandboxed agent may not build: %q", allowed)
 	}
 
+	// With no sandbox (Claude Code on Windows) it runs nothing at level 2
+	// either, unless the global settings allow it.
 	acc.Set(domain.AccessBuildAndTest, []string{"cmake", "ctest"})
+	if allowed, _ = toolFlags(a.buildArgs()); strings.Contains(allowed, "Bash") {
+		t.Errorf("level 2, unsandboxed agents not allowed: no commands: %q", allowed)
+	}
+	acc.SetAllowUnsandboxed(true)
 	allowed, _ = toolFlags(a.buildArgs())
 	if !strings.Contains(allowed, "Bash(cmake:*)") || !strings.Contains(allowed, "Bash(ctest:*)") || strings.HasSuffix(allowed, ",Bash") {
 		t.Errorf("level 2: the listed commands only: %q", allowed)

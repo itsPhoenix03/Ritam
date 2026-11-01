@@ -63,6 +63,9 @@ func newAccessControl(cfg *config.Config, ws config.Workspace) *accessControl {
 			"inside a project folder to choose more"
 	}
 	c.live = core.NewAccess(level, granted.Commands)
+	// Only the global settings decide this: RestrictProject took any
+	// project's say away.
+	c.live.SetAllowUnsandboxed(cfg.Access.AllowUnsandboxed && cfg.Runtime.GlobalAccess.AllowUnsandboxed)
 	return c
 }
 
@@ -72,7 +75,7 @@ func (c *accessControl) info() ports.AccessInfo {
 	_, blocked := core.SafeCommands(cmds)
 	return ports.AccessInfo{Level: level, Commands: cmds, Blocked: blocked, Locked: c.locked,
 		HeldBack: c.held, File: c.file, Builders: c.live.Builders(), Missing: missingPrograms(cmds),
-		Unsandboxed: c.live.Unsandboxed()}
+		Unsandboxed: c.live.Unsandboxed(), AllowUnsandboxed: c.live.AllowsUnsandboxed()}
 }
 
 // set changes the level and the command list.
@@ -114,7 +117,7 @@ func (c *accessControl) set(ctx context.Context, in ports.AccessChange) (ports.A
 	summary := "access commands: " + listOrNone(cmds)
 	if in.Level != from {
 		summary = fmt.Sprintf("access level %s -> %s", from, in.Level)
-		if w := unsandboxedWarning(in.Level, c.live.Unsandboxed()); w != "" {
+		if w := unsandboxedWarning(in.Level, c.live.Unsandboxed(), c.live.AllowsUnsandboxed()); w != "" {
 			summary += "; " + w
 		}
 	}
@@ -141,7 +144,8 @@ func (c *accessControl) recordStart(t *domain.Task) {
 	level, cmds := c.live.Get()
 	builds := c.whoBuilds(t)
 	summary := fmt.Sprintf("access level %s; builder %s: %s", level, domain.BuilderLabel(t.Builder), builds)
-	if w := unsandboxedWarning(level, c.live.Unsandboxed(append([]domain.AgentID{t.AuthorityAgent}, t.Participants...)...)); w != "" {
+	if w := unsandboxedWarning(level, c.live.Unsandboxed(append([]domain.AgentID{t.AuthorityAgent}, t.Participants...)...),
+		c.live.AllowsUnsandboxed()); w != "" {
 		summary += "; " + w
 	}
 	c.publish(domain.Event{Type: domain.EvtAccessLevel, TaskID: t.ID,
@@ -151,17 +155,25 @@ func (c *accessControl) recordStart(t *domain.Task) {
 }
 
 // unsandboxedWarning names the agents that, at the any-command level, run
-// whatever they like directly on this machine; "" below that level or when
-// there are none.
-func unsandboxedWarning(level domain.AccessLevel, ids []domain.AgentID) string {
-	if level != domain.AccessAnyCommand || len(ids) == 0 {
+// whatever they like directly on this machine -- or, when unsandboxed
+// agents are not allowed, the agents that run no commands at levels 2 and 3
+// for want of a sandbox; "" when neither applies.
+func unsandboxedWarning(level domain.AccessLevel, ids []domain.AgentID, allowed bool) string {
+	if len(ids) == 0 {
 		return ""
 	}
 	names := make([]string, len(ids))
 	for i, id := range ids {
 		names[i] = string(id)
 	}
-	return "WARNING: " + strings.Join(names, ", ") + " may run any command with no sandbox, directly on this machine"
+	switch {
+	case !allowed && level >= domain.AccessBuildAndTest:
+		return strings.Join(names, ", ") + " have no sandbox, so they run no commands and ask an agent that has one, " +
+			"or the human (access.allowUnsandboxed in the global settings changes this)"
+	case allowed && level == domain.AccessAnyCommand:
+		return "WARNING: " + strings.Join(names, ", ") + " may run any command with no sandbox, directly on this machine"
+	}
+	return ""
 }
 
 // whoBuilds says in words who builds on task t.

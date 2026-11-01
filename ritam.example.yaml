@@ -165,5 +165,9 @@ workspace:
 access:
   level: 0
   commands: []
+  # Agents with no verified sandbox (Claude Code on native Windows) run no
+  # commands at any level unless this is true; they ask an agent that has a
+  # sandbox, or you. Only honoured in the global settings in the app home.
+  # allowUnsandboxed: false
   #  - cmake
   #  - ctest

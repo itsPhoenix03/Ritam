@@ -21,6 +21,9 @@ func TestAnAccessChangeIsSavedAppliedAndRecorded(t *testing.T) {
 	cfg.Runtime.ProjectConfig = filepath.Join(t.TempDir(), ".ritam", "ritam.yaml")
 	var approved *config.AccessConfig
 	cfg.Runtime.SaveGrant = func(a config.AccessConfig) error { approved = &a; return nil }
+	// The mock agents have no sandbox: let them build, as the global
+	// settings would.
+	cfg.Access.AllowUnsandboxed, cfg.Runtime.GlobalAccess.AllowUnsandboxed = true, true
 	sys, err := build(t, cfg)
 	if err != nil {
 		t.Fatal(err)

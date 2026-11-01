@@ -42,7 +42,8 @@ func settingsModel(t *testing.T, info ports.AccessInfo) (Model, *fakeService) {
 
 func TestTheSettingsTabShowsTheLevelsAndTheRisk(t *testing.T) {
 	m, _ := settingsModel(t, ports.AccessInfo{Level: domain.AccessFilesOnly, Commands: []string{"cmake"},
-		Builders: []domain.AgentID{"codex"}, Unsandboxed: []domain.AgentID{"claude"}, File: "/p/.ritam/ritam.yaml"})
+		Builders: []domain.AgentID{"codex"}, Unsandboxed: []domain.AgentID{"claude"}, AllowUnsandboxed: true,
+		File: "/p/.ritam/ritam.yaml"})
 	if m.centerOrDefault() != tabSettings {
 		t.Fatalf(":settings opens the settings tab, got %s", m.centerOrDefault())
 	}
@@ -57,7 +58,7 @@ func TestTheSettingsTabShowsTheLevelsAndTheRisk(t *testing.T) {
 
 func TestRaisingTheLevelAsksFirst(t *testing.T) {
 	m, svc := settingsModel(t, ports.AccessInfo{Level: domain.AccessFilesOnly, Commands: []string{"cmake"},
-		Unsandboxed: []domain.AgentID{"claude"}})
+		Unsandboxed: []domain.AgentID{"claude"}, AllowUnsandboxed: true})
 
 	m, _ = key(m, "j")
 	m, _ = key(m, "j") // Build and test
@@ -178,7 +179,7 @@ func TestTheTaskFormChoosesTheBuilder(t *testing.T) {
 // header says which.
 func TestTheAnyCommandLevelNamesTheUnsandboxedAgents(t *testing.T) {
 	m, _ := settingsModel(t, ports.AccessInfo{Level: domain.AccessAnyCommand,
-		Unsandboxed: []domain.AgentID{"claude", "opus"}})
+		Unsandboxed: []domain.AgentID{"claude", "opus"}, AllowUnsandboxed: true})
 	view := stripANSI(m.View())
 	for _, want := range []string{"no sandbox: claude, opus", "Level 3 is on: claude, opus may run any command, unsandboxed"} {
 		if !strings.Contains(view, want) {
@@ -189,5 +190,17 @@ func TestTheAnyCommandLevelNamesTheUnsandboxedAgents(t *testing.T) {
 	m, _ = settingsModel(t, ports.AccessInfo{Level: domain.AccessAnyCommand})
 	if strings.Contains(stripANSI(m.View()), "no sandbox:") {
 		t.Error("with every writer sandboxed there is nothing to warn about")
+	}
+}
+
+// TestByDefaultTheSettingsSayUnsandboxedAgentsRunNothing: unless the global
+// settings allow it, an agent with no sandbox runs no commands, and the
+// settings tab says so and how to change it.
+func TestByDefaultTheSettingsSayUnsandboxedAgentsRunNothing(t *testing.T) {
+	m, _ := settingsModel(t, ports.AccessInfo{Level: domain.AccessAnyCommand,
+		Unsandboxed: []domain.AgentID{"claude"}})
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "allowUnsandboxed") || strings.Contains(view, "no sandbox: claude") {
+		t.Errorf("the tab must say claude runs nothing, and how to allow it:\n%s", view)
 	}
 }

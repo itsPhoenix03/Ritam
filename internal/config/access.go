@@ -18,6 +18,12 @@ import (
 type AccessConfig struct {
 	// Level is 0 (files only, the default) to 3 (any command).
 	Level int `yaml:"level"`
+	// AllowUnsandboxed lets agents whose CLI has no verified sandbox
+	// (Claude Code on native Windows) run commands at levels 2 and 3,
+	// directly on this machine. Off, the default, they never run commands:
+	// they ask an agent that has a sandbox, or the human. Only the global
+	// settings may turn it on; a project's settings file cannot.
+	AllowUnsandboxed bool `yaml:"allowUnsandboxed,omitempty"`
 	// Commands are the command prefixes ("cmake", "ctest", "go test") the
 	// sandboxed builders (level 1) or every agent (level 2) may run.
 	// Destructive commands are refused whatever is listed.

@@ -417,6 +417,10 @@ type AccessInfo struct {
 	// verified: at levels 2 and 3 they run commands directly on this
 	// machine (Claude Code on Windows, which has no sandbox there).
 	Unsandboxed []domain.AgentID
+	// AllowUnsandboxed says whether the Unsandboxed agents may run commands
+	// at levels 2 and 3 (set in the global settings only). Off, they run
+	// none, and ask a sandboxed agent or the human.
+	AllowUnsandboxed bool
 }
 
 // AccessChange is the human's choice of level and command list.

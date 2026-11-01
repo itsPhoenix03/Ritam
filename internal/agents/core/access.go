@@ -22,6 +22,26 @@ type Access struct {
 	// writers are the agents allowed to write, so the ones that would run
 	// commands unsandboxed can be named to the human.
 	writers map[domain.AgentID]bool
+	// allowUnsandboxed lets agents with no verified sandbox run commands at
+	// levels 2 and 3. Off, every level builds the way level 1 does: only
+	// sandboxed agents run commands.
+	allowUnsandboxed bool
+}
+
+// SetAllowUnsandboxed says whether agents with no verified sandbox may run
+// commands at levels 2 and 3.
+func (a *Access) SetAllowUnsandboxed(allow bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.allowUnsandboxed = allow
+}
+
+// AllowsUnsandboxed reports whether agents with no verified sandbox may run
+// commands at levels 2 and 3.
+func (a *Access) AllowsUnsandboxed() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.allowUnsandboxed
 }
 
 // NewAccess builds the policy at a level with a command list.
@@ -73,8 +93,9 @@ func (a *Access) Forget(id domain.AgentID) {
 }
 
 // Unsandboxed lists, sorted, the agents among ids (every writer when ids is
-// empty) that may write but whose sandbox was not verified: what the level
-// lets them run, they run directly on this machine.
+// empty) that may write but whose sandbox was not verified: when they are
+// allowed to run commands at all (AllowsUnsandboxed), they run them directly
+// on this machine.
 func (a *Access) Unsandboxed(ids ...domain.AgentID) []domain.AgentID {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -188,7 +209,9 @@ func (a *Access) BuildersFor(t *domain.Task) (builders []domain.AgentID, everyon
 // builds to the human. A named participant builds alone, and at the
 // sandboxed builder level only if its sandbox was verified. Auto follows
 // the level: at level 1 the verified sandboxed participants, at levels 2 and
-// 3 every agent; at level 0 nobody.
+// 3 every agent; at level 0 nobody. Unless unsandboxed agents are allowed
+// (SetAllowUnsandboxed), levels 2 and 3 narrow to the sandboxed ones too:
+// an agent with no sandbox never runs a command.
 func (a *Access) buildersLocked(t *domain.Task) (builders []domain.AgentID, everyone bool) {
 	if a.level == domain.AccessFilesOnly {
 		return nil, false
@@ -201,7 +224,7 @@ func (a *Access) buildersLocked(t *domain.Task) (builders []domain.AgentID, ever
 	case domain.BuilderManual:
 		return nil, false
 	case domain.BuilderAuto:
-		if a.level != domain.AccessSandboxedBuilder {
+		if a.level != domain.AccessSandboxedBuilder && a.allowUnsandboxed {
 			return nil, true
 		}
 		if t == nil {
@@ -215,7 +238,7 @@ func (a *Access) buildersLocked(t *domain.Task) (builders []domain.AgentID, ever
 		return builders, false
 	}
 	named := domain.AgentID(mode)
-	if a.level == domain.AccessSandboxedBuilder && !a.sandboxed[named] {
+	if (a.level == domain.AccessSandboxedBuilder || !a.allowUnsandboxed) && !a.sandboxed[named] {
 		return nil, false
 	}
 	return []domain.AgentID{named}, false
