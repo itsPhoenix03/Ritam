@@ -210,6 +210,7 @@ func TestConfiguredArgsCannotEscapeTheSandbox(t *testing.T) {
 		"--sandbox": true, "read-only": true, "workspace-write": true,
 		"--skip-git-repo-check": true, "--color": true, "never": true,
 		"--output-last-message": true, "out.txt": true, "-": true,
+		"-c": true, "mcp_servers={}": true,
 	}
 
 	for _, bad := range escapes {

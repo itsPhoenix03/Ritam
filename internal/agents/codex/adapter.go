@@ -123,6 +123,10 @@ func New(id domain.AgentID, cfg config.AgentConfig, log *logging.Logger) *CodexA
 	return a
 }
 
+// UseGuard has ritam's own files checked after every CLI invocation, and
+// put back if the agent changed them (see core.FileGuard).
+func (a *CodexAdapter) UseGuard(g *core.FileGuard) { a.runner.Guard = g }
+
 // UseSessions points the adapter at the shared, persistent session registry.
 func (a *CodexAdapter) UseSessions(r *core.SessionRegistry) {
 	if r != nil {
@@ -257,6 +261,15 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 	key := core.SessionKeyFor(t, a.id)
 	sess, resuming := a.sessions.Get(key)
 	resuming = resuming && sess.Kind == domain.AgentKindCodex && sess.ID != ""
+	// `exec resume` runs where the thread was made, so a thread recorded
+	// outside the workspace is not resumed: a new one starts here instead.
+	outside := resuming && !sess.ResumableIn(core.WorkspaceRoot(a.cfg))
+	if outside {
+		a.log.ForAgent(a.id).Warn("codex thread was made outside the workspace; starting a new one",
+			"thread", sess.ID, "workingDir", sess.WorkingDir)
+		a.activity.Emit(ports.ActivityStatus, "previous session is outside the workspace; re-briefing in a new one")
+		resuming = false
+	}
 
 	res, reply, readErr, runErr, thread := a.runTurn(ctx, t, m, sess, resuming)
 
@@ -270,7 +283,10 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 		if thread != "" {
 			sess.Replace(thread, core.SessionRebuilt)
 		}
-	} else if !resuming && thread != "" {
+	} else if outside && thread != "" {
+		sess.Replace(thread, core.SessionRebuilt)
+		sess.WorkingDir = core.ResolveWorkingDir(a.cfg.WorkingDir)
+	} else if !resuming && !outside && thread != "" {
 		sess = core.NewSession(key, domain.AgentKindCodex, thread,
 			core.ResolveWorkingDir(a.cfg.WorkingDir), a.cfg.Model)
 	}
@@ -528,6 +544,7 @@ func (a *CodexAdapter) buildArgs(lastMessageFile string) []string {
 		"--output-last-message", lastMessageFile,
 	)
 	args = append(args, writeConfinement(a.cfg.AllowWrites)...)
+	args = append(args, isolation...)
 	if a.cfg.WorkingDir != "" {
 		args = append(args, "--cd", a.cfg.WorkingDir)
 	}
@@ -549,6 +566,11 @@ func writeConfinement(allowWrites bool) []string {
 		"-c", "sandbox_workspace_write.network_access=false",
 	}
 }
+
+// isolation keeps the user's own Codex setup out of the agent's turn: the MCP
+// servers in ~/.codex/config.toml would give it tools ritam never granted.
+// The override comes after any configured one, so it wins.
+var isolation = []string{"-c", "mcp_servers={}"}
 
 // buildResumeArgs assembles `codex exec resume` for an existing thread.
 //
@@ -573,6 +595,7 @@ func (a *CodexAdapter) buildResumeArgs(thread, lastMessageFile string) []string 
 		"-c", fmt.Sprintf("sandbox_mode=%q", sandbox),
 	)
 	args = append(args, writeConfinement(a.cfg.AllowWrites)...)
+	args = append(args, isolation...)
 	return append(args,
 		"--output-last-message", lastMessageFile,
 		thread,
