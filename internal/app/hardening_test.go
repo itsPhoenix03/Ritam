@@ -65,3 +65,46 @@ func TestTheGuardCoversRitamsSettingsAndRecords(t *testing.T) {
 		t.Errorf("the agent's changed version is kept for the human, one per file; got %d", len(kept))
 	}
 }
+
+// TestFilesThatRunCodeLaterAreGuardedAndDenied: git hooks and settings,
+// editor tasks and other AI tools' instructions are denied to Claude's file
+// tools and put back after a turn that changes them.
+func TestFilesThatRunCodeLaterAreGuardedAndDenied(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	ws := config.Workspace{Root: root, Writable: true}
+	cfg := &config.Config{}
+	cfg.Runtime.HomeDir = home
+	gitConfig := filepath.Join(root, ".git", "config")
+	_ = os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o700)
+	_ = os.WriteFile(gitConfig, []byte("[core]\n"), 0o600)
+
+	ac, err := applyWorkspace(config.AgentConfig{AllowWrites: true}, ws, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{filepath.Join(root, ".git"), filepath.Join(root, ".vscode", "tasks.json"),
+		filepath.Join(root, "AGENTS.md"), filepath.Join(root, ".github", "workflows"), home} {
+		if !slices.Contains(ac.Protected, want) {
+			t.Errorf("%s must be denied to the file tools: %v", want, ac.Protected)
+		}
+	}
+
+	g := newGuard(cfg, ws)
+	hook := filepath.Join(root, ".git", "hooks", "post-checkout")
+	tasks := filepath.Join(root, ".vscode", "tasks.json")
+	_ = os.WriteFile(hook, []byte("#!/bin/sh\n"), 0o700)
+	_ = os.WriteFile(gitConfig, []byte("[core]\n\thooksPath = elsewhere\n"), 0o600)
+	_ = os.MkdirAll(filepath.Dir(tasks), 0o700)
+	_ = os.WriteFile(tasks, []byte(`{"tasks":[{"runOptions":{"runOn":"folderOpen"}}]}`), 0o600)
+	if got := g.Check("codex"); len(got) != 3 {
+		t.Fatalf("the hook, git's settings and the editor task must all be undone, got %v", got)
+	}
+	if data, _ := os.ReadFile(gitConfig); string(data) != "[core]\n" {
+		t.Errorf("git's settings must be put back: %q", data)
+	}
+	for _, p := range []string{hook, tasks} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s must be taken away", p)
+		}
+	}
+}

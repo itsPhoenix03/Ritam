@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,9 @@ import (
 	"ritam/internal/domain"
 )
 
-// FileGuard keeps ritam's own files the way ritam last wrote them.
+// FileGuard keeps ritam's own files the way ritam last wrote them, and the
+// workspace's files that run code later (git hooks, editor tasks) the way
+// they were before the agents' turns.
 //
 // Write-enabled agents may write anywhere in the workspace, and ritam's
 // settings, sessions and team live there too. Claude Code's file tools are
@@ -31,9 +34,15 @@ import (
 //
 // The database is not guarded this way: ritam writes it continuously. Only
 // Claude's deny rules protect it.
+//
+// Folders can be guarded too (WatchDirs): every file in them is guarded, and
+// a file that appears in one is taken away, the way a guarded file that did
+// not exist is. That is for .git/hooks, where a new file is a program git
+// runs.
 type FileGuard struct {
 	mu    sync.Mutex
 	known map[string]*[]byte // nil: the file did not exist
+	dirs  []string
 	// keepDir is where an agent's version of a guarded file is kept.
 	keepDir string
 	// OnRestore is told of each file put back, by the turn of agent, with
@@ -51,6 +60,35 @@ func NewFileGuard(keepDir string, paths ...string) *FileGuard {
 		}
 	}
 	return g
+}
+
+// WatchDirs guards every file in dirs, and every file that appears in them
+// later. A folder that does not exist yet is watched for when it does.
+func (g *FileGuard) WatchDirs(dirs ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		d = filepath.Clean(d)
+		g.dirs = append(g.dirs, d)
+		for _, f := range filesIn(d) {
+			g.known[f] = read(f)
+		}
+	}
+}
+
+// filesIn lists the files under dir, nothing when it does not exist.
+func filesIn(dir string) []string {
+	var out []string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			out = append(out, filepath.Clean(p))
+		}
+		return nil
+	})
+	return out
 }
 
 // Write runs ritam's own write of path, then remembers the result.
@@ -77,6 +115,13 @@ func (g *FileGuard) Check(agent domain.AgentID) []string {
 	type restore struct{ path, kept string }
 	var done []restore
 	g.mu.Lock()
+	for _, d := range g.dirs {
+		for _, f := range filesIn(d) {
+			if _, ok := g.known[f]; !ok {
+				g.known[f] = nil // appeared during the turn: taken away below
+			}
+		}
+	}
 	for path, want := range g.known {
 		got := read(path)
 		if same(got, want) {

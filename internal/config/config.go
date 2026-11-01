@@ -62,9 +62,11 @@ type AgentConfig struct {
 	// ConfineReads keeps the agent's file tools reading inside its working
 	// folder (workspace.confineReads). Set from the workspace.
 	ConfineReads bool `yaml:"-"`
-	// Protected are ritam's own files and folders inside the workspace (its
-	// settings, database, sessions and team), which the agent's file tools
-	// may not edit. Set from the workspace.
+	// Protected are the files and folders the agent's file tools may not
+	// edit: ritam's own (its settings, database, sessions and team, and the
+	// app home) and the workspace's files that run code later (git's
+	// settings and hooks, editor tasks, other AI tools' instructions). Set
+	// from the workspace.
 	Protected []string `yaml:"-"`
 }
 

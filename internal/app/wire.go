@@ -275,7 +275,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	// it now; pause it so it says so and can be resumed.
 	access.publish = func(e domain.Event) { orch.Events.Publish(context.Background(), e) }
 	guard.OnRestore = func(path string, agent domain.AgentID, kept string) {
-		summary := fmt.Sprintf("%s changed %s, ritam's own file; it was put back", agent, path)
+		summary := fmt.Sprintf("%s changed %s, a protected file; it was put back", agent, path)
 		if kept != "" {
 			summary += "; the changed version is kept in " + kept
 		}
@@ -392,7 +392,12 @@ func applyWorkspace(ac config.AgentConfig, ws config.Workspace, cfg *config.Conf
 	ac.ScratchDir = scratchDir(cfg, ws)
 	ac.WorkspaceRoot = ws.Root
 	ac.ConfineReads = ws.ConfineReads
-	ac.Protected = protectedPaths(cfg, ws)
+	ac.Protected = append(protectedPaths(cfg, ws), sensitivePaths(ws.Root)...)
+	if cfg != nil && cfg.Runtime.HomeDir != "" {
+		// Outside the workspace edits are refused anyway; the app home holds
+		// the approvals, so it is denied by name as well.
+		ac.Protected = append(ac.Protected, cfg.Runtime.HomeDir)
+	}
 	if !ws.Writable {
 		ac.AllowWrites = false
 	}
@@ -421,12 +426,46 @@ func protectedPaths(cfg *config.Config, ws config.Workspace) []string {
 	return out
 }
 
+// sensitiveFiles and sensitiveDirs, in a workspace, decide what runs later
+// on the human's machine, outside any agent's turn: git's settings and
+// hooks, editor tasks, CI workflows, the settings and instructions other AI
+// tools load, and environment files a shell loads on entering the folder.
+// An agent has no business writing them: Claude's file tools are denied
+// them, and the guard puts back what an agent's commands change.
+var (
+	sensitiveFiles = []string{
+		".git/config", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json",
+		".codex/config.toml", ".vscode/tasks.json", ".vscode/settings.json", ".vscode/launch.json",
+		".envrc", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
+	}
+	sensitiveDirs = []string{".git/hooks", ".github/workflows", ".husky"}
+)
+
+// sensitivePaths are the sensitive files and folders of the workspace at
+// root, for Claude's deny rules: all of .git, which no file tool needs, and
+// the rest by name.
+func sensitivePaths(root string) []string {
+	out := []string{filepath.Join(root, ".git")}
+	for _, p := range append(append([]string(nil), sensitiveFiles...), sensitiveDirs...) {
+		if !strings.HasPrefix(p, ".git/") {
+			out = append(out, filepath.Join(root, filepath.FromSlash(p)))
+		}
+	}
+	return out
+}
+
 // newGuard guards ritam's own settings and records, in the project and in
 // the app home: what decides how agents run next time. The database is
-// left out; ritam writes it all the time.
+// left out; ritam writes it all the time. It guards the workspace's
+// sensitive files and folders too (see sensitiveFiles).
 func newGuard(cfg *config.Config, ws config.Workspace) *core.FileGuard {
 	paths := []string{filepath.Join(ws.Root, brand.ConfigFile()), cfg.Runtime.ProjectConfig, cfg.Sessions.File,
 		teamFile(cfg), cfg.Runtime.ModelsFile}
+	if ws.Writable {
+		for _, f := range sensitiveFiles {
+			paths = append(paths, filepath.Join(ws.Root, filepath.FromSlash(f)))
+		}
+	}
 	keep := ""
 	if h := cfg.Runtime.HomeDir; h != "" {
 		home := layout.Home{Root: h}
@@ -436,7 +475,13 @@ func newGuard(cfg *config.Config, ws config.Workspace) *core.FileGuard {
 	if cfg.Runtime.ProjectConfig != "" {
 		paths = append(paths, filepath.Join(filepath.Dir(cfg.Runtime.ProjectConfig), "project.json"))
 	}
-	return core.NewFileGuard(keep, paths...)
+	g := core.NewFileGuard(keep, paths...)
+	if ws.Writable {
+		for _, d := range sensitiveDirs {
+			g.WatchDirs(filepath.Join(ws.Root, filepath.FromSlash(d)))
+		}
+	}
+	return g
 }
 
 // agentFactory makes a fresh adapter for agent id, one per task it works on.

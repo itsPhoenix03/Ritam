@@ -127,3 +127,46 @@ func TestUnsandboxedNamesTheWritersWithNoVerifiedSandbox(t *testing.T) {
 		t.Errorf("a dismissed agent is forgotten: %v", got)
 	}
 }
+
+// TestAHookPlantedInAGuardedFolderIsTakenAway: a file that appears in a
+// guarded folder (.git/hooks) is removed after the turn and kept aside, and
+// a hook that was already there is put back if changed.
+func TestAHookPlantedInAGuardedFolderIsTakenAway(t *testing.T) {
+	dir, keep := t.TempDir(), t.TempDir()
+	hooks := filepath.Join(dir, ".git", "hooks")
+	_ = os.MkdirAll(hooks, 0o700)
+	sample := filepath.Join(hooks, "pre-commit.sample")
+	_ = os.WriteFile(sample, []byte("sample\n"), 0o600)
+
+	g := NewFileGuard(keep)
+	g.WatchDirs(hooks, filepath.Join(dir, ".github", "workflows"))
+	var kept []string
+	g.OnRestore = func(_ string, _ domain.AgentID, k string) { kept = append(kept, k) }
+
+	planted := filepath.Join(hooks, "pre-commit")
+	_ = os.WriteFile(planted, []byte("#!/bin/sh\nrun-something\n"), 0o700)
+	_ = os.WriteFile(sample, []byte("changed\n"), 0o600)
+	workflow := filepath.Join(dir, ".github", "workflows", "ci.yml")
+	_ = os.MkdirAll(filepath.Dir(workflow), 0o700)
+	_ = os.WriteFile(workflow, []byte("on: push\n"), 0o600)
+
+	if got := g.Check("codex"); len(got) != 3 {
+		t.Fatalf("the planted hook, the changed sample and the new workflow must all be undone, got %v", got)
+	}
+	for _, p := range []string{planted, workflow} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s appeared during the turn and must be taken away", p)
+		}
+	}
+	if data, _ := os.ReadFile(sample); string(data) != "sample\n" {
+		t.Errorf("an existing hook must be put back, got %q", data)
+	}
+	for _, k := range kept {
+		if k == "" {
+			t.Error("the agent's version of each file must be kept for the human")
+		}
+	}
+	if got := g.Check("codex"); len(got) != 0 {
+		t.Errorf("nothing changed since: %v", got)
+	}
+}

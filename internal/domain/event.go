@@ -65,9 +65,10 @@ const (
 	// the task starts, and on every change the human makes. Details: level,
 	// from (on a change), commands.
 	EvtAccessLevel EventType = "AccessLevel"
-	// EvtProtectedFileRestored records that an agent's turn changed one of
-	// ritam's own files (its settings, sessions or team) and ritam put it
-	// back. Details: file, kept (where the agent's version was kept).
+	// EvtProtectedFileRestored records that an agent's turn changed a
+	// guarded file -- one of ritam's own (its settings, sessions or team) or
+	// one that runs code later (a git hook, an editor task) -- and ritam put
+	// it back. Details: file, kept (where the agent's version was kept).
 	EvtProtectedFileRestored EventType = "ProtectedFileRestored"
 	// EvtAgentActivity carries live agent output for display. It is published
 	// ephemerally: never stored, never logged, never acted on.
