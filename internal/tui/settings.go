@@ -77,10 +77,13 @@ func accessRisk(l domain.AccessLevel, cmds []string, unsandboxed []domain.AgentI
 	case domain.AccessSandboxedBuilder:
 		return "agents whose CLI runs in a verified sandbox will run: " + list
 	case domain.AccessBuildAndTest:
+		// A build runs the project's build files and a test runner its tests,
+		// and the agents edit both: allowing one runs code they wrote.
+		const runs = "; a build or test runs the project's own build files and tests, which the agents can edit"
 		if bare != "" {
-			return "every agent will run: " + list + "; " + bare + " run them with no sandbox, directly on this machine"
+			return "every agent will run: " + list + runs + "; " + bare + " run them with no sandbox, directly on this machine"
 		}
-		return "every agent will run: " + list
+		return "every agent will run: " + list + runs
 	case domain.AccessAnyCommand:
 		if bare != "" {
 			return "agents may run any command but the always-blocked ones; " + bare +
@@ -280,7 +283,12 @@ func (m Model) settingsLines(inner int) ([]line, []int) {
 	add(blank(), -1)
 	add(line{st("RISK", sectionHeaderStyle)}, -1)
 	para("Codex runs its commands in a sandbox: writes stay inside the workspace, the network is off. "+
-		"Claude Code does too on macOS and Linux, once the sandbox check confirms it.", dimStyle)
+		"Claude Code does too on macOS and Linux, once the sandbox check confirms it. Codex has no way to "+
+		"edit files without running commands, so even at level 0 a Codex agent that may write runs them, "+
+		"in that sandbox.", dimStyle)
+	para("A listed build or test command runs the project's build files and tests, which the agents can edit: "+
+		"allowing one lets an agent run code it wrote. The always-blocked list is matched on the command, "+
+		"so it cannot see inside a script; only a sandbox can.", dimStyle)
 	if len(a.Unsandboxed) > 0 {
 		para("Level 3 means \"I trust these agents\" for "+joinAgentIDs(a.Unsandboxed)+": they have no sandbox "+
 			"(Claude Code has none on Windows), so the blocked list is a deny list, not a sandbox. At level 2 "+
