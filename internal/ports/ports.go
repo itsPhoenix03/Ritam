@@ -155,6 +155,14 @@ func (o Outbound) IsUsageOnly() bool {
 	return o.Usage != nil && o.Err == nil && o.Message.Type == ""
 }
 
+// SpendLedger keeps what agents spent each day, over every task and project
+// on this machine, so a day's spending has a limit no single task's budget
+// gives: each new task starts its own.
+type SpendLedger interface {
+	// Add records one turn's usage and returns today's totals with it.
+	Add(u Usage) (costUSD float64, tokens int64, err error)
+}
+
 // Usage is what one agent CLI turn consumed. CostUSD is zero when the CLI
 // reports tokens but not cost (Codex does not report cost).
 //

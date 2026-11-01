@@ -136,6 +136,14 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		hold("orchestrator.maxTaskCostUSD")
 		o.MaxTaskCostUSD = t
 	}
+	if t := tighterFloat(o.MaxDailyCostUSD, g.MaxDailyCostUSD); t != o.MaxDailyCostUSD {
+		hold("orchestrator.maxDailyCostUSD")
+		o.MaxDailyCostUSD = t
+	}
+	if t := tighterInt64(o.MaxDailyTokens, g.MaxDailyTokens); t != o.MaxDailyTokens {
+		hold("orchestrator.maxDailyTokens")
+		o.MaxDailyTokens = t
+	}
 	if g.RequireHumanApproval && !o.RequireHumanApproval {
 		hold("orchestrator.requireHumanApproval")
 		o.RequireHumanApproval = true

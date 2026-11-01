@@ -97,6 +97,12 @@ type OrchestratorConfig struct {
 	// tokens but not cost, so only MaxTaskTokens bounds Codex spending.
 	MaxTaskCostUSD float64 `yaml:"maxTaskCostUSD"`
 	MaxTaskTokens  int64   `yaml:"maxTaskTokens"`
+	// MaxDailyCostUSD and MaxDailyTokens pause any task that takes the
+	// day's spending, over every task and project on this machine, past
+	// them: each task's budget is its own, and a new task starts afresh.
+	// Zero disables each.
+	MaxDailyCostUSD float64 `yaml:"maxDailyCostUSD"`
+	MaxDailyTokens  int64   `yaml:"maxDailyTokens"`
 	// DefaultAuthority is the agent that holds authority when the human does
 	// not choose one.
 	DefaultAuthority string `yaml:"defaultAuthority"`
@@ -278,6 +284,9 @@ func Default() *Config {
 			StallMessages:         8,
 			MaxTotalMessages:      1000,
 			MaxTaskCostUSD:        10,
+			MaxTaskTokens:         5_000_000,
+			MaxDailyCostUSD:       50,
+			MaxDailyTokens:        25_000_000,
 			IdleTimeout:           60 * time.Second,
 		},
 		Knowledge: KnowledgeConfig{Backend: "memory"},

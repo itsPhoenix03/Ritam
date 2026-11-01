@@ -219,6 +219,9 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		MaxConcurrentTasks:   cfg.Orchestrator.MaxConcurrentTasks,
 		IdleTimeout:          cfg.Orchestrator.IdleTimeout,
 		RequireHumanApproval: cfg.Orchestrator.RequireHumanApproval,
+		Daily:                dailyLedger(cfg),
+		MaxDailyCostUSD:      cfg.Orchestrator.MaxDailyCostUSD,
+		MaxDailyTokens:       cfg.Orchestrator.MaxDailyTokens,
 	})
 
 	// The agent manager reports runtime state changes as events so the TUI can

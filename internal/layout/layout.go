@@ -83,6 +83,9 @@ func (h Home) ArchivesDir() string { return filepath.Join(h.Root, "archives") }
 // ModelsFile records what was learned about models on this account.
 func (h Home) ModelsFile() string { return filepath.Join(h.Root, "models.json") }
 
+// SpendFile records what agents spent each day, over every project.
+func (h Home) SpendFile() string { return filepath.Join(h.Root, "spend.json") }
+
 // CanaryDir is where sandbox checks try to write.
 func (h Home) CanaryDir() string { return filepath.Join(h.Root, "canary") }
 
