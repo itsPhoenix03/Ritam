@@ -7,12 +7,72 @@ import (
 	"os/exec"
 	"strconv"
 	"syscall"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-// prepareTree readies cmd so killTree can later end it with everything it
-// started. Windows needs no preparation: taskkill walks the parent/child
-// relationship itself.
-func prepareTree(*exec.Cmd) {}
+// prepareTree readies cmd so its whole tree can be ended later: it starts
+// suspended, so startTree can put it in a job object before it runs, and so
+// before it can start anything that would escape the job.
+func prepareTree(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+}
+
+var ntResumeProcess = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtResumeProcess")
+
+// processTree is one invocation's process and everything it starts: a job
+// object that ends every process still in it when closed.
+type processTree struct{ job windows.Handle }
+
+// startTree puts the just-started, suspended cmd in a job object and lets
+// it run. A process that cannot be resumed is killed: it would otherwise
+// wait, suspended, until the timeout.
+func startTree(cmd *exec.Cmd) *processTree {
+	t := &processTree{}
+	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME,
+		false, uint32(cmd.Process.Pid))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return t
+	}
+	defer windows.CloseHandle(h)
+	if job, err := windows.CreateJobObject(nil, nil); err == nil {
+		info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+			BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+				LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+			},
+		}
+		_, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
+		if err == nil {
+			err = windows.AssignProcessToJobObject(job, h)
+		}
+		if err == nil {
+			t.job = job
+		} else {
+			_ = windows.CloseHandle(job)
+		}
+	}
+	if status, _, _ := ntResumeProcess.Call(uintptr(h)); status != 0 {
+		_ = cmd.Process.Kill()
+	}
+	return t
+}
+
+// end ends whatever the invocation left running once the CLI itself has
+// exited: a command it put in the background, a process a command started.
+// Left running, such a process could change files after the guard checked
+// them, or keep working -- and spending -- after the turn.
+func (t *processTree) end() {
+	if t != nil && t.job != 0 {
+		_ = windows.CloseHandle(t.job)
+		t.job = 0
+	}
+}
 
 // killTree ends p and every process it started.
 //

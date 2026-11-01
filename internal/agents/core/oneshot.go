@@ -120,7 +120,12 @@ func (r *OneShotRunner) Run(ctx context.Context, args []string, stdin string) (*
 	killWholeTreeOnCancel(cmd)
 
 	start := time.Now()
-	runErr := cmd.Run()
+	runErr := cmd.Start()
+	if runErr == nil {
+		tree := startTree(cmd)
+		runErr = cmd.Wait()
+		tree.end() // before the check: nothing left running may write after it
+	}
 	r.Guard.Check(r.AgentID)
 	res := &OneShotResult{
 		Stdout:   out.String(),
@@ -179,10 +184,12 @@ func (r *OneShotRunner) RunStreaming(ctx context.Context, args []string, stdin s
 		}
 		return nil, r.startError(err, full)
 	}
+	tree := startTree(cmd)
 
 	stdoutText, scanErr := readLines(runCtx, stdout, onLine)
 
 	runErr := cmd.Wait()
+	tree.end() // before the check: nothing left running may write after it
 	r.Guard.Check(r.AgentID)
 	res := &OneShotResult{
 		Stdout:   stdoutText,
