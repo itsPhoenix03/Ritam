@@ -384,6 +384,10 @@ type AccessInfo struct {
 	Builders []domain.AgentID
 	// Missing are listed commands whose program is not found on PATH.
 	Missing []string
+	// Unsandboxed are the write-enabled agents whose sandbox was not
+	// verified: at levels 2 and 3 they run commands directly on this
+	// machine (Claude Code on Windows, which has no sandbox there).
+	Unsandboxed []domain.AgentID
 }
 
 // AccessChange is the human's choice of level and command list.

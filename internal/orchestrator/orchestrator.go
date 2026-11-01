@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1966,6 +1967,24 @@ func (o *Orchestrator) AgentInUse(id domain.AgentID) bool {
 		}
 	}
 	return false
+}
+
+// TasksOf lists the running tasks agent id takes part in.
+func (o *Orchestrator) TasksOf(id domain.AgentID) []domain.TaskID {
+	o.mu.Lock()
+	running := make([]domain.TaskID, 0, len(o.running))
+	for t := range o.running {
+		running = append(running, t)
+	}
+	o.mu.Unlock()
+	var out []domain.TaskID
+	for _, tid := range running {
+		if t, err := o.Tasks.Get(context.Background(), tid); err == nil && t.HasParticipant(id) {
+			out = append(out, tid)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Cancel terminates a task. The human can always intervene, whichever agent

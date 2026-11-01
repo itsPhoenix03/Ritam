@@ -103,6 +103,10 @@ func ClearCanary(h Home) error {
 	return os.MkdirAll(dir, 0o700)
 }
 
+// RejectedDir keeps the versions of ritam's own files that an agent wrote
+// and ritam put back, for the human to read.
+func (h Home) RejectedDir() string { return filepath.Join(h.Root, "rejected") }
+
 // OwnWorkspace is where agents work when the app is launched at a global
 // location (the home folder, a drive root) and that is allowed.
 func (h Home) OwnWorkspace() string { return filepath.Join(h.Root, "workspace") }
