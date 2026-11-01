@@ -152,7 +152,7 @@ func streamShowsEvent(e domain.Event) bool {
 func isFailureEvent(t domain.EventType) bool {
 	switch t {
 	case domain.EvtTaskFailed, domain.EvtAgentFailed, domain.EvtAuthorityViolation,
-		domain.EvtValidationRejected, domain.EvtDecisionRejected:
+		domain.EvtValidationRejected, domain.EvtDecisionRejected, domain.EvtProtectedFileRestored:
 		return true
 	}
 	return false

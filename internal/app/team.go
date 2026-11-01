@@ -49,13 +49,16 @@ type recruitRecord struct {
 // Team adds and removes recruited agents and lists the models to recruit
 // from.
 type Team struct {
-	mu        sync.Mutex
-	path      string
-	reg       *core.Registry
-	cfg       *config.Config
-	ws        config.Workspace
-	sessions  *core.SessionRegistry
-	access    *core.Access
+	mu       sync.Mutex
+	path     string
+	reg      *core.Registry
+	cfg      *config.Config
+	ws       config.Workspace
+	sessions *core.SessionRegistry
+	access   *core.Access
+	// guard learns of ritam's writes to team.json and models.json, so they
+	// are not taken for an agent's edit.
+	guard     *core.FileGuard
 	log       *logging.Logger
 	catalogs  []ports.ModelCatalog
 	recruited map[domain.AgentID]recruitRecord
@@ -410,11 +413,13 @@ func (tm *Team) saveAvailability() error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return tm.guard.Write(path, func() error {
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
+	})
 }
 
 // Recruit adds an agent to the team and keeps it.
@@ -494,13 +499,16 @@ func (tm *Team) register(r recruitRecord) (domain.Agent, error) {
 		return domain.Agent{}, err
 	}
 	role := parseRole(r.Role)
-	_, kind, err := buildAdapter(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.log)
+	_, kind, err := buildAdapter(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.guard, tm.log)
 	if err != nil {
 		return domain.Agent{}, err
 	}
+	if tm.access != nil {
+		tm.access.SetWrites(id, ac.AllowWrites && kind != domain.AgentKindMock)
+	}
 	a := domain.Agent{ID: id, DisplayName: strings.ToUpper(r.Name), Kind: kind, Role: role, Model: r.Model,
 		Enabled: true, State: domain.AgentStateStopped}
-	if err := tm.reg.RegisterFactory(a, agentFactory(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.log)); err != nil {
+	if err := tm.reg.RegisterFactory(a, agentFactory(id, ac, role, tm.cfg.TUI.UseMockAgents, tm.sessions, tm.access, tm.guard, tm.log)); err != nil {
 		return domain.Agent{}, err
 	}
 	tm.syncBuilders()
@@ -537,13 +545,15 @@ func (tm *Team) save() error {
 	if err := os.MkdirAll(filepath.Dir(tm.path), 0o700); err != nil {
 		return fmt.Errorf("team: %w", err)
 	}
-	tmp := tm.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("team: %w", err)
-	}
-	if err := os.Rename(tmp, tm.path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("team: %w", err)
-	}
-	return nil
+	return tm.guard.Write(tm.path, func() error {
+		tmp := tm.path + ".tmp"
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			return fmt.Errorf("team: %w", err)
+		}
+		if err := os.Rename(tmp, tm.path); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("team: %w", err)
+		}
+		return nil
+	})
 }

@@ -58,6 +58,7 @@ func TestOnlySandboxedAgentsBuildAtTheSandboxedBuilderLevel(t *testing.T) {
 
 func TestBuildAndTestGrantsTheListToEveryAgent(t *testing.T) {
 	acc := NewAccess(domain.AccessBuildAndTest, []string{" cmake  --build ", "ctest", "ctest", ""})
+	acc.SetAllowUnsandboxed(true)
 	g := acc.GrantFor(accessTask(), "opus", []string{"go test", "curl x"})
 	if !slices.Equal(g.Commands, []string{"cmake --build", "ctest", "go test"}) {
 		t.Errorf("the workspace's list plus the agent's own, cleaned, blocked ones dropped: %v", g.Commands)
@@ -69,6 +70,7 @@ func TestBuildAndTestGrantsTheListToEveryAgent(t *testing.T) {
 
 func TestAnyCommandStillKeepsTheBlockedList(t *testing.T) {
 	acc := NewAccess(domain.AccessAnyCommand, nil)
+	acc.SetAllowUnsandboxed(true)
 	g := acc.GrantFor(accessTask(), "opus", nil)
 	if !g.AnyCommand {
 		t.Fatal("level 3 lets the agent run any command")
@@ -81,6 +83,7 @@ func TestAnyCommandStillKeepsTheBlockedList(t *testing.T) {
 
 func TestAChangeAppliesToTheNextGrant(t *testing.T) {
 	acc := NewAccess(domain.AccessFilesOnly, nil)
+	acc.SetAllowUnsandboxed(true)
 	if acc.GrantFor(nil, "opus", nil).RunsCommands() {
 		t.Fatal("level 0 runs nothing")
 	}
@@ -118,6 +121,7 @@ func TestANamedBuilderBuildsAlone(t *testing.T) {
 	task := accessTask()
 	task.Builder = "sonnet"
 	acc := NewAccess(domain.AccessBuildAndTest, []string{"cmake"})
+	acc.SetAllowUnsandboxed(true)
 	if g := acc.GrantFor(task, "sonnet", nil); !slices.Equal(g.Commands, []string{"cmake"}) || g.BuildDir != "build/sonnet" {
 		t.Errorf("the named builder runs the list in its own folder: %+v", g)
 	}
@@ -153,5 +157,33 @@ func TestSeveralBuildersEachGetAFolderAndTheAuthorityAssigns(t *testing.T) {
 	}
 	if r := WriteRules("/p", auth); !strings.Contains(r, "you assign the build and test work") {
 		t.Errorf("the authority brief:\n%s", r)
+	}
+}
+
+// TestAnAgentWithNoSandboxRunsNoCommandsUnlessAllowed: by default levels 2
+// and 3 build the way level 1 does -- only agents with a verified sandbox
+// run commands, and the others ask them -- since an agent with no sandbox
+// (Claude Code on native Windows) would run them directly on this machine.
+func TestAnAgentWithNoSandboxRunsNoCommandsUnlessAllowed(t *testing.T) {
+	for _, level := range []domain.AccessLevel{domain.AccessBuildAndTest, domain.AccessAnyCommand} {
+		acc := NewAccess(level, []string{"cmake"})
+		acc.SetSandboxed("codex", true)
+		task := accessTask()
+		if g := acc.GrantFor(task, "opus", nil); g.RunsCommands() || !slices.Equal(g.Builders, []domain.AgentID{"codex"}) {
+			t.Errorf("level %s: the unsandboxed agent runs nothing and asks codex: %+v", level, g)
+		}
+		if g := acc.GrantFor(task, "codex", nil); !g.RunsCommands() {
+			t.Errorf("level %s: the sandboxed agent builds: %+v", level, g)
+		}
+		task.Builder = "opus"
+		if g := acc.GrantFor(task, "opus", nil); g.RunsCommands() {
+			t.Errorf("level %s: naming an unsandboxed builder does not let it run commands: %+v", level, g)
+		}
+
+		acc.SetAllowUnsandboxed(true)
+		task.Builder = domain.BuilderAuto
+		if g := acc.GrantFor(task, "opus", nil); !g.RunsCommands() {
+			t.Errorf("level %s: allowed, every agent builds: %+v", level, g)
+		}
 	}
 }

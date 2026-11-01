@@ -34,10 +34,39 @@ type cell struct {
 }
 
 // txt is an unstyled run.
-func txt(s string) cell { return cell{text: s, plain: true} }
+func txt(s string) cell { return cell{text: clean(s), plain: true} }
 
 // st is a styled run.
-func st(s string, style lipgloss.Style) cell { return cell{text: s, style: style} }
+func st(s string, style lipgloss.Style) cell { return cell{text: clean(s), style: style} }
+
+// clean drops what would let text act on the terminal instead of being
+// shown: control characters (ESC among them, so no escape sequence -- a
+// clipboard write, a screen clear, a hidden link -- gets through), C1
+// controls, and the bidirectional overrides that make text read other than
+// it is. Tabs become spaces.
+//
+// Much of what is shown comes from agents, and an agent's text is whatever
+// its model, a file it read or a command's output made it: it may try to
+// draw a line that looks like ritam's own. Styling is added after, so it is
+// not affected.
+func clean(s string) string {
+	if !strings.ContainsFunc(s, unsafeRune) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return ' '
+		case unsafeRune(r):
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func unsafeRune(r rune) bool {
+	return r < 0x20 || r >= 0x7f && r <= 0x9f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
+}
 
 // raw wraps an already-styled, already-width-fitted string, declaring the
 // visible width it occupies.

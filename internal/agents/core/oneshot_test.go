@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,16 @@ func TestHelperHandshake(t *testing.T) {
 		os.Stdout.WriteString("spawned\n")
 		_ = c.Wait()
 		os.Exit(0)
+	case "detacher":
+		// Starts a process that outlives it, the way a command put in the
+		// background does, and exits at once without waiting for it.
+		exe, _ := os.Executable()
+		c := exec.Command(exe, "-test.run=TestHelperHandshake", "--", "lingering", args[0])
+		detach(c) // a new session on Unix: out of the process group
+		if err := c.Start(); err != nil {
+			os.Exit(4)
+		}
+		os.Exit(0)
 	case "lingering":
 		// Proves survival: the marker only appears if this process outlives
 		// the cancel by a few seconds.
@@ -135,6 +146,21 @@ func TestCancelKillsTheWholeProcessTree(t *testing.T) {
 	time.Sleep(4 * time.Second)
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("the grandchild outlived the cancel: only the direct child was killed")
+	}
+}
+
+// TestNothingAnInvocationStartedOutlivesIt: a process the CLI left running
+// when it exited -- a command put in the background -- is ended before the
+// guard checks the files, so it cannot change one afterwards.
+func TestNothingAnInvocationStartedOutlivesIt(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "background-survived")
+	r := helperRunner(t, 30*time.Second)
+	if _, err := r.Run(context.Background(), []string{"detacher", marker}, ""); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(4 * time.Second) // the background process writes after 3s
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("a process the invocation left behind kept running after it")
 	}
 }
 

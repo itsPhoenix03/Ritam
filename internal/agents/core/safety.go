@@ -2,6 +2,8 @@ package core
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 
 	"ritam/internal/domain"
@@ -19,45 +21,223 @@ import (
 // mechanism -- Claude Code's tool permissions, Codex's sandbox -- and every
 // write-enabled agent is told the rules in its brief.
 
-// DangerousCommands are command prefixes never allowed, whatever is
-// configured. They cover POSIX shells, cmd and PowerShell.
+// DangerousCommands are commands never allowed, whatever is configured.
+// They cover POSIX shells, cmd and PowerShell. Each is the words a command
+// starts with, where "*" stands for any words in between ("find * -delete"
+// is find with -delete anywhere after it). IsDangerousCommand ignores case,
+// a program's folder and extension (/bin/rm, rm.exe), wrappers such as env
+// and nohup, and git's global options, and checks every command in a chain
+// (a && b, a | b, $(b)).
 var DangerousCommands = []string{
 	// deleting
 	"rm", "rmdir", "del", "erase", "rd", "Remove-Item", "shred", "unlink",
+	"find * -delete", "find * -exec", "find * -execdir", "find * -ok", "xargs",
+	"robocopy * /mir", "robocopy * /purge", "cipher /w", "vssadmin", "wevtutil cl",
 	// disks and the system
 	"format", "mkfs", "dd", "diskpart", "bcdedit", "fdisk", "mount", "umount",
 	"shutdown", "reboot", "halt", "poweroff", "Restart-Computer", "Stop-Computer",
 	"reg", "regedit", "Set-ItemProperty", "setx", "sc", "systemctl", "launchctl",
+	"schtasks", "at", "crontab", "wmic", "mshta", "rundll32", "regsvr32", "cscript", "wscript",
+	"Set-ExecutionPolicy", "netsh", "net user", "net localgroup",
 	// privileges and permissions
 	"sudo", "su", "runas", "chmod", "chown", "icacls", "takeown", "Set-Acl",
 	// processes
 	"kill", "pkill", "killall", "taskkill", "Stop-Process",
 	// network
-	"curl", "wget", "Invoke-WebRequest", "iwr", "Invoke-RestMethod", "irm", "ssh", "scp", "ftp", "nc",
-	// version-control history and publishing
+	"curl", "wget", "Invoke-WebRequest", "iwr", "Invoke-RestMethod", "irm", "ssh", "scp", "sftp", "ftp",
+	"nc", "ncat", "socat", "telnet", "rsync", "certutil", "bitsadmin", "Start-BitsTransfer",
+	"git clone", "git fetch", "git pull", "git ls-remote",
+	// version-control history, settings and publishing; git's settings name
+	// the hooks and programs it runs
 	"git push", "git reset", "git clean", "git rebase", "git filter-branch", "git checkout --", "git restore",
+	"git branch -d", "git branch -D", "git branch --delete", "git commit --amend", "git stash drop",
+	"git stash clear", "git reflog expire", "git update-ref", "git gc", "git prune", "git worktree remove",
+	"git config", "git -c", "git remote",
 	"npm publish", "cargo publish",
-	// installing software
-	"npm install -g", "pip install", "winget", "choco", "apt", "apt-get", "brew", "Install-Package",
+	// installing software, and running packages fetched for the occasion
+	"npm install -g", "npm install --global", "npm i -g", "npm i --global", "npx", "pnpm dlx", "yarn dlx", "bunx",
+	"pip install", "pip3 install", "python -m pip install", "python3 -m pip install", "py -m pip install",
+	"pipx", "uvx", "uv pip install", "uv tool install", "go install", "cargo install", "gem install",
+	"dotnet tool install", "winget", "choco", "scoop", "apt", "apt-get", "dnf", "yum", "pacman", "snap", "brew",
+	"Install-Package",
+	// running a string as code
+	"eval", "Invoke-Expression", "iex",
 }
 
-// IsDangerousCommand reports whether cmd starts with a refused prefix.
+// inlineCode are interpreters and shells with the options that run code
+// given on their command line (python -c "..."). No list of commands sees
+// what that code does, so these are refused too.
+var inlineCode = []struct{ programs, flags []string }{
+	{[]string{"bash", "sh", "zsh", "dash", "ksh", "fish"}, []string{"-c"}},
+	{[]string{"cmd"}, []string{"/c", "/C", "/k", "/K", "//c", "//C", "//k", "//K"}},
+	{[]string{"powershell", "pwsh"}, []string{"-c", "-C", "-command", "-Command", "-e", "-ec", "-enc",
+		"-encodedcommand", "-EncodedCommand"}},
+	{[]string{"python", "python3", "py", "pythonw"}, []string{"-c"}},
+	{[]string{"node", "bun"}, []string{"-e", "--eval", "-p", "--print"}},
+	{[]string{"deno"}, []string{"eval"}},
+	{[]string{"perl"}, []string{"-e", "-E"}},
+	{[]string{"ruby"}, []string{"-e"}},
+	{[]string{"php"}, []string{"-r"}},
+}
+
+// RefusedCommands is every refused command pattern: DangerousCommands, and
+// each interpreter with each of its inline-code options. Adapters turn them
+// into their CLI's deny rules.
+func RefusedCommands() []string {
+	out := append([]string(nil), DangerousCommands...)
+	for _, ic := range inlineCode {
+		for _, p := range ic.programs {
+			for _, f := range ic.flags {
+				out = append(out, p+" "+f)
+			}
+		}
+	}
+	return out
+}
+
+// IsDangerousCommand reports whether cmd, or any command chained in it,
+// matches a refused pattern.
+//
+// It filters the command lists people configure, and the deny rules come
+// from the same patterns; it is not by itself what keeps an agent safe. A
+// command allowed by name can still run whatever it is pointed at -- a build
+// runs the project's build files, a test runner its tests -- which is why
+// commands run in a sandbox where the CLI has one, and why the settings say
+// so where it does not.
 func IsDangerousCommand(cmd string) bool {
-	c := strings.ToLower(strings.TrimSpace(cmd))
-	for _, d := range DangerousCommands {
-		d = strings.ToLower(d)
-		if c == d || strings.HasPrefix(c, d+" ") {
+	for _, words := range commandWords(cmd) {
+		for _, r := range RefusedCommands() {
+			if matchWords(strings.Fields(r), words) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RunsAnyCode reports whether allowing cmd by name allows any code at all: a
+// bare interpreter or shell ("python", "bash"), whose allow rule covers
+// every script and every inline program. "python -m pytest" is fine.
+func RunsAnyCode(cmd string) bool {
+	for _, words := range commandWords(cmd) {
+		if len(words) == 1 && isInterpreter(words[0]) {
 			return true
 		}
 	}
 	return false
 }
 
+func isInterpreter(program string) bool {
+	for _, ic := range inlineCode {
+		if slices.Contains(ic.programs, program) {
+			return true
+		}
+	}
+	return false
+}
+
+// commandBreaks split a command line into the commands it runs. Quoting is
+// not parsed: a separator inside quotes splits too, which can only find more.
+var commandBreaks = strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n", "&", "\n",
+	"$(", "\n", "`", "\n", "(", "\n", ")", "\n", `"`, " ", "'", " ")
+
+// wrappers run the command after them.
+var wrappers = []string{"env", "command", "builtin", "exec", "nohup", "nice", "time", "timeout", "call", "start", "stdbuf"}
+
+// commandWords splits a command line into its commands, each as words with
+// its program normalised: variable assignments and wrappers (with their
+// options) dropped, the program lower-case without its folder and
+// extension, and git's global options other than -c dropped.
+func commandWords(cmd string) [][]string {
+	var out [][]string
+	for _, part := range strings.Split(commandBreaks.Replace(cmd), "\n") {
+		words := strings.Fields(part)
+		for len(words) > 0 {
+			w := programName(words[0])
+			switch {
+			case strings.Contains(words[0], "=") && !strings.HasPrefix(words[0], "-"):
+				words = words[1:] // VAR=value
+			case slices.Contains(wrappers, w):
+				words = words[1:]
+				// env -i, nice -n 5, timeout 30s, start /b
+				for len(words) > 0 && (strings.HasPrefix(words[0], "-") || isNumber(words[0]) ||
+					strings.HasPrefix(words[0], "/") && len(words[0]) <= 3) {
+					words = words[1:]
+				}
+			default:
+				words[0] = w
+				if w == "git" {
+					words = gitCommand(words)
+				}
+				out = append(out, words)
+				words = nil
+			}
+		}
+	}
+	return out
+}
+
+// programName is a program without its folder and extension: /bin/rm and
+// C:\Windows\System32\cmd.exe are rm and cmd.
+func programName(w string) string {
+	w = strings.ToLower(w)
+	if i := strings.LastIndexAny(w, `/\`); i >= 0 && i < len(w)-1 {
+		w = w[i+1:]
+	}
+	for _, ext := range []string{".exe", ".cmd", ".bat", ".com", ".ps1"} {
+		w = strings.TrimSuffix(w, ext)
+	}
+	return w
+}
+
+// gitCommand drops the options git takes before its command: git -C dir
+// push is git push. -c stays, since it can set any setting (the hooks and
+// programs git runs among them) and is refused itself.
+func gitCommand(words []string) []string {
+	i := 1
+	for i < len(words) {
+		switch w := words[i]; {
+		case w == "-c":
+			return append(words[:1:1], words[i:]...)
+		case w == "-C" || w == "--git-dir" || w == "--work-tree" || w == "--namespace" || w == "--exec-path":
+			i += 2
+		case strings.HasPrefix(w, "-"):
+			i++
+		default:
+			return append(words[:1:1], words[i:]...)
+		}
+	}
+	return words[:1]
+}
+
+func isNumber(w string) bool {
+	_, err := strconv.ParseFloat(strings.TrimRight(w, "smhd"), 64)
+	return err == nil
+}
+
+// matchWords reports whether words start with pattern, ignoring case, where
+// a "*" in pattern stands for any run of words, none included.
+func matchWords(pattern, words []string) bool {
+	if len(pattern) == 0 {
+		return true
+	}
+	if pattern[0] == "*" {
+		for i := 0; i <= len(words); i++ {
+			if matchWords(pattern[1:], words[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	return len(words) > 0 && strings.EqualFold(words[0], pattern[0]) && matchWords(pattern[1:], words[1:])
+}
+
 // SafeCommands drops refused commands from a configured allowlist, returning
-// what remains and what was dropped.
+// what remains and what was dropped: destructive commands, and bare
+// interpreters and shells, which would allow anything.
 func SafeCommands(cmds []string) (kept, dropped []string) {
 	for _, c := range cmds {
-		if IsDangerousCommand(c) {
+		if IsDangerousCommand(c) || RunsAnyCode(c) {
 			dropped = append(dropped, c)
 			continue
 		}

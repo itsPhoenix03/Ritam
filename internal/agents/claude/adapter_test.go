@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -257,9 +258,14 @@ func TestBuildArgsHonoursAllowWrites(t *testing.T) {
 			denied = argv[i+1]
 		}
 	}
-	for _, want := range []string{"Edit", "Write", "Bash(go test:*)"} {
-		if !strings.Contains(allowed, want) {
-			t.Errorf("a write-enabled agent may use %s: allowed=%q", want, allowed)
+	if !strings.Contains(allowed, "Bash(go test:*)") {
+		t.Errorf("a write-enabled agent may run its commands: allowed=%q", allowed)
+	}
+	// Edits are accepted by acceptEdits inside the workspace only; an allow
+	// rule for an edit tool would accept them anywhere.
+	for _, tool := range strings.Split(allowed, ",") {
+		if slices.Contains(writeTools[1:], tool) {
+			t.Errorf("%s allowed outright would let edits leave the workspace: %q", tool, allowed)
 		}
 	}
 	if strings.Contains(allowed, "rm -rf") {
@@ -318,10 +324,11 @@ func TestResolveReportsAMissingCLIClearly(t *testing.T) {
 func TestBuildArgsNeverCarriesThePrompt(t *testing.T) {
 	a := New("opus", config.AgentConfig{}, nil)
 	args := a.buildArgs()
-	if len(args) == 0 || args[0] != "-p" {
-		t.Fatalf("expected print mode first, got %v", args)
+	i := slices.Index(args, "-p")
+	if i < 0 || i+1 >= len(args) {
+		t.Fatalf("expected print mode, got %v", args)
 	}
-	if args[1] != "--output-format" {
-		t.Errorf("-p must not be followed by a positional prompt, got %q", args[1])
+	if args[i+1] != "--output-format" {
+		t.Errorf("-p must not be followed by a positional prompt, got %q", args[i+1])
 	}
 }

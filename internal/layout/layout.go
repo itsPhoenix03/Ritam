@@ -83,6 +83,9 @@ func (h Home) ArchivesDir() string { return filepath.Join(h.Root, "archives") }
 // ModelsFile records what was learned about models on this account.
 func (h Home) ModelsFile() string { return filepath.Join(h.Root, "models.json") }
 
+// SpendFile records what agents spent each day, over every project.
+func (h Home) SpendFile() string { return filepath.Join(h.Root, "spend.json") }
+
 // CanaryDir is where sandbox checks try to write.
 func (h Home) CanaryDir() string { return filepath.Join(h.Root, "canary") }
 
@@ -102,6 +105,10 @@ func ClearCanary(h Home) error {
 	}
 	return os.MkdirAll(dir, 0o700)
 }
+
+// RejectedDir keeps the versions of ritam's own files that an agent wrote
+// and ritam put back, for the human to read.
+func (h Home) RejectedDir() string { return filepath.Join(h.Root, "rejected") }
 
 // OwnWorkspace is where agents work when the app is launched at a global
 // location (the home folder, a drive root) and that is allowed.

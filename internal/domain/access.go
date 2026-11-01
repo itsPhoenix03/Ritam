@@ -96,5 +96,6 @@ func ParseAccessLevel(s string) (AccessLevel, error) {
 // settings say. The commands behind it are core.DangerousCommands.
 var AlwaysBlocked = []string{
 	"deleting files", "system settings", "permissions", "killing processes",
-	"network access", "installing software", "rewriting git history",
+	"network access", "installing software", "rewriting git history", "git settings",
+	"inline code (python -c, bash -c)",
 }

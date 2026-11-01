@@ -28,8 +28,8 @@ func TestTheAccessLevelDecidesWhatBashMayRun(t *testing.T) {
 	a.UseAccess(acc)
 
 	allowed, denied := toolFlags(a.buildArgs())
-	if strings.Contains(allowed, "Bash") || !strings.Contains(allowed, "Edit") {
-		t.Errorf("level 0: edits, no commands: %q", allowed)
+	if strings.Contains(allowed, "Bash") || strings.Contains(denied, "Edit,") {
+		t.Errorf("level 0: edits, no commands: allowed %q denied %q", allowed, denied)
 	}
 
 	// Claude Code is not sandboxed, so at level 1 it still runs nothing.
@@ -38,7 +38,13 @@ func TestTheAccessLevelDecidesWhatBashMayRun(t *testing.T) {
 		t.Errorf("level 1: an unsandboxed agent may not build: %q", allowed)
 	}
 
+	// With no sandbox (Claude Code on Windows) it runs nothing at level 2
+	// either, unless the global settings allow it.
 	acc.Set(domain.AccessBuildAndTest, []string{"cmake", "ctest"})
+	if allowed, _ = toolFlags(a.buildArgs()); strings.Contains(allowed, "Bash") {
+		t.Errorf("level 2, unsandboxed agents not allowed: no commands: %q", allowed)
+	}
+	acc.SetAllowUnsandboxed(true)
 	allowed, _ = toolFlags(a.buildArgs())
 	if !strings.Contains(allowed, "Bash(cmake:*)") || !strings.Contains(allowed, "Bash(ctest:*)") || strings.HasSuffix(allowed, ",Bash") {
 		t.Errorf("level 2: the listed commands only: %q", allowed)
@@ -49,7 +55,8 @@ func TestTheAccessLevelDecidesWhatBashMayRun(t *testing.T) {
 	if !strings.HasSuffix(allowed, ",Bash") {
 		t.Errorf("level 3: any command: %q", allowed)
 	}
-	for _, want := range []string{"Bash(rm:*)", "Bash(curl:*)", "Bash(git push:*)", "Bash(taskkill:*)"} {
+	for _, want := range []string{"Bash(rm:*)", "Bash(curl:*)", "Bash(git push:*)", "Bash(taskkill:*)",
+		"Bash(python -c:*)", "Bash(find * -delete*)", "Bash(cmd //c:*)", "Bash(git -C:*)", "Bash(git config:*)"} {
 		if !strings.Contains(denied, want) {
 			t.Errorf("level 3 still denies %s: %q", want, denied)
 		}

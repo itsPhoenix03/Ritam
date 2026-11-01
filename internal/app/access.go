@@ -11,6 +11,7 @@ import (
 	"ritam/internal/agents/core"
 	"ritam/internal/config"
 	"ritam/internal/domain"
+	"ritam/internal/layout"
 	"ritam/internal/ports"
 )
 
@@ -35,6 +36,11 @@ type accessControl struct {
 	held string
 	// saveGrant records an approval on this machine; nil in tests.
 	saveGrant func(config.AccessConfig) error
+	// guard learns of the writes to the settings file and the approvals,
+	// so they are not taken for an agent's edit.
+	guard *core.FileGuard
+	// projectsFile is where saveGrant records approvals.
+	projectsFile string
 	// publish records an event; openTasks lists the tasks not yet finished.
 	publish   func(domain.Event)
 	openTasks func(context.Context) []domain.TaskID
@@ -47,6 +53,9 @@ func newAccessControl(cfg *config.Config, ws config.Workspace) *accessControl {
 	granted, held := cfg.Trusted()
 	level := domain.AccessLevel(granted.Level)
 	c := &accessControl{file: cfg.Runtime.ProjectConfig, held: held, saveGrant: cfg.Runtime.SaveGrant}
+	if cfg.Runtime.HomeDir != "" {
+		c.projectsFile = layout.Home{Root: cfg.Runtime.HomeDir}.ProjectsFile()
+	}
 	if ws.Global {
 		level = domain.AccessFilesOnly
 		c.held = ""
@@ -54,6 +63,9 @@ func newAccessControl(cfg *config.Config, ws config.Workspace) *accessControl {
 			"inside a project folder to choose more"
 	}
 	c.live = core.NewAccess(level, granted.Commands)
+	// Only the global settings decide this: RestrictProject took any
+	// project's say away.
+	c.live.SetAllowUnsandboxed(cfg.Access.AllowUnsandboxed && cfg.Runtime.GlobalAccess.AllowUnsandboxed)
 	return c
 }
 
@@ -62,7 +74,8 @@ func (c *accessControl) info() ports.AccessInfo {
 	level, cmds := c.live.Get()
 	_, blocked := core.SafeCommands(cmds)
 	return ports.AccessInfo{Level: level, Commands: cmds, Blocked: blocked, Locked: c.locked,
-		HeldBack: c.held, File: c.file, Builders: c.live.Builders(), Missing: missingPrograms(cmds)}
+		HeldBack: c.held, File: c.file, Builders: c.live.Builders(), Missing: missingPrograms(cmds),
+		Unsandboxed: c.live.Unsandboxed(), AllowUnsandboxed: c.live.AllowsUnsandboxed()}
 }
 
 // set changes the level and the command list.
@@ -74,7 +87,9 @@ func (c *accessControl) set(ctx context.Context, in ports.AccessChange) (ports.A
 	}
 	cmds := core.CleanCommands(in.Commands)
 	if _, blocked := core.SafeCommands(cmds); len(blocked) > 0 {
-		return c.info(), fmt.Errorf("%s: always blocked, at every level", strings.Join(blocked, ", "))
+		return c.info(), fmt.Errorf("%s: always blocked, at every level (destructive, or a bare interpreter "+
+			"or shell that would run anything: name the tool instead, such as python -m pytest)",
+			strings.Join(blocked, ", "))
 	}
 	from, before := c.live.Get()
 	if in.Level != from && c.locked != "" {
@@ -87,12 +102,12 @@ func (c *accessControl) set(ctx context.Context, in ports.AccessChange) (ports.A
 	// says more than was approved here is held back at the next start.
 	approved := config.AccessConfig{Level: int(in.Level), Commands: cmds}
 	if c.saveGrant != nil {
-		if err := c.saveGrant(approved); err != nil {
+		if err := c.guard.Write(c.projectsFile, func() error { return c.saveGrant(approved) }); err != nil {
 			return c.info(), err
 		}
 	}
 	if c.file != "" {
-		if err := config.SaveAccess(c.file, approved); err != nil {
+		if err := c.guard.Write(c.file, func() error { return config.SaveAccess(c.file, approved) }); err != nil {
 			return c.info(), err
 		}
 	}
@@ -102,6 +117,9 @@ func (c *accessControl) set(ctx context.Context, in ports.AccessChange) (ports.A
 	summary := "access commands: " + listOrNone(cmds)
 	if in.Level != from {
 		summary = fmt.Sprintf("access level %s -> %s", from, in.Level)
+		if w := unsandboxedWarning(in.Level, c.live.Unsandboxed(), c.live.AllowsUnsandboxed()); w != "" {
+			summary += "; " + w
+		}
 	}
 	details := map[string]string{"level": fmt.Sprint(int(in.Level)), "from": fmt.Sprint(int(from)),
 		"commands": strings.Join(cmds, ", ")}
@@ -125,10 +143,37 @@ func (c *accessControl) recordStart(t *domain.Task) {
 	}
 	level, cmds := c.live.Get()
 	builds := c.whoBuilds(t)
+	summary := fmt.Sprintf("access level %s; builder %s: %s", level, domain.BuilderLabel(t.Builder), builds)
+	if w := unsandboxedWarning(level, c.live.Unsandboxed(append([]domain.AgentID{t.AuthorityAgent}, t.Participants...)...),
+		c.live.AllowsUnsandboxed()); w != "" {
+		summary += "; " + w
+	}
 	c.publish(domain.Event{Type: domain.EvtAccessLevel, TaskID: t.ID,
-		Summary: fmt.Sprintf("access level %s; builder %s: %s", level, domain.BuilderLabel(t.Builder), builds),
+		Summary: summary,
 		Details: map[string]string{"level": fmt.Sprint(int(level)), "commands": strings.Join(cmds, ", "),
 			"builder": t.Builder, "builds": builds}})
+}
+
+// unsandboxedWarning names the agents that, at the any-command level, run
+// whatever they like directly on this machine -- or, when unsandboxed
+// agents are not allowed, the agents that run no commands at levels 2 and 3
+// for want of a sandbox; "" when neither applies.
+func unsandboxedWarning(level domain.AccessLevel, ids []domain.AgentID, allowed bool) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	names := make([]string, len(ids))
+	for i, id := range ids {
+		names[i] = string(id)
+	}
+	switch {
+	case !allowed && level >= domain.AccessBuildAndTest:
+		return strings.Join(names, ", ") + " have no sandbox, so they run no commands and ask an agent that has one, " +
+			"or the human (access.allowUnsandboxed in the global settings changes this)"
+	case allowed && level == domain.AccessAnyCommand:
+		return "WARNING: " + strings.Join(names, ", ") + " may run any command with no sandbox, directly on this machine"
+	}
+	return ""
 }
 
 // whoBuilds says in words who builds on task t.

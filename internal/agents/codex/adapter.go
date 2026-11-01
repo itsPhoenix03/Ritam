@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -122,6 +123,10 @@ func New(id domain.AgentID, cfg config.AgentConfig, log *logging.Logger) *CodexA
 	})
 	return a
 }
+
+// UseGuard has ritam's own files checked after every CLI invocation, and
+// put back if the agent changed them (see core.FileGuard).
+func (a *CodexAdapter) UseGuard(g *core.FileGuard) { a.runner.Guard = g }
 
 // UseSessions points the adapter at the shared, persistent session registry.
 func (a *CodexAdapter) UseSessions(r *core.SessionRegistry) {
@@ -257,6 +262,15 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 	key := core.SessionKeyFor(t, a.id)
 	sess, resuming := a.sessions.Get(key)
 	resuming = resuming && sess.Kind == domain.AgentKindCodex && sess.ID != ""
+	// `exec resume` runs where the thread was made, so a thread recorded
+	// outside the workspace is not resumed: a new one starts here instead.
+	outside := resuming && !sess.ResumableIn(core.WorkspaceRoot(a.cfg))
+	if outside {
+		a.log.ForAgent(a.id).Warn("codex thread was made outside the workspace; starting a new one",
+			"thread", sess.ID, "workingDir", sess.WorkingDir)
+		a.activity.Emit(ports.ActivityStatus, "previous session is outside the workspace; re-briefing in a new one")
+		resuming = false
+	}
 
 	res, reply, readErr, runErr, thread := a.runTurn(ctx, t, m, sess, resuming)
 
@@ -270,7 +284,10 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 		if thread != "" {
 			sess.Replace(thread, core.SessionRebuilt)
 		}
-	} else if !resuming && thread != "" {
+	} else if outside && thread != "" {
+		sess.Replace(thread, core.SessionRebuilt)
+		sess.WorkingDir = core.ResolveWorkingDir(a.cfg.WorkingDir)
+	} else if !resuming && !outside && thread != "" {
 		sess = core.NewSession(key, domain.AgentKindCodex, thread,
 			core.ResolveWorkingDir(a.cfg.WorkingDir), a.cfg.Model)
 	}
@@ -393,29 +410,30 @@ func isMissingSession(err error, res *core.OneShotResult) bool {
 	return res != nil && strings.Contains(res.Stderr, "no rollout found")
 }
 
-// sandboxEscapeFlags defeat the read-only sandbox or the approval policy. They
-// are refused in configured Args regardless of ordering.
+// allowedFlags are the only flags configured args may pass to Codex. The
+// orchestrator alone decides the sandbox, the approval policy, the working
+// root, extra writable folders, the profile and the reply file, so every
+// other flag is refused whatever its order: a later flag wins, so placing
+// the sandbox flag first is not by itself a defence.
 //
-// This gap was found by a Codex agent auditing this very function through the
-// orchestrator: extra args were appended after `--sandbox read-only`, so a
-// config could append `--dangerously-bypass-approvals-and-sandbox` and a
-// nominally read-only agent would run unsandboxed. A later flag wins, so
-// placing the sandbox flag first is not by itself a defence.
-var sandboxEscapeFlags = []string{
-	"--dangerously-bypass-approvals-and-sandbox",
-	"--dangerously-bypass-hook-trust",
-	"--approve-for-me",
-	"--sandbox",
-	"-s",
-	"--cd",
-	"-C",
-	"--output-last-message",
-	"-o",
-}
+// It was a list of refused flags once, and a Codex agent auditing this
+// function found a gap in it (--dangerously-bypass-approvals-and-sandbox
+// appended after --sandbox read-only); a later review found more (--yolo,
+// --add-dir, --profile, and -sdanger-full-access, a short flag with its
+// value attached). An allowlist does not depend on knowing them all.
+var allowedFlags = []string{"-c", "--config", "--enable", "--disable", "--color", "-m", "--model", "-i", "--image"}
 
-// safeExtraArgs drops configured arguments that would change the sandbox, the
-// approval policy, the working root or the reply file. Everything the adapter
-// relies on for containment is orchestrator-controlled, not config-controlled.
+// allowedConfigKeys are the settings a configured -c override may change:
+// the model and how it reasons. Others can reach the sandbox, the approval
+// policy, the model provider (and so where the API key is sent), the
+// programs Codex runs on events, the shell environment or the instructions.
+var allowedConfigKeys = []string{"model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity",
+	"hide_agent_reasoning", "show_raw_agent_reasoning", "model_context_window", "model_max_output_tokens",
+	"model_auto_compact_token_limit", "project_doc_max_bytes"}
+
+// safeExtraArgs keeps the configured arguments ritam allows (allowedFlags,
+// and -c overrides of allowedConfigKeys). Everything the adapter relies on
+// for containment is orchestrator-controlled, not config-controlled.
 //
 // Bare positional arguments are dropped too, whatever they are. Codex reads
 // the first positional as the prompt, so a stray token — including the
@@ -444,16 +462,9 @@ func (a *CodexAdapter) safeExtraArgs() []string {
 		// directory) differ only in case, and a case-insensitive match once
 		// silently dropped every configured `-c key=value`.
 		name, inline, hasInline := strings.Cut(arg, "=")
-		blocked := false
-		for _, bad := range sandboxEscapeFlags {
-			if name == bad {
-				blocked = true
-				break
-			}
-		}
-		if blocked {
+		if !slices.Contains(allowedFlags, name) {
 			a.log.ForAgent(a.id).Warn(
-				"ignoring configured argument: it would override the orchestrator's sandbox or output settings",
+				"ignoring configured argument: only the model, its reasoning and features may be configured",
 				"argument", name)
 			if takesValue(i, hasInline) {
 				i++ // drop its value too
@@ -461,7 +472,7 @@ func (a *CodexAdapter) safeExtraArgs() []string {
 			continue
 		}
 
-		// A config override can reach the same settings as the blocked
+		// A config override can reach the same settings as the refused
 		// flags, so the setting it names is checked as well.
 		if name == "-c" || name == "--config" {
 			val := inline
@@ -474,7 +485,7 @@ func (a *CodexAdapter) safeExtraArgs() []string {
 			}
 			if unsafeConfigOverride(val) {
 				a.log.ForAgent(a.id).Warn(
-					"ignoring configured override: it would change the orchestrator's sandbox or approval policy",
+					"ignoring configured override: only the model and its reasoning may be configured",
 					"override", val)
 				continue
 			}
@@ -491,14 +502,11 @@ func (a *CodexAdapter) safeExtraArgs() []string {
 	return out
 }
 
-// unsafeConfigOverride reports whether a `-c key=value` override would change
-// the sandbox or the approval policy, which the orchestrator alone decides.
+// unsafeConfigOverride reports whether a `-c key=value` override names a
+// setting outside allowedConfigKeys.
 func unsafeConfigOverride(kv string) bool {
 	key, _, _ := strings.Cut(kv, "=")
-	key = strings.ToLower(strings.TrimSpace(key))
-	return strings.HasPrefix(key, "sandbox") ||
-		strings.HasPrefix(key, "approval") ||
-		strings.HasPrefix(key, "dangerously")
+	return !slices.Contains(allowedConfigKeys, strings.TrimSpace(key))
 }
 
 // buildArgs assembles the CLI invocation. The prompt is not included: it is
@@ -528,6 +536,7 @@ func (a *CodexAdapter) buildArgs(lastMessageFile string) []string {
 		"--output-last-message", lastMessageFile,
 	)
 	args = append(args, writeConfinement(a.cfg.AllowWrites)...)
+	args = append(args, isolation...)
 	if a.cfg.WorkingDir != "" {
 		args = append(args, "--cd", a.cfg.WorkingDir)
 	}
@@ -549,6 +558,11 @@ func writeConfinement(allowWrites bool) []string {
 		"-c", "sandbox_workspace_write.network_access=false",
 	}
 }
+
+// isolation keeps the user's own Codex setup out of the agent's turn: the MCP
+// servers in ~/.codex/config.toml would give it tools ritam never granted.
+// The override comes after any configured one, so it wins.
+var isolation = []string{"-c", "mcp_servers={}"}
 
 // buildResumeArgs assembles `codex exec resume` for an existing thread.
 //
@@ -573,6 +587,7 @@ func (a *CodexAdapter) buildResumeArgs(thread, lastMessageFile string) []string 
 		"-c", fmt.Sprintf("sandbox_mode=%q", sandbox),
 	)
 	args = append(args, writeConfinement(a.cfg.AllowWrites)...)
+	args = append(args, isolation...)
 	return append(args,
 		"--output-last-message", lastMessageFile,
 		thread,

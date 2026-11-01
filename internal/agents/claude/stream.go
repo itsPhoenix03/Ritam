@@ -72,6 +72,9 @@ func consumeStreamLine(line string, act *core.ActivityEmitter) (result string, d
 
 	case "result":
 		act.Flush()
+		if env.Subtype == budgetStopped {
+			return "", true, errBudgetStopped
+		}
 		if env.IsError || env.Subtype == "error" {
 			return "", true, fmt.Errorf("claude-code adapter: CLI reported an error: %s",
 				truncate(env.Result, 300))

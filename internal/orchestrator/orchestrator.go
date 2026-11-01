@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,12 @@ type Deps struct {
 	// RequireHumanApproval holds a task at AWAITING_DECISION until the human
 	// approves or rejects the authority agent's FINAL_DECISION.
 	RequireHumanApproval bool
+	// Daily, when set, totals what agents spend each day across every task;
+	// a task that takes the day over MaxDailyCostUSD or MaxDailyTokens is
+	// paused (zero disables each).
+	Daily           ports.SpendLedger
+	MaxDailyCostUSD float64
+	MaxDailyTokens  int64
 }
 
 // Orchestrator coordinates tasks, agents, messages, knowledge and decisions.
@@ -53,6 +60,9 @@ type Orchestrator struct {
 	Decisions *decisions.Manager
 
 	log                  *logging.Logger
+	daily                ports.SpendLedger
+	maxDailyCostUSD      float64
+	maxDailyTokens       int64
 	idleTimeout          time.Duration
 	requireHumanApproval bool
 	sem                  chan struct{}
@@ -99,6 +109,9 @@ func New(d Deps) *Orchestrator {
 		Knowledge:            d.Knowledge,
 		Decisions:            d.Decisions,
 		log:                  log,
+		daily:                d.Daily,
+		maxDailyCostUSD:      d.MaxDailyCostUSD,
+		maxDailyTokens:       d.MaxDailyTokens,
 		idleTimeout:          d.IdleTimeout,
 		requireHumanApproval: d.RequireHumanApproval,
 		sem:                  make(chan struct{}, d.MaxConcurrentTasks),
@@ -646,8 +659,28 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 	return false, nil
 }
 
-// recordUsage adds one CLI turn's reported usage to the task and pauses if a
-// spending ceiling has been reached.
+// overDailyLimit adds a turn's usage to the day's spending and reports
+// whether the day is over its limit.
+func (o *Orchestrator) overDailyLimit(u ports.Usage) (string, bool) {
+	if o.daily == nil {
+		return "", false
+	}
+	cost, tokens, err := o.daily.Add(u)
+	if err != nil {
+		o.log.Warn("recording the day's spending", "error", err)
+		return "", false
+	}
+	switch {
+	case o.maxDailyCostUSD > 0 && cost >= o.maxDailyCostUSD:
+		return fmt.Sprintf("%s ($%.2f of $%.2f)", domain.PauseReasonDailyBudget, cost, o.maxDailyCostUSD), true
+	case o.maxDailyTokens > 0 && tokens >= o.maxDailyTokens:
+		return fmt.Sprintf("%s (%d of %d tokens)", domain.PauseReasonDailyBudget, tokens, o.maxDailyTokens), true
+	}
+	return "", false
+}
+
+// recordUsage adds one CLI turn's reported usage to the task, and to the
+// day's spending, and pauses if a spending ceiling has been reached.
 func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
 	u := *out.Usage
 	t, err := o.Tasks.AddUsage(ctx, id, out.AgentID, u)
@@ -662,7 +695,12 @@ func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out po
 			"cacheReadTokens": fmt.Sprint(u.CacheReadTokens),
 			"taskCostUSD":     fmt.Sprintf("%.6f", t.CostUSD),
 		})
-	if reason, over := LimitExceeded(t); over && strings.HasPrefix(reason, domain.PauseReasonBudget) {
+	reason, over := LimitExceeded(t)
+	over = over && strings.HasPrefix(reason, domain.PauseReasonBudget)
+	if r, ok := o.overDailyLimit(u); ok && !over {
+		reason, over = r, true
+	}
+	if over {
 		o.Events.emit(ctx, domain.EvtLimitReached, id, out.AgentID, reason, map[string]string{
 			"costUSD": fmt.Sprintf("%.4f", t.CostUSD),
 			"tokens":  fmt.Sprint(t.InputTokens + t.OutputTokens),
@@ -1966,6 +2004,24 @@ func (o *Orchestrator) AgentInUse(id domain.AgentID) bool {
 		}
 	}
 	return false
+}
+
+// TasksOf lists the running tasks agent id takes part in.
+func (o *Orchestrator) TasksOf(id domain.AgentID) []domain.TaskID {
+	o.mu.Lock()
+	running := make([]domain.TaskID, 0, len(o.running))
+	for t := range o.running {
+		running = append(running, t)
+	}
+	o.mu.Unlock()
+	var out []domain.TaskID
+	for _, tid := range running {
+		if t, err := o.Tasks.Get(context.Background(), tid); err == nil && t.HasParticipant(id) {
+			out = append(out, tid)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Cancel terminates a task. The human can always intervene, whichever agent

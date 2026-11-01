@@ -65,7 +65,7 @@ func (tm *Team) declaresSandbox(provider string) bool {
 	}
 	ac := templateFor(tm.cfg, provider)
 	ac.AllowWrites = true
-	ad, _, err := buildAdapter("sandbox-check", ac, domain.RoleImplementer, false, nil, nil, tm.log)
+	ad, _, err := buildAdapter("sandbox-check", ac, domain.RoleImplementer, false, nil, nil, nil, tm.log)
 	return err == nil && runsInSandbox(ad)
 }
 
@@ -168,7 +168,7 @@ func (tm *Team) canaryCLI(ctx context.Context, provider, model string) (bool, st
 	if err != nil {
 		return false, "", err
 	}
-	ad, _, err := buildAdapter("sandbox-check", ac, domain.RoleImplementer, false, nil, nil, tm.log)
+	ad, _, err := buildAdapter("sandbox-check", ac, domain.RoleImplementer, false, nil, nil, nil, tm.log)
 	if err != nil {
 		return false, "", err
 	}

@@ -264,6 +264,7 @@ const (
 	PauseReasonStalled     = "STALLED: agents exchanged messages without making progress"
 	PauseReasonMaxTotal    = "limit reached: maxTotalMessages over the task's life"
 	PauseReasonBudget      = "limit reached: spending budget"
+	PauseReasonDailyBudget = "limit reached: today's spending on this machine"
 	PauseReasonHuman       = "paused by human"
 	// PauseReasonInterrupted marks a task that was running when ritam last
 	// exited. Its agents' in-flight turns were lost; resuming tells them so.

@@ -343,7 +343,7 @@ func combine(msgs []*domain.Message) *domain.Message {
 		if note := strings.TrimSpace(m.Metadata[ports.ThreadMetadataKey]); note != "" {
 			fmt.Fprintf(&b, "(This is part of a question from the human: %s. If you can answer it, answer the human directly.)\n", note)
 		}
-		b.WriteString(strings.TrimSpace(m.Content))
+		b.WriteString(ports.QuoteFraming(strings.TrimSpace(m.Content)))
 		b.WriteString("\n\n")
 		for k, v := range m.Metadata {
 			switch k {

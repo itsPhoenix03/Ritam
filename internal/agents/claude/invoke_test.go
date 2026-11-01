@@ -27,6 +27,10 @@ const fakeReply = `{"type":"result","subtype":"success","is_error":false,` +
 	`"result":"@@ORCH type=ANSWER to=human\nok"}` + "\n"
 
 func TestMain(m *testing.M) {
+	if os.Getenv(sleepHelperEnv) == "1" {
+		time.Sleep(2 * time.Minute)
+		os.Exit(0)
+	}
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		runFakeCLI(mode)
 		os.Exit(0)
@@ -61,6 +65,19 @@ func runFakeCLI(mode string) {
 		runFakeSessionCLI()
 	case "costly":
 		runFakeCostlyCLI()
+	case "killedmidway":
+		// A turn that dies after streaming some calls, before any result.
+		_ = readAll(os.Stdin)
+		_, _ = os.Stdout.WriteString(killedStream)
+		os.Exit(1)
+	case "overbudget":
+		// What the real CLI does when --max-budget-usd stops a turn: an
+		// error result that still carries the cost, and a non-zero exit.
+		_ = readAll(os.Stdin)
+		fakeLog("args:" + strings.Join(os.Args[1:], " "))
+		_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"error_max_budget_usd","is_error":true,` +
+			`"total_cost_usd":0.45,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n")
+		os.Exit(1)
 	case "silent":
 		_ = readAll(os.Stdin)
 		_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":false,"result":""}` + "\n")
@@ -386,5 +403,37 @@ func TestATurnIsChargedOnlyItsOwnCostAndReportedAfterItsReply(t *testing.T) {
 		if u.CacheReadTokens != 500 || u.InputTokens != 10 {
 			t.Errorf("turn %d tokens: %+v", turn, *u)
 		}
+	}
+}
+
+// TestATurnStopsAtWhatIsLeftOfTheBudgetAndPausesNotFails: each turn may
+// spend only what is left of the task's budget; a turn the CLI stops there
+// reports what it spent (which pauses the task) and is not a failure.
+func TestATurnStopsAtWhatIsLeftOfTheBudgetAndPausesNotFails(t *testing.T) {
+	a, cliLog, _ := fakeAdapter(t, "overbudget")
+	tk := testTask()
+	tk.Limits.MaxCostUSD, tk.CostUSD = 1, 0.6
+	if err := a.SendMessage(context.Background(), tk, msg("Go on.")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(10 * time.Second)
+	for got := false; !got; {
+		select {
+		case o := <-a.Outbound():
+			if o.Err != nil {
+				t.Fatalf("reaching the spending limit must not fail the agent: %v", o.Err)
+			}
+			if o.Usage != nil {
+				if o.Usage.CostUSD != 0.45 {
+					t.Errorf("the turn's cost must still be reported: %+v", o.Usage)
+				}
+				got = true
+			}
+		case <-deadline:
+			t.Fatal("no usage reported")
+		}
+	}
+	if log := readFile(cliLog); !strings.Contains(log, "--max-budget-usd 0.4000") {
+		t.Errorf("the turn must be capped at what is left of the budget: %s", log)
 	}
 }

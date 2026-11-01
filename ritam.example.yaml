@@ -64,9 +64,15 @@ orchestrator:
   maxTotalMessages: 1000
   # Spending ceilings from the usage the CLIs report. 0 disables each.
   # Claude reports cost; Codex reports tokens only, so only maxTaskTokens
-  # bounds Codex spending.
+  # bounds Codex spending. Tokens count fresh input and output, not what is
+  # re-read from the cache. Each Claude turn is also capped at what is left
+  # of maxTaskCostUSD, so a task stops within one API call of it.
   maxTaskCostUSD: 10
-  maxTaskTokens: 0
+  maxTaskTokens: 5000000
+  # The same over a whole day, every task and project on this machine
+  # together: each task's budget is its own, and a new task starts afresh.
+  maxDailyCostUSD: 50
+  maxDailyTokens: 25000000
   # Hold a task at AWAITING_DECISION until the human approves or rejects the
   # authority agent's FINAL_DECISION.
   requireHumanApproval: false
@@ -130,11 +136,15 @@ tui:
 # The workspace: where agents work, and the only place an agent with
 # allowWrites may write. It is the folder holding this file unless set here.
 # Launched at a global location (your home folder, a drive root, a system
-# folder), agents are read-only; allowGlobal lets them write, but only into
-# ritam's own folder (~/.ritam/workspace). Nothing is written to temp folders.
+# folder), agents work read-only in ritam's own folder (~/.ritam/workspace);
+# allowGlobal lets them write there. Nothing is written to temp folders.
+# confineReads keeps Claude Code's file tools reading inside the agent's
+# working folder (always on after a global launch); off, agents may read
+# anywhere you can.
 workspace:
   root: ""
   allowGlobal: false
+  confineReads: false
 
 # What agents may run beyond editing files, chosen per workspace. Set it from
 # the TUI's settings tab (:settings), which saves it to .ritam/ritam.yaml;
@@ -155,5 +165,9 @@ workspace:
 access:
   level: 0
   commands: []
+  # Agents with no verified sandbox (Claude Code on native Windows) run no
+  # commands at any level unless this is true; they ask an agent that has a
+  # sandbox, or you. Only honoured in the global settings in the app home.
+  # allowUnsandboxed: false
   #  - cmake
   #  - ctest

@@ -62,19 +62,43 @@ func listOrNone(cmds []string) string {
 	return strings.Join(cmds, ", ")
 }
 
-// accessRisk says plainly what raising to a level hands the agents.
-func accessRisk(l domain.AccessLevel, cmds []string) string {
+// unsandboxedRunners are the agents that would run commands with no
+// sandbox: none unless the global settings allow it.
+func unsandboxedRunners(a ports.AccessInfo) []domain.AgentID {
+	if !a.AllowUnsandboxed {
+		return nil
+	}
+	return a.Unsandboxed
+}
+
+// accessRisk says plainly what raising to a level hands the agents, naming
+// those that would run commands with no sandbox.
+func accessRisk(l domain.AccessLevel, cmds []string, unsandboxed []domain.AgentID) string {
 	list := "nothing (no commands listed yet)"
 	if len(cmds) > 0 {
 		list = strings.Join(cmds, ", ")
 	}
+	bare := ""
+	if len(unsandboxed) > 0 {
+		bare = joinAgentIDs(unsandboxed)
+	}
 	switch l {
 	case domain.AccessSandboxedBuilder:
-		return "agents whose CLI runs in a sandbox (Codex) will run: " + list
+		return "agents whose CLI runs in a verified sandbox will run: " + list
 	case domain.AccessBuildAndTest:
-		return "every agent will run: " + list + "; Claude Code runs them with no sandbox, directly on this machine"
+		// A build runs the project's build files and a test runner its tests,
+		// and the agents edit both: allowing one runs code they wrote.
+		const runs = "; a build or test runs the project's own build files and tests, which the agents can edit"
+		if bare != "" {
+			return "every agent will run: " + list + runs + "; " + bare + " run them with no sandbox, directly on this machine"
+		}
+		return "every agent will run: " + list + runs
 	case domain.AccessAnyCommand:
-		return "agents may run any command but the always-blocked ones; Claude Code has no sandbox here, so this means you trust these agents"
+		if bare != "" {
+			return "agents may run any command but the always-blocked ones; " + bare +
+				" have no sandbox, so this means you trust them with this machine"
+		}
+		return "agents may run any command but the always-blocked ones, inside their sandbox"
 	}
 	return "agents edit files and run read-only commands"
 }
@@ -98,7 +122,7 @@ func (m Model) chooseLevel(l domain.AccessLevel) (Model, tea.Cmd) {
 		m.mode = modePrompt
 		m.inputSelected = false
 		m.prompt = promptState{action: ActionSetAccess, access: l,
-			label: fmt.Sprintf("raise access to level %s? %s. Type yes to confirm:", l, accessRisk(l, m.access.Commands))}
+			label: fmt.Sprintf("raise access to level %s? %s. Type yes to confirm:", l, accessRisk(l, m.access.Commands, unsandboxedRunners(m.access)))}
 		return m, nil
 	}
 	m.setStatus("lowering access to level %s...", l)
@@ -153,11 +177,24 @@ func (m Model) moveLevelSelection(delta int) Model {
 }
 
 // accessChip is the header's access chip, nothing until the settings load.
+// At the any-command level it names the agents that run commands with no
+// sandbox.
 func (m Model) accessChip() line {
 	if !m.accessLoaded {
 		return nil
 	}
+	if m.access.Level == domain.AccessAnyCommand && len(unsandboxedRunners(m.access)) > 0 {
+		return line{m.accessCell(), st(" no sandbox: "+joinAgentIDs(m.access.Unsandboxed)+" ", badgeErrStyle), txt(" ")}
+	}
 	return line{m.accessCell(), txt(" ")}
+}
+
+func joinAgentIDs(ids []domain.AgentID) string {
+	names := make([]string, len(ids))
+	for i, id := range ids {
+		names[i] = string(id)
+	}
+	return strings.Join(names, ", ")
 }
 
 // accessCell shows the access level, coloured by how much it allows.
@@ -254,9 +291,27 @@ func (m Model) settingsLines(inner int) ([]line, []int) {
 
 	add(blank(), -1)
 	add(line{st("RISK", sectionHeaderStyle)}, -1)
-	para("Codex runs its commands in a sandbox: writes stay inside the workspace, the network is off.", dimStyle)
-	para("Claude Code has no sandbox here. At level 2 it runs the listed commands directly on this machine, "+
-		"and level 3 means \"I trust these agents\": the blocked list is a deny list, not a sandbox.", warnStyle)
+	para("Codex runs its commands in a sandbox: writes stay inside the workspace, the network is off. "+
+		"Claude Code does too on macOS and Linux, once the sandbox check confirms it. Codex has no way to "+
+		"edit files without running commands, so even at level 0 a Codex agent that may write runs them, "+
+		"in that sandbox.", dimStyle)
+	para("A listed build or test command runs the project's build files and tests, which the agents can edit: "+
+		"allowing one lets an agent run code it wrote. The always-blocked list is matched on the command, "+
+		"so it cannot see inside a script; only a sandbox can.", dimStyle)
+	if len(a.Unsandboxed) > 0 && !a.AllowUnsandboxed {
+		para(joinAgentIDs(a.Unsandboxed)+" have no sandbox (Claude Code has none on native Windows), so at no "+
+			"level do they run commands: they ask an agent that has a sandbox, or you. To let them run commands "+
+			"directly on this machine at levels 2 and 3, set access.allowUnsandboxed: true in your global settings "+
+			"(a project's settings cannot).", warnStyle)
+	}
+	if len(a.Unsandboxed) > 0 && a.AllowUnsandboxed {
+		para("Level 3 means \"I trust these agents\" for "+joinAgentIDs(a.Unsandboxed)+": they have no sandbox "+
+			"(Claude Code has none on Windows), so the blocked list is a deny list, not a sandbox. At level 2 "+
+			"they run the listed commands directly on this machine.", warnStyle)
+		if a.Level == domain.AccessAnyCommand {
+			para("Level 3 is on: "+joinAgentIDs(a.Unsandboxed)+" may run any command, unsandboxed.", errorStyle)
+		}
+	}
 	return out, owners
 }
 

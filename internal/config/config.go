@@ -56,6 +56,18 @@ type AgentConfig struct {
 	// reply file). It is set from the workspace, never configured: ritam
 	// writes nothing outside the workspace, temp folders included.
 	ScratchDir string `yaml:"-"`
+	// WorkspaceRoot is the workspace the agent is confined to; a saved
+	// session made anywhere else is never resumed. Set from the workspace.
+	WorkspaceRoot string `yaml:"-"`
+	// ConfineReads keeps the agent's file tools reading inside its working
+	// folder (workspace.confineReads). Set from the workspace.
+	ConfineReads bool `yaml:"-"`
+	// Protected are the files and folders the agent's file tools may not
+	// edit: ritam's own (its settings, database, sessions and team, and the
+	// app home) and the workspace's files that run code later (git's
+	// settings and hooks, editor tasks, other AI tools' instructions). Set
+	// from the workspace.
+	Protected []string `yaml:"-"`
 }
 
 // OrchestratorConfig holds coordination and loop-protection settings.
@@ -85,6 +97,12 @@ type OrchestratorConfig struct {
 	// tokens but not cost, so only MaxTaskTokens bounds Codex spending.
 	MaxTaskCostUSD float64 `yaml:"maxTaskCostUSD"`
 	MaxTaskTokens  int64   `yaml:"maxTaskTokens"`
+	// MaxDailyCostUSD and MaxDailyTokens pause any task that takes the
+	// day's spending, over every task and project on this machine, past
+	// them: each task's budget is its own, and a new task starts afresh.
+	// Zero disables each.
+	MaxDailyCostUSD float64 `yaml:"maxDailyCostUSD"`
+	MaxDailyTokens  int64   `yaml:"maxDailyTokens"`
 	// DefaultAuthority is the agent that holds authority when the human does
 	// not choose one.
 	DefaultAuthority string `yaml:"defaultAuthority"`
@@ -266,6 +284,9 @@ func Default() *Config {
 			StallMessages:         8,
 			MaxTotalMessages:      1000,
 			MaxTaskCostUSD:        10,
+			MaxTaskTokens:         5_000_000,
+			MaxDailyCostUSD:       50,
+			MaxDailyTokens:        25_000_000,
 			IdleTimeout:           60 * time.Second,
 		},
 		Knowledge: KnowledgeConfig{Backend: "memory"},
