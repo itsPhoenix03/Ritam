@@ -580,35 +580,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		return o.recordUsage(ctx, id, out)
 	}
 	if out.Err != nil {
-		o.Agents.ReportOutboundFor(id, out.AgentID, out)
-		o.Events.emit(ctx, domain.EvtAgentFailed, id, out.AgentID,
-			fmt.Sprintf("agent %s failed: %v", out.AgentID, out.Err),
-			map[string]string{"state": string(domain.AgentStateError)})
-
-		// An account that cannot run the model (credits, plan, login, a
-		// limit) is not a misbehaving agent: asking it to reply again only
-		// fails again.
-		if kind := domain.ClassifyAgentFailure(out.Err.Error()); kind != "" {
-			return o.cannotRun(ctx, id, out.AgentID, kind, out.Err)
-		}
-
-		// A malformed reply is not a dead agent. Real CLIs answer in prose,
-		// wrap a header in a code fence, or ramble past the format from time
-		// to time; killing the task over one unparseable turn throws away
-		// every round that came before it. Tell the agent what was wrong and
-		// ask again -- but only so often: none of the message limits see a
-		// reply that was never routed, and the idle timer is not reset by
-		// one, so malformedReply counts them and stops asking (see there).
-		if isRecoverable(out.Err) {
-			return o.malformedReply(ctx, id, out)
-		}
-
-		// TODO(phase-next): recovery policy for hard failures. Restart the
-		// runtime with backoff, re-send the last un-answered message, and only
-		// fail the task after the retry budget is exhausted.
-		_, err := o.Tasks.Fail(ctx, id, out.AgentID,
-			fmt.Sprintf("AGENT_ERROR: %s: %v", out.AgentID, out.Err))
-		return true, err
+		return o.handleFailure(ctx, id, out)
 	}
 
 	t, err := o.Tasks.Get(ctx, id)
@@ -1185,37 +1157,6 @@ func (o *Orchestrator) proposeDecision(ctx context.Context, t *domain.Task, m *d
 	return d, nil
 }
 
-// recoverableErrors are adapter failures that mean "this one turn was not
-// usable", as opposed to "this agent is gone". They are matched on the
-// adapters' own wording, which is why both adapters phrase these consistently.
-var recoverableErrors = []string{
-	"replied without a",    // no protocol header in an otherwise fine reply
-	"unknown message type", // invented a type outside the protocol
-	"missing 'to'",         // header without a recipient
-	"missing TO",           //   "        "     "  "
-	// The adapters' current wording for the same thing, when every block of
-	// the reply lacked a recipient. Matching only the older phrasing above
-	// sent such a reply to FAILED -- terminal -- over one bad turn.
-	"had no recipient (to=)",
-	"produced no final message",
-	"not the expected JSON envelope",
-	"envelope carried no result text",
-}
-
-// isRecoverable reports whether an agent error is worth continuing past.
-func isRecoverable(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	for _, frag := range recoverableErrors {
-		if strings.Contains(msg, frag) {
-			return true
-		}
-	}
-	return false
-}
-
 // maxMalformedReplies is how many unreadable replies in a row an agent may
 // send before the orchestrator stops asking it again. A probe with every limit
 // set ran 1,799 re-prompted turns in three seconds against an agent that never
@@ -1227,12 +1168,16 @@ const maxMalformedReplies = 2
 const malformedExcerptChars = 300
 
 // malformedText is the best available account of what an agent sent: its raw
-// text when the adapter passed it on, otherwise the adapter's error.
-func malformedText(out ports.Outbound) string {
+// text when the adapter passed it on, otherwise the adapter's account of the
+// failure.
+func malformedText(out ports.Outbound, f *domain.AgentFailure) string {
+	if s := strings.TrimSpace(f.Raw); s != "" {
+		return s
+	}
 	if s := strings.TrimSpace(out.Message.Content); s != "" {
 		return s
 	}
-	return out.Err.Error()
+	return f.Detail
 }
 
 // malformedReply handles a reply that could not be read. It is counted
@@ -1241,7 +1186,7 @@ func malformedText(out ports.Outbound) string {
 // the work -- its open requests are closed and whoever asked is told -- and an
 // authority, without which nothing can be decided, pauses the task showing
 // what it last sent.
-func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out ports.Outbound, f *domain.AgentFailure) (bool, error) {
 	t, err := o.Tasks.Get(ctx, id)
 	if err != nil {
 		return true, err
@@ -1254,7 +1199,7 @@ func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out
 		return true, err
 	}
 	n := t.MalformedCount[agent]
-	what := excerpt(malformedText(out), malformedExcerptChars)
+	what := excerpt(malformedText(out, f), malformedExcerptChars)
 
 	if n >= maxMalformedReplies && agent == t.AuthorityAgent {
 		reason := fmt.Sprintf("the authority's replies could not be read: %s sent %d unreadable replies in a row; the last: %q",
@@ -1443,7 +1388,8 @@ func (o *Orchestrator) pauseIfOverTimeOrBudget(ctx context.Context, t *domain.Ta
 // unavailability is recorded so the team view can show it. A supporting
 // agent drops out of the task and the authority is told to carry on without
 // it; an authority that cannot run pauses the task, saying why and what to do.
-func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent domain.AgentID, kind domain.FailureKind, cause error) (bool, error) {
+func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent domain.AgentID, f *domain.AgentFailure) (bool, error) {
+	kind := f.Kind
 	t, err := o.Tasks.Get(ctx, id)
 	if err != nil {
 		return true, err
@@ -1459,7 +1405,7 @@ func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent do
 		what = "its default model"
 	}
 	summary := fmt.Sprintf("%s cannot run %s: %s", agent, what, kind.Advice())
-	detail := cause.Error()
+	detail := f.Detail
 	if r := []rune(detail); len(r) > 300 {
 		detail = string(r[:300])
 	}

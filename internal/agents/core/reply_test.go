@@ -30,9 +30,14 @@ func TestOneParserServesBothMarkers(t *testing.T) {
 			!strings.Contains(problems, "a REVIEW block had no recipient (to=) and was dropped") {
 			t.Errorf("%s: problems not reported: %q", marker, problems)
 		}
-		if _, err := ParseReply(marker+" type=ANSWER\nhello", marker, "test adapter"); err == nil ||
-			!strings.HasPrefix(err.Error(), "test adapter: ") {
+		_, err = ParseReply(marker+" type=ANSWER\nhello", marker, "test adapter")
+		if err == nil || !strings.HasPrefix(err.Error(), "test adapter: ") {
 			t.Errorf("%s: a reply whose only block has no recipient must fail in the adapter's name: %v", marker, err)
+		}
+		// It is Malformed, and carries what the agent wrote, so the re-prompt
+		// and the pause quote the agent rather than the adapter.
+		if f := domain.FailureOf(err); f.Kind != domain.FailureMalformed || !strings.Contains(f.Raw, "hello") {
+			t.Errorf("%s: want a Malformed failure carrying the reply, got %+v", marker, f)
 		}
 	}
 }

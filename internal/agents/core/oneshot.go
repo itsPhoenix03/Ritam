@@ -296,16 +296,6 @@ func mergeEnv(base []string, extra map[string]string) []string {
 	return out
 }
 
-// firstLine returns the first non-empty line of s, for compact error text.
-func firstLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
-		if t := strings.TrimSpace(line); t != "" {
-			return t
-		}
-	}
-	return ""
-}
-
 // classify turns the end of a process into the error the caller should see,
 // or nil for a clean exit. It is shared by Run and RunStreaming so the two
 // can never disagree about what a cancel, a timeout or a crash looks like.
@@ -352,13 +342,16 @@ func (r *OneShotRunner) startError(err error, args []string) error {
 	return fmt.Errorf("agent %s: running %s: %w", r.AgentID, r.Executable, err)
 }
 
-// failureReason picks the most useful one-line explanation of a failed run:
-// stderr first, then the last line of stdout (some CLIs, Claude Code among
-// them, report errors there), and an explicit "no output" rather than leaving
-// the message ending in a bare colon.
+// failureReason picks the most useful explanation of a failed run: the whole
+// of stderr on one line, then the last line of stdout (some CLIs, Claude Code
+// among them, report errors there), and an explicit "no output" rather than
+// leaving the message ending in a bare colon.
+//
+// Only stderr's first line was kept once, so a harmless warning printed
+// before the real cause ("529 overloaded") was all anyone saw.
 func failureReason(res *OneShotResult) string {
-	if s := firstLine(res.Stderr); s != "" {
-		return s
+	if s := strings.TrimSpace(res.Stderr); s != "" {
+		return Excerpt(s, 600)
 	}
 	lines := strings.Split(res.Stdout, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

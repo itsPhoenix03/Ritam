@@ -2,7 +2,7 @@ package claude
 
 import (
 	"encoding/json"
-	"fmt"
+
 	"strings"
 
 	"ritam/internal/agents/core"
@@ -72,12 +72,9 @@ func consumeStreamLine(line string, act *core.ActivityEmitter) (result string, d
 
 	case "result":
 		act.Flush()
-		if env.Subtype == budgetStopped {
-			return "", true, errBudgetStopped
-		}
-		if env.IsError || env.Subtype == "error" {
-			return "", true, fmt.Errorf("claude-code adapter: CLI reported an error: %s",
-				truncate(env.Result, 300))
+		if f := resultFailure(claudeEnvelope{Type: env.Type, Subtype: env.Subtype, IsError: env.IsError,
+			Result: env.Result}); f != nil {
+			return "", true, f
 		}
 		// A successful turn with no text is the agent saying nothing, which
 		// it may do when no reply is needed; the adapter treats it so.

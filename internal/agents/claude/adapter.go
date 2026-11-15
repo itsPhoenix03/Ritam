@@ -337,8 +337,9 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 
 	sess, resuming := a.openSession(t)
 	res, streamed, streamErr, err := a.runTurn(ctx, t, m, sess, resuming)
+	failure := turnFailure(res, err)
 
-	if err != nil && resuming && isMissingSession(err) {
+	if resuming && failure != nil && failure.Kind == domain.FailureSessionMissing {
 		// The CLI no longer has this conversation (deleted, or recorded
 		// from another directory). Start a new one and re-brief the agent
 		// from the orchestrator's own record of the task.
@@ -348,6 +349,7 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 		sess.Replace(core.NewSessionUUID(), core.SessionRebuilt)
 		a.saveSession(sess)
 		res, streamed, streamErr, err = a.runTurn(ctx, t, m, sess, false)
+		failure = turnFailure(res, err)
 	}
 
 	// Spending is reported whatever the turn's outcome: a failed turn still
@@ -371,23 +373,23 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 		}
 	}
 
-	if errors.Is(streamErr, errBudgetStopped) {
-		// Not a failure, though the CLI exits non-zero: the turn reached the
-		// task's spending limit (budgetArgs). The usage reported on return
+	switch {
+	case failure == nil:
+	case failure.Kind == domain.FailureCancelled:
+		// The task ended or the adapter stopped; nobody is waiting for
+		// this answer, so it is neither a failure nor an outbound error.
+		a.activity.Emit(ports.ActivityStatus, "cancelled")
+		return
+	case failure.Kind == domain.FailureBudgetStop:
+		// Not the agent failing, though the CLI exits non-zero: the turn
+		// reached the task's spending limit (budgetArgs). The orchestrator
 		// pauses the task for the human.
 		a.log.ForAgent(a.id).Warn("claude-code turn stopped at the task's spending limit")
 		a.activity.Emit(ports.ActivityStatus, "stopped: the task's spending limit was reached")
+		a.emit(ports.Outbound{AgentID: a.id, Err: failure})
 		return
-	}
-
-	if err != nil {
-		if errors.Is(err, core.ErrCancelled) {
-			// The task ended or the adapter stopped; nobody is waiting for
-			// this answer, so it is neither a failure nor an outbound error.
-			a.activity.Emit(ports.ActivityStatus, "cancelled")
-			return
-		}
-		a.fail(fmt.Errorf("claude-code adapter: %w", err))
+	default:
+		a.fail(failure)
 		return
 	}
 
@@ -403,7 +405,7 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 		a.log.ForAgent(a.id).Error("claude-code output not understood",
 			"error", err, "stdout", logging.Redact(truncate(res.Stdout, 400)))
 		a.activity.Emit(ports.ActivityStatus, "reply not understood")
-		a.emit(ports.Outbound{AgentID: a.id, Err: err})
+		a.emit(ports.Outbound{AgentID: a.id, Err: domain.FailureOf(err)})
 		return
 	}
 
@@ -425,8 +427,7 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 		// The CLI answered but not in the protocol. Report it as an error so
 		// the orchestrator surfaces a stuck agent instead of waiting out its
 		// idle timeout in silence.
-		a.fail(fmt.Errorf(
-			"claude-code adapter: agent %s replied without an @@ORCH header", a.id))
+		a.fail(core.NoHeaderFailure("claude-code adapter", a.id, headerMarker, text))
 		return
 	}
 	for _, msg := range msgs {
@@ -537,12 +538,6 @@ func (a *ClaudeCodeAdapter) saveSession(sess core.Session) {
 		// next time, so it must be visible.
 		a.log.ForAgent(a.id).Error("saving agent session", "error", err)
 	}
-}
-
-// isMissingSession reports whether a failed resume means the CLI could not
-// find the conversation, as opposed to any other failure.
-func isMissingSession(err error) bool {
-	return strings.Contains(err.Error(), "No conversation found")
 }
 
 // reportedSessionID returns the session_id the CLI's final result envelope
@@ -841,34 +836,40 @@ type claudeEnvelope struct {
 func extractResult(stdout string) (string, error) {
 	trimmed := strings.TrimSpace(stdout)
 	if trimmed == "" {
-		return "", fmt.Errorf("claude-code adapter: empty output (is the CLI logged in? try `claude /login`)")
+		return "", domain.NewFailure(domain.FailureCrash,
+			"claude-code adapter: empty output (is the CLI logged in? try `claude /login`)", nil)
 	}
 
-	var env claudeEnvelope
-	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
-		// Streamed output is one JSON event per line; the result is the
-		// last "result" event.
-		found := false
-		lines := strings.Split(trimmed, "\n")
-		for i := len(lines) - 1; i >= 0 && !found; i-- {
-			l := strings.TrimSpace(lines[i])
-			if strings.HasPrefix(l, "{") && strings.Contains(l, `"result"`) &&
-				json.Unmarshal([]byte(l), &env) == nil && env.Type == "result" {
-				found = true
-			}
-		}
-		if !found {
-			return "", fmt.Errorf("claude-code adapter: output was not the expected JSON envelope: %w", err)
-		}
+	env, found := finalResult(trimmed)
+	if !found {
+		return "", domain.NewFailure(domain.FailureMalformed,
+			"claude-code adapter: output was not the expected JSON envelope: "+truncate(trimmed, 200), nil)
 	}
-	if env.Subtype == budgetStopped {
-		return "", errBudgetStopped
-	}
-	if env.IsError || env.Subtype == "error" {
-		return "", fmt.Errorf("claude-code adapter: CLI reported an error: %s", truncate(env.Result, 300))
+	if f := resultFailure(env); f != nil {
+		return "", f
 	}
 	// A successful turn with no text is the agent saying nothing.
 	return env.Result, nil
+}
+
+// finalResult finds the final result envelope in stdout: the whole of it in
+// --output-format json, or the last "result" event of a stream.
+func finalResult(stdout string) (claudeEnvelope, bool) {
+	var env claudeEnvelope
+	trimmed := strings.TrimSpace(stdout)
+	if json.Unmarshal([]byte(trimmed), &env) == nil && env.Type == "result" {
+		return env, true
+	}
+	lines := strings.Split(trimmed, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		env = claudeEnvelope{}
+		if strings.HasPrefix(l, "{") && strings.Contains(l, `"result"`) &&
+			json.Unmarshal([]byte(l), &env) == nil && env.Type == "result" {
+			return env, true
+		}
+	}
+	return claudeEnvelope{}, false
 }
 
 func truncate(s string, n int) string {

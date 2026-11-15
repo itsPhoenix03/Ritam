@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,6 +82,36 @@ func runFakeCLI(mode string) {
 	case "silent":
 		_ = readAll(os.Stdin)
 		_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":false,"result":""}` + "\n")
+	case "warnthenoverloaded":
+		// A harmless warning on stderr, the real cause in the result event.
+		_ = readAll(os.Stdin)
+		_, _ = os.Stderr.WriteString("Warning: the settings file has an unknown key \"theme\"\n")
+		_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":true,` +
+			`"result":"API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"}` + "\n")
+		os.Exit(1)
+	}
+}
+
+// TestAStderrWarningBeforeTheRealCauseNoLongerHidesIt: the runner's error
+// was the first stderr line, and only it was read, so a harmless warning hid
+// the "529 overloaded" the result event spelled out; the turn was then
+// unclassified and the task went to FAILED.
+func TestAStderrWarningBeforeTheRealCauseNoLongerHidesIt(t *testing.T) {
+	a, _, _ := fakeAdapter(t, "warnthenoverloaded")
+	if err := a.SendMessage(context.Background(), testTask(), msg("Go on.")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case o := <-a.Outbound():
+		f := domain.FailureOf(o.Err)
+		if f == nil || f.Kind != domain.FailureOverloaded || !f.Retryable {
+			t.Fatalf("want a retryable overloaded failure, got %+v", f)
+		}
+		if !strings.Contains(f.Detail, "529") {
+			t.Errorf("the detail should quote the result event, got %q", f.Detail)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no outbound")
 	}
 }
 
@@ -408,7 +439,8 @@ func TestATurnIsChargedOnlyItsOwnCostAndReportedAfterItsReply(t *testing.T) {
 
 // TestATurnStopsAtWhatIsLeftOfTheBudgetAndPausesNotFails: each turn may
 // spend only what is left of the task's budget; a turn the CLI stops there
-// reports what it spent (which pauses the task) and is not a failure.
+// reports what it spent, and is reported as a budget stop (which pauses the
+// task), never as the agent failing.
 func TestATurnStopsAtWhatIsLeftOfTheBudgetAndPausesNotFails(t *testing.T) {
 	a, cliLog, _ := fakeAdapter(t, "overbudget")
 	tk := testTask()
@@ -420,8 +452,11 @@ func TestATurnStopsAtWhatIsLeftOfTheBudgetAndPausesNotFails(t *testing.T) {
 	for got := false; !got; {
 		select {
 		case o := <-a.Outbound():
-			if o.Err != nil {
+			if o.Err != nil && !errors.Is(o.Err, domain.FailureBudgetStop) {
 				t.Fatalf("reaching the spending limit must not fail the agent: %v", o.Err)
+			}
+			if o.Err != nil && got {
+				t.Error("the budget stop must come before the usage, as the turn's messages do")
 			}
 			if o.Usage != nil {
 				if o.Usage.CostUSD != 0.45 {

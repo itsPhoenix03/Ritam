@@ -28,7 +28,6 @@ package codex
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -272,15 +271,17 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 		resuming = false
 	}
 
-	res, reply, readErr, runErr, thread := a.runTurn(ctx, t, m, sess, resuming)
+	res, reply, readErr, runErr, thread, rep := a.runTurn(ctx, t, m, sess, resuming)
+	failure := turnFailure(res, runErr, rep)
 
-	if runErr != nil && resuming && isMissingSession(runErr, res) {
+	if resuming && failure != nil && failure.Kind == domain.FailureSessionMissing {
 		// Codex no longer has this thread. Start a new one and re-brief the
 		// agent from the orchestrator's own record of the task.
 		a.log.ForAgent(a.id).Warn("codex thread not found; starting a new one", "thread", sess.ID)
 		a.activity.Emit(ports.ActivityStatus, "previous session lost; re-briefing in a new one")
 		resuming = false
-		res, reply, readErr, runErr, thread = a.runTurn(ctx, t, m, sess, false)
+		res, reply, readErr, runErr, thread, rep = a.runTurn(ctx, t, m, sess, false)
+		failure = turnFailure(res, runErr, rep)
 		if thread != "" {
 			sess.Replace(thread, core.SessionRebuilt)
 		}
@@ -307,7 +308,7 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 	// failed: the conversation exists on disk and the next turn should
 	// continue it rather than start yet another.
 	if sess.ID != "" {
-		if runErr == nil {
+		if failure == nil {
 			sess.Turns++
 		}
 		sess.LastUsed = time.Now()
@@ -317,21 +318,21 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 		}
 	}
 
-	if errors.Is(runErr, core.ErrCancelled) {
+	if failure != nil && failure.Kind == domain.FailureCancelled {
 		// The task ended or the adapter stopped; nobody is waiting for this
 		// answer, so it is neither a failure nor an outbound error.
 		a.activity.Emit(ports.ActivityStatus, "cancelled")
 		return
 	}
-	if runErr != nil {
-		// Prefer the CLI's own stderr message: "out of credits", "not logged
-		// in" and sandbox refusals are all far more useful than an exit code.
-		a.fail(fmt.Errorf("codex adapter: %w%s", runErr, stderrHint(res)))
+	if failure != nil {
+		a.fail(failure)
 		return
 	}
 	if readErr != nil {
-		a.fail(fmt.Errorf(
-			"codex adapter: agent %s produced no final message%s", a.id, stderrHint(res)))
+		// The reply file is created before the run, so this is the file
+		// system failing, not the agent saying nothing.
+		a.fail(domain.NewFailure(domain.FailureCrash,
+			fmt.Sprintf("codex adapter: could not read agent %s's reply file: %v", a.id, readErr), readErr))
 		return
 	}
 	if strings.TrimSpace(reply) == "" {
@@ -350,8 +351,7 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 		return
 	}
 	if len(msgs) == 0 {
-		a.fail(fmt.Errorf(
-			"codex adapter: agent %s replied without a %s header", a.id, headerMarker))
+		a.fail(core.NoHeaderFailure("codex adapter", a.id, headerMarker, reply))
 		return
 	}
 	for _, msg := range msgs {
@@ -367,10 +367,10 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 // executable on PATH is a .cmd shim, so Windows runs it through cmd.exe, which
 // re-parses the command line and truncates a multi-line argument at its first
 // newline. Codex reads the prompt from stdin when the prompt argument is `-`.
-func (a *CodexAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Message, sess core.Session, resuming bool) (res *core.OneShotResult, reply string, readErr, runErr error, thread string) {
+func (a *CodexAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Message, sess core.Session, resuming bool) (res *core.OneShotResult, reply string, readErr, runErr error, thread string, rep turnReport) {
 	lastMessage, cleanup, err := newLastMessageFile(a.cfg.ScratchDir, a.id)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("codex adapter: %w", err), ""
+		return nil, "", nil, fmt.Errorf("codex adapter: %w", err), "", rep
 	}
 	defer cleanup()
 
@@ -393,21 +393,13 @@ func (a *CodexAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Mes
 		if id, ok := threadStarted(line); ok {
 			thread = id
 		}
+		rep.observe(line)
 		consumeStreamLine(line, a.activity)
 	})
 	a.activity.Flush()
 
 	text, readErr := os.ReadFile(lastMessage)
-	return res, strings.TrimSpace(string(text)), readErr, runErr, thread
-}
-
-// isMissingSession reports whether a failed resume means Codex could not find
-// the thread, as opposed to any other failure.
-func isMissingSession(err error, res *core.OneShotResult) bool {
-	if strings.Contains(err.Error(), "no rollout found") {
-		return true
-	}
-	return res != nil && strings.Contains(res.Stderr, "no rollout found")
+	return res, strings.TrimSpace(string(text)), readErr, runErr, thread, rep
 }
 
 // allowedFlags are the only flags configured args may pass to Codex. The
@@ -635,19 +627,6 @@ func newLastMessageFile(dir string, id domain.AgentID) (string, func(), error) {
 	name := f.Name()
 	_ = f.Close()
 	return name, func() { _ = os.Remove(filepath.Clean(name)) }, nil
-}
-
-// stderrHint appends the CLI's own first stderr line when there is one.
-func stderrHint(res *core.OneShotResult) string {
-	if res == nil {
-		return ""
-	}
-	for _, line := range strings.Split(res.Stderr, "\n") {
-		if t := strings.TrimSpace(line); t != "" {
-			return ": " + logging.Redact(truncate(t, 200))
-		}
-	}
-	return ""
 }
 
 // Interrupt is a no-op for one-shot invocations: cancelling the context passed

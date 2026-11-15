@@ -2,7 +2,6 @@ package orchestrator_test
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +38,7 @@ func TestASupportingAgentThatCannotRunDropsOut(t *testing.T) {
 	waitFor(t, func() bool { return len(codex.deliveries()) == 1 })
 
 	codex.finish()
-	codex.out <- ports.Outbound{AgentID: "codex", Err: errors.New("codex adapter: exit status 1: insufficient_quota: You exceeded your current quota")}
+	codex.out <- ports.Outbound{AgentID: "codex", Err: domain.NewFailure(domain.FailureBilling, "codex adapter: exit status 1: insufficient_quota: You exceeded your current quota", nil)}
 	waitFor(t, func() bool { return h.hasEvent(domain.EvtModelUnavailable) })
 	waitFor(t, func() bool { return len(told) == 1 })
 
@@ -69,7 +68,7 @@ func TestAnAuthorityThatCannotRunPausesTheTask(t *testing.T) {
 	waitFor(t, func() bool { return len(opus.deliveries()) == 1 })
 
 	opus.finish()
-	opus.out <- ports.Outbound{AgentID: "opus", Err: errors.New("claude-code adapter: CLI reported an error: Your organization does not have access to claude-fable-5-1")}
+	opus.out <- ports.Outbound{AgentID: "opus", Err: domain.NewFailure(domain.FailurePlan, "claude-code adapter: CLI reported an error: Your organization does not have access to claude-fable-5-1", nil)}
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

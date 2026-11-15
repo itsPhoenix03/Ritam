@@ -10,7 +10,8 @@ import (
 
 // ParseReply splits an agent's reply into protocol messages, one per block
 // headed by marker ("@@ORCH" for Claude Code, "##CODEX" for Codex). who names
-// the adapter in the error ("claude-code adapter").
+// the adapter in the error ("claude-code adapter"). A reply none of whose
+// blocks can be delivered fails as domain.FailureMalformed.
 //
 // Both adapters used to carry their own copy of this parser, identical but
 // for the marker; a fix made to one had to be remembered in the other. It
@@ -86,7 +87,11 @@ func ParseReply(raw, marker, who string) ([]domain.Message, error) {
 	flush()
 	if len(problems) > 0 {
 		if len(msgs) == 0 {
-			return nil, fmt.Errorf("%s: %s", who, strings.Join(problems, "; "))
+			// A Malformed failure, carrying what the agent wrote so it can be
+			// quoted back to it and to the human.
+			f := domain.NewFailure(domain.FailureMalformed, fmt.Sprintf("%s: %s", who, strings.Join(problems, "; ")), nil)
+			f.Raw = raw
+			return nil, f
 		}
 		if msgs[0].Metadata == nil {
 			msgs[0].Metadata = map[string]string{}
@@ -113,4 +118,18 @@ func ParseHeaderFields(header, marker string) map[string]string {
 		fields[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
 	}
 	return fields
+}
+
+// NoHeaderFailure is the failure of a reply with text in it but no header
+// at all: the agent answered in prose. It carries the text, so the agent and
+// the human are shown what it wrote rather than only that it was unreadable.
+func NoHeaderFailure(who string, agent domain.AgentID, marker, raw string) *domain.AgentFailure {
+	article := "a"
+	if strings.HasPrefix(marker, "@") {
+		article = "an"
+	}
+	f := domain.NewFailure(domain.FailureMalformed,
+		fmt.Sprintf("%s: agent %s replied without %s %s header", who, agent, article, marker), nil)
+	f.Raw = raw
+	return f
 }

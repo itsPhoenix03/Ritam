@@ -142,7 +142,10 @@ type RuntimeOutput struct {
 type Outbound struct {
 	AgentID domain.AgentID
 	Message domain.Message
-	Err     error
+	// Err reports a failed turn. Adapters set a *domain.AgentFailure, which
+	// says what kind of failure it was; the orchestrator acts on that kind
+	// and never on the error's text (an error without one is a crash).
+	Err error
 	// Usage, when set, reports what one CLI turn cost. An adapter sends it as
 	// its own Outbound -- no Message, no Err -- after every turn, including a
 	// failed one, so spending is counted whether or not the turn produced
