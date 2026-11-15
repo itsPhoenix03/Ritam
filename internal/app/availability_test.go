@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -88,6 +89,34 @@ func TestCheckingAModel(t *testing.T) {
 		if m.ID == "opus" && !m.Checked {
 			t.Error("a passed check is shown")
 		}
+	}
+}
+
+func TestAMockModeCheckLeavesTheRecordedVerdictsAlone(t *testing.T) {
+	tm := testTeam(t)
+	tm.MarkUnavailable("claude-code", "claude-fable-5-1", domain.FailurePlan, domain.FailurePlan.Advice())
+	before, err := os.ReadFile(tm.availabilityFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tm.cfg.TUI.UseMockAgents = true
+	tm.probe = func(context.Context, string, string) (bool, domain.FailureKind, string, error) {
+		t.Fatal("a mock-mode check must not call the CLI")
+		return false, "", "", nil
+	}
+	for _, model := range []string{"claude-fable-5-1", "opus"} {
+		if _, err := tm.CheckModel(context.Background(), "claude-code", model); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	after, err := os.ReadFile(tm.availabilityFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("models.json changed in mock mode:\nbefore %s\nafter  %s", before, after)
 	}
 }
 

@@ -255,7 +255,10 @@ func (tm *Team) setAvailability(provider, model string, a availability) {
 func (tm *Team) CheckModel(ctx context.Context, provider, model string) (ports.ModelInfo, error) {
 	info := ports.ModelInfo{Provider: provider, ID: model}
 	if tm.cfg.TUI.UseMockAgents {
-		tm.setAvailability(provider, model, availability{OK: true, At: time.Now()})
+		// Nothing was asked of the account: a mock run proves nothing about
+		// the real provider and model. Recording "OK" here used to replace a
+		// genuine verdict (say, "not on your plan") in models.json, which is
+		// shared by every project.
 		info.Checked = true
 		return info, nil
 	}
