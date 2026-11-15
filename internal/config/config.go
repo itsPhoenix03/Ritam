@@ -321,8 +321,10 @@ func Load(path string) (*Config, error) {
 // before it: the defaults, then the global settings in the app home, then
 // the project's. A file that does not exist is skipped. Only what a file
 // sets is overridden; a provider entry overrides field by field, so a
-// project can change one setting of a provider and keep the rest. A key no
-// setting has is an error, never ignored.
+// project can change one setting of a provider and keep the rest. An agent
+// entry, by contrast, replaces the whole agent, and a list replaces the
+// whole list (ritam.example.yaml says so). A key no setting has is an error,
+// never ignored.
 func LoadLayers(paths ...string) (*Config, error) {
 	cfg := Default()
 	for _, path := range paths {

@@ -209,6 +209,38 @@ func TestProjectSettingsOverrideTheGlobalOnes(t *testing.T) {
 	}
 }
 
+// TestAnAgentEntryReplacesTheWholeAgentAcrossLayers: what ritam.example.yaml
+// promises about layering. Providers merge field by field (tested above), an
+// agent entry replaces the whole agent, other agents are kept, and a list is
+// replaced rather than added to.
+func TestAnAgentEntryReplacesTheWholeAgentAcrossLayers(t *testing.T) {
+	dir := t.TempDir()
+	global, project := filepath.Join(dir, "global.yaml"), filepath.Join(dir, "project.yaml")
+	if err := os.WriteFile(global, []byte("agents:\n"+
+		"  lead: {type: claude-code, role: AUTHORITY, executable: C:/tools/claude.exe, model: opus}\n"+
+		"  helper: {type: codex, role: REVIEWER}\n"+
+		"access: {commands: [go test, go vet]}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(project, []byte("agents:\n  lead: {type: claude-code, role: AUTHORITY, model: sonnet}\n"+
+		"access: {commands: [cmake]}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayers(global, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lead := cfg.Agents["lead"]; lead.Model != "sonnet" || lead.Executable != "" {
+		t.Errorf("the project's entry replaces the whole agent, executable included: %+v", lead)
+	}
+	if _, ok := cfg.Agents["helper"]; !ok {
+		t.Error("an agent the project does not list is kept")
+	}
+	if got := cfg.Access.Commands; len(got) != 1 || got[0] != "cmake" {
+		t.Errorf("a list is replaced, not added to: %v", got)
+	}
+}
+
 // TestNegativeLimitsKeepAndIntervalAreRefused: a negative value loaded
 // without complaint used to switch a limit off or, for backups.keep, crash
 // `ritam backups now`. Every problem is named with its key and value.
