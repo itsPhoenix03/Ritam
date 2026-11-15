@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Layout primitives.
@@ -28,8 +29,7 @@ type cell struct {
 	style lipgloss.Style
 	plain bool
 	// w overrides the measured width. It is set only by raw(), for content
-	// that already carries ANSI escapes and therefore cannot be measured (or
-	// cut) by rune count.
+	// that already carries ANSI escapes and therefore must not be cut.
 	w int
 }
 
@@ -85,7 +85,55 @@ func (c cell) width() int {
 	if c.w > 0 {
 		return c.w
 	}
-	return utf8.RuneCountInString(c.text)
+	return textWidth(c.text)
+}
+
+// Display width.
+//
+// Every measure, cut and pad in this package is in terminal columns, not
+// runes: a CJK character or most emoji take two columns, so a row measured in
+// runes came out wider than its pane and sheared the three-column layout from
+// there down. The measure is the one lipgloss itself uses (charmbracelet/x/ansi,
+// grapheme clusters), so what is fitted here and what lipgloss lays out agree.
+
+// textWidth is how many columns s occupies. Escape sequences count nothing.
+func textWidth(s string) int { return ansi.StringWidth(s) }
+
+// cutWidth returns the longest prefix of plain text s at most n columns wide.
+// A wide character that would straddle the edge is left out whole, so the
+// result can be a column short: callers pad.
+func cutWidth(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return ansi.Truncate(s, n, "")
+}
+
+// splitWidth splits plain text s into a head at most n columns wide and the
+// rest. The head always holds at least one character, even one wider than n,
+// so a caller looping over the pieces always makes progress.
+func splitWidth(s string, n int) (head, rest string) {
+	head = cutWidth(s, n)
+	if head == "" && s != "" {
+		_, size := utf8.DecodeRuneInString(s)
+		head = s[:size]
+	}
+	return head, s[len(head):]
+}
+
+// padWidth pads plain text s with spaces to n columns, cutting it first when
+// it is wider. The result is exactly n columns.
+func padWidth(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if textWidth(s) > n {
+		s = cutWidth(s, n)
+	}
+	if w := textWidth(s); w < n {
+		s += strings.Repeat(" ", n-w)
+	}
+	return s
 }
 
 // line is one row of mixed-style content, not yet fitted to any width.
@@ -94,7 +142,7 @@ type line []cell
 // join concatenates runs onto a line.
 func (l line) join(more ...cell) line { return append(l, more...) }
 
-// width reports the visible width of the line, in runes.
+// width reports the visible width of the line, in columns.
 func (l line) width() int {
 	n := 0
 	for _, c := range l {
@@ -104,23 +152,8 @@ func (l line) width() int {
 }
 
 // visibleRunes counts the display columns of a string that may already carry
-// ANSI escape sequences, which len([]rune) would count as content.
-func visibleRunes(s string) int {
-	n, inEscape := 0, false
-	for _, r := range s {
-		switch {
-		case r == '\x1b':
-			inEscape = true
-		case inEscape:
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEscape = false
-			}
-		default:
-			n++
-		}
-	}
-	return n
-}
+// ANSI escape sequences.
+func visibleRunes(s string) int { return textWidth(s) }
 
 // plain returns the line's text with all styling dropped. It is what the
 // selected-row path renders (selection is reverse video over the whole row,
@@ -144,10 +177,10 @@ func (l line) render(width int) string {
 		return l.paint(width, -1)
 	}
 	// Reserve the last column for the ellipsis marker.
-	return l.paint(width, width-len([]rune(gl().ellipsis)))
+	return l.paint(width, maxInt(0, width-textWidth(gl().ellipsis)))
 }
 
-// paint writes the runs, cutting at `cut` runes (negative = no cut) and
+// paint writes the runs, cutting at `cut` columns (negative = no cut) and
 // padding out to width.
 func (l line) paint(width, cut int) string {
 	var b strings.Builder
@@ -169,12 +202,13 @@ func (l line) paint(width, cut int) string {
 			used += c.w
 			continue
 		}
-		// Count runes without materialising a []rune: only the one cell that
-		// straddles the cut needs slicing, and most cells fit whole.
-		text, n := c.text, utf8.RuneCountInString(c.text)
-		if used+n > limit {
-			n = limit - used
-			text = cutRunes(text, n)
+		// Only the one cell that straddles the cut needs cutting; a wide
+		// character on the edge is dropped whole and the gap padded below.
+		text, n := c.text, textWidth(c.text)
+		straddles := used+n > limit
+		if straddles {
+			text = cutWidth(text, limit-used)
+			n = textWidth(text)
 		}
 		used += n
 		if c.plain {
@@ -182,29 +216,20 @@ func (l line) paint(width, cut int) string {
 		} else {
 			b.WriteString(c.style.Render(text))
 		}
+		if straddles {
+			// Nothing after the cut may fill the column a wide character
+			// left free: that would show text out of order.
+			break
+		}
 	}
 	if cut >= 0 {
 		b.WriteString(dimStyle.Render(gl().ellipsis))
-		used += len([]rune(gl().ellipsis))
+		used += textWidth(gl().ellipsis)
 	}
 	if used < width {
 		b.WriteString(strings.Repeat(" ", width-used))
 	}
 	return b.String()
-}
-
-// cutRunes returns the first n runes of s.
-func cutRunes(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	for i := range s {
-		if n == 0 {
-			return s[:i]
-		}
-		n--
-	}
-	return s
 }
 
 // renderSelected paints the whole row as reverse video. Per the design,
@@ -221,15 +246,14 @@ func fitEllipsis(s string, width int) string {
 	if width < 1 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= width {
+	if textWidth(s) <= width {
 		return s
 	}
-	e := []rune(gl().ellipsis)
-	if width <= len(e) {
-		return string(r[:width])
+	e := gl().ellipsis
+	if width <= textWidth(e) {
+		return cutWidth(s, width)
 	}
-	return string(r[:width-len(e)]) + gl().ellipsis
+	return cutWidth(s, width-textWidth(e)) + e
 }
 
 // spread lays left-aligned and right-aligned content on one row.

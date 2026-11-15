@@ -497,14 +497,13 @@ func fitLine(s string, width int) string {
 	if width < 1 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= width {
+	if textWidth(s) <= width {
 		return s
 	}
 	if width <= 3 {
-		return string(r[:width])
+		return cutWidth(s, width)
 	}
-	return string(r[:width-3]) + "..."
+	return cutWidth(s, width-3) + "..."
 }
 
 func maxInt(a, b int) int {

@@ -143,7 +143,7 @@ var keymap = []keyBinding{
 	{Key: "h", Action: ActionToggleHelpBar, Help: "help bar"},
 	{Key: ":", Action: ActionCommand, Help: "command line"},
 	{Key: "/", Action: ActionFilter, Help: "filter the stream by agent"},
-	{Key: "1", Action: ActionFocusAgent, Help: "focus agent 1..9 / 0,esc: back to split view", Arg: 1},
+	{Key: "1", Action: ActionFocusAgent, Help: "focus the agent with that number in the roster / 0,esc: back to split view", Arg: 1},
 	{Key: "2", Action: ActionFocusAgent, Arg: 2},
 	{Key: "3", Action: ActionFocusAgent, Arg: 3},
 	{Key: "4", Action: ActionFocusAgent, Arg: 4},
@@ -186,8 +186,11 @@ func lookupAction(key string) (Action, int, bool) {
 // Result messages. Every tea.Cmd below returns exactly one of these.
 // ---------------------------------------------------------------------------
 
-// agentsLoadedMsg carries the result of Service.Agents.
+// agentsLoadedMsg carries the agents as they stand on taskID ("" for the
+// team overall). Each task has its own instance of each agent, so a load for
+// one task is wrong for any other and is dropped if the human has moved on.
 type agentsLoadedMsg struct {
+	taskID domain.TaskID
 	agents []domain.Agent
 	err    error
 }
@@ -201,7 +204,12 @@ type tasksLoadedMsg struct {
 // taskDetailMsg carries the messages/events/decisions of one task, fetched
 // together so the conversation, event-log and decisions panes stay in sync.
 type taskDetailMsg struct {
-	taskID    domain.TaskID
+	taskID domain.TaskID
+	// seq numbers the request (Model.detailSeq). Reloads run concurrently and
+	// finish in any order; one older than what is already shown is dropped,
+	// or a slow early reload would put back messages a later one replaced.
+	// 0 means unnumbered, always applied.
+	seq       int
 	messages  []*domain.Message
 	events    []domain.Event
 	decisions []*domain.Decision
@@ -274,7 +282,7 @@ func loadAgentsCmd(ctx context.Context, svc ports.Service, task domain.TaskID) t
 		} else {
 			agents, err = svc.Agents(ctx)
 		}
-		return agentsLoadedMsg{agents: agents, err: err}
+		return agentsLoadedMsg{taskID: task, agents: agents, err: err}
 	}
 }
 
@@ -287,21 +295,22 @@ func loadTasksCmd(ctx context.Context, svc ports.Service) tea.Cmd {
 
 // loadTaskDetailCmd fetches everything the conversation/decisions/event-log
 // panes need for one task in a single round trip through the Cmd pipeline.
-func loadTaskDetailCmd(ctx context.Context, svc ports.Service, id domain.TaskID) tea.Cmd {
+// Use Model.reloadDetail, which numbers the request.
+func loadTaskDetailCmd(ctx context.Context, svc ports.Service, id domain.TaskID, seq int) tea.Cmd {
 	return func() tea.Msg {
 		msgs, err := svc.TaskMessages(ctx, id)
 		if err != nil {
-			return taskDetailMsg{taskID: id, err: err}
+			return taskDetailMsg{taskID: id, seq: seq, err: err}
 		}
 		evs, err := svc.TaskEvents(ctx, id)
 		if err != nil {
-			return taskDetailMsg{taskID: id, err: err}
+			return taskDetailMsg{taskID: id, seq: seq, err: err}
 		}
 		decs, err := svc.TaskDecisions(ctx, id)
 		if err != nil {
-			return taskDetailMsg{taskID: id, err: err}
+			return taskDetailMsg{taskID: id, seq: seq, err: err}
 		}
-		return taskDetailMsg{taskID: id, messages: msgs, events: evs, decisions: decs, backlog: svc.Backlog(id)}
+		return taskDetailMsg{taskID: id, seq: seq, messages: msgs, events: evs, decisions: decs, backlog: svc.Backlog(id)}
 	}
 }
 

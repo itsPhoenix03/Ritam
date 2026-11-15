@@ -143,7 +143,15 @@ func (m Model) selectTaskID(id domain.TaskID) (Model, tea.Cmd) {
 	m.convSel = 0
 	m.decisionSel = 0
 	m.paneScroll = nil
-	return m, tea.Batch(loadTaskDetailCmd(m.ctx, m.svc, m.currentTaskID), loadAgentsCmd(m.ctx, m.svc, m.currentTaskID))
+	m, detail := m.reloadDetail()
+	return m, tea.Batch(detail, loadAgentsCmd(m.ctx, m.svc, m.currentTaskID))
+}
+
+// reloadDetail asks for the current task's messages, events and decisions,
+// numbering the request so an older answer cannot overwrite a newer one.
+func (m Model) reloadDetail() (Model, tea.Cmd) {
+	m.detailSeq++
+	return m, loadTaskDetailCmd(m.ctx, m.svc, m.currentTaskID, m.detailSeq)
 }
 
 // moveAgentCursor moves the roster selection, clamped.

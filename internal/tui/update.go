@@ -85,6 +85,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, cmd
 
 	case agentsLoadedMsg:
+		if msg.taskID != m.currentTaskID {
+			// Loaded for a task no longer shown: its states are not this
+			// task's. Whatever changed the task has asked for its own.
+			return m, nil
+		}
 		if msg.err != nil {
 			m.setError(msg.err)
 			return m, nil
@@ -126,8 +131,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// created can arrive after it, without it, and must not move the human
 		// off the task they were just shown.
 		if m.currentTaskID == "" && len(m.tasks) > 0 {
-			m.currentTaskID = m.tasks[0].ID
-			cmds = append(cmds, loadTaskDetailCmd(m.ctx, m.svc, m.currentTaskID))
+			var sel tea.Cmd
+			m, sel = m.selectTaskID(firstToShow(m.tasks))
+			cmds = append(cmds, sel)
 		}
 		// A live task drives the header's elapsed clock even with every agent
 		// momentarily idle, so the ticker is (re)armed here too.
@@ -141,6 +147,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.taskID != m.currentTaskID {
 			// Stale response for a task we've since navigated away from.
 			return m, nil
+		}
+		if msg.seq != 0 {
+			if msg.seq < m.detailShown {
+				// Overtaken by a newer reload already on screen.
+				return m, nil
+			}
+			m.detailShown = msg.seq
 		}
 		if msg.err != nil {
 			m.setError(msg.err)
@@ -167,10 +180,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setStatus("%s ok for %s", msg.action, msg.taskID)
-		return m, tea.Batch(
-			loadTasksCmd(m.ctx, m.svc),
-			loadTaskDetailCmd(m.ctx, m.svc, msg.taskID),
-		)
+		if msg.taskID != m.currentTaskID {
+			return m, loadTasksCmd(m.ctx, m.svc)
+		}
+		m, detail := m.reloadDetail()
+		return m, tea.Batch(loadTasksCmd(m.ctx, m.svc), detail)
 
 	case domainEventMsg:
 		ev := domain.Event(msg)
@@ -195,7 +209,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmds []tea.Cmd
 		if ev.TaskID == m.currentTaskID && m.currentTaskID != "" {
-			cmds = append(cmds, loadTaskDetailCmd(m.ctx, m.svc, m.currentTaskID))
+			var detail tea.Cmd
+			m, detail = m.reloadDetail()
+			cmds = append(cmds, detail)
 		}
 		switch ev.Type {
 		case domain.EvtTaskCreated, domain.EvtTaskStateChanged, domain.EvtTaskPaused,
@@ -379,6 +395,19 @@ func verbOf(a Action) string {
 		return "reject"
 	}
 	return "approve"
+}
+
+// firstToShow picks the task shown at start: the newest one still open,
+// which is the one most likely being worked on, else the newest. The list
+// is in creation order, so the oldest task used to be shown, often a
+// finished one from days before.
+func firstToShow(tasks []*domain.Task) domain.TaskID {
+	for i := len(tasks) - 1; i >= 0; i-- {
+		if !tasks[i].State.IsTerminal() {
+			return tasks[i].ID
+		}
+	}
+	return tasks[len(tasks)-1].ID
 }
 
 // beginCreate records a task creation about to be submitted, so its result
@@ -1041,18 +1070,24 @@ func (m Model) instruct(id domain.TaskID, to domain.AgentID, content string) (Mo
 	return m, sendInstructionCmd(m.ctx, m.svc, id, to, content)
 }
 
-// setFocus expands agent n (1-based, matching the "1".."9" keys) to fill the
-// whole body, or returns to the split view for any out-of-range n --
-// including 0, which is what the "0" and "esc" bindings pass.
+// setFocus expands agent n to fill the whole body, or returns to the split
+// view for any out-of-range n -- including 0, which is what the "0" and "esc"
+// bindings pass.
+//
+// n is the number the roster prints beside the agent (1-based, the "1".."9"
+// keys): the roster as displayed, the task's participants in roster order.
+// It used to index the whole team, which the roster does not show, so with a
+// larger team a key opened an agent that was not on the task.
 func (m Model) setFocus(n int) (tea.Model, tea.Cmd) {
-	if n <= 0 || n > len(m.agents) {
+	idents := m.rosterIdents()
+	if n <= 0 || n > len(idents) {
 		if m.focusedAgent >= 0 {
 			m.setStatus("back to split view")
 		}
 		m.focusedAgent = -1
 		return m, nil
 	}
-	m.focusedAgent = n - 1
+	m.focusedAgent = idents[n-1].index
 	m.focusScroll = 0
 	m.setStatus("focused on %s (0 or esc to return)", m.agents[m.focusedAgent].ID)
 	return m, nil

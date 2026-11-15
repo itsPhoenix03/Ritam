@@ -172,24 +172,22 @@ func wrapInput(value string, width, maxRows int, focused bool) ([]string, int) {
 
 // wrapKeepingSpaces wraps s at width, preferring to break after a space, and
 // never drops or merges characters: what is shown is exactly what was typed.
+// Widths are in columns, so a row of CJK text holds half as many characters.
 func wrapKeepingSpaces(s string, width int) []string {
-	r := []rune(s)
-	if len(r) == 0 {
+	if s == "" {
 		return []string{""}
 	}
 	var rows []string
-	for len(r) > width {
-		cut := width
-		for i := width; i > width/2; i-- {
-			if r[i-1] == ' ' {
-				cut = i
-				break
-			}
+	for textWidth(s) > width {
+		head, _ := splitWidth(s, width)
+		// Break after the last space in the second half of the row, if any.
+		if i := strings.LastIndexByte(head, ' '); i >= 0 && textWidth(head[:i+1]) > width/2 {
+			head = head[:i+1]
 		}
-		rows = append(rows, string(r[:cut]))
-		r = r[cut:]
+		rows = append(rows, head)
+		s = s[len(head):]
 	}
-	return append(rows, string(r))
+	return append(rows, s)
 }
 
 // inputLines renders a text field: prefix on the first row, the wrapped value

@@ -234,7 +234,7 @@ func (a *agentActivity) wrappedLinesIn(width int, sc taskScope) []wrappedLine {
 			continue
 		}
 		prefix := kindPrefix(e.kind)
-		pw := len([]rune(prefix))
+		pw := textWidth(prefix)
 		bodyWidth := width - pw
 		if bodyWidth < 1 {
 			bodyWidth = 1
@@ -283,7 +283,7 @@ func trimRunesFront(s string, max int) string {
 	return string(r[len(r)-max:])
 }
 
-// wrapWords greedily wraps s to at most width runes per output line,
+// wrapWords greedily wraps s to at most width columns per output line,
 // breaking on spaces where possible and hard-breaking any single word (e.g.
 // a long file path) that alone exceeds width. This is a small, dependency-
 // free wrapper by design: no bubbles/lipgloss word-wrap helper is available
@@ -301,21 +301,20 @@ func wrapWords(s string, width int) []string {
 		}
 		line := ""
 		for _, word := range words {
-			wr := []rune(word)
-			for len(wr) > width {
+			for textWidth(word) > width {
 				if line != "" {
 					out = append(out, line)
 					line = ""
 				}
-				out = append(out, string(wr[:width]))
-				wr = wr[width:]
+				var head string
+				head, word = splitWidth(word, width)
+				out = append(out, head)
 			}
-			word = string(wr)
 			cand := word
 			if line != "" {
 				cand = line + " " + word
 			}
-			if len([]rune(cand)) > width {
+			if textWidth(cand) > width {
 				out = append(out, line)
 				line = word
 			} else {
@@ -327,20 +326,8 @@ func wrapWords(s string, width int) []string {
 	return out
 }
 
-// fitWidth pads or truncates s (by rune count) to exactly width runes. It
-// must be called on plain, unstyled text: truncating a string that already
-// carries lipgloss/ANSI escapes would corrupt them. Callers style *after*
-// fitting, never before.
+// fitWidth pads or truncates s to exactly width columns. It must be called
+// on plain, unstyled text: callers style *after* fitting, never before.
 func fitWidth(s string, width int) string {
-	if width < 0 {
-		width = 0
-	}
-	r := []rune(s)
-	if len(r) > width {
-		return string(r[:width])
-	}
-	if len(r) < width {
-		return s + strings.Repeat(" ", width-len(r))
-	}
-	return s
+	return padWidth(s, width)
 }

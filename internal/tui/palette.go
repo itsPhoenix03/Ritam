@@ -40,11 +40,11 @@ type command struct {
 // commands is the palette, in the order it is offered.
 var commands = []command{
 	{name: "instruct", usage: `instruct <agent> "..."`, help: "inject a human turn into the round", argHint: "agent"},
-	{name: "pause", usage: "pause [reason]", help: "stop issuing turns, keep the processes"},
+	{name: "pause", usage: "pause [reason]", help: "stop the task's agents mid-turn; r resumes from the current round"},
 	{name: "resume", usage: "resume", help: "continue from the current round"},
-	{name: "cancel", usage: "cancel [reason]", help: "end the task, terminate child CLIs"},
+	{name: "cancel", usage: "cancel [reason]", help: "end the task for good (asks first), terminate child CLIs"},
 	{name: "approve", usage: "approve [note]", help: "accept the pending FINAL_DECISION"},
-	{name: "reject", usage: "reject [note]", help: "refuse the pending FINAL_DECISION"},
+	{name: "reject", usage: "reject [note]", help: "refuse the pending FINAL_DECISION, saying what must change"},
 	{name: "task", usage: `task new "..."`, help: "create and start another task"},
 	{name: "filter", usage: "filter <agent|all>", help: "restrict the stream to one agent"},
 	{name: "follow", usage: "follow <on|off>", help: "pin the stream to its newest line"},
@@ -62,7 +62,7 @@ var commands = []command{
 	{name: "disallow", usage: "disallow <command>", help: "take a command off the list"},
 	{name: "export", usage: "export jsonl [path]", help: "dump the event log seen by this UI"},
 	{name: "help", usage: "help", help: "show the key and command reference"},
-	{name: "quit", usage: "quit", help: "leave the TUI (agents keep running)"},
+	{name: "quit", usage: "quit", help: "leave ritam: running tasks are stopped (asks first) and resume next time"},
 }
 
 // matchCommands returns the palette entries matching what has been typed so

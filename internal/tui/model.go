@@ -231,6 +231,11 @@ type Model struct {
 	awaitCreate int
 	createFrom  domain.TaskID
 
+	// detailSeq numbers the task-detail reloads asked for; detailShown is
+	// the newest one applied (see taskDetailMsg.seq).
+	detailSeq   int
+	detailShown int
+
 	messages  []*domain.Message
 	events    []domain.Event // events for the current task (task detail)
 	decisions []*domain.Decision

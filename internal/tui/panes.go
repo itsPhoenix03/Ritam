@@ -1,6 +1,10 @@
 package tui
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/charmbracelet/x/ansi"
+)
 
 // pane identifies a region of the screen the keys and the mouse can act on.
 type pane int
@@ -320,11 +324,10 @@ func inputWindow(value string, width int, focused bool) string {
 		width = 1
 	}
 
-	r := []rune(value + caret)
-	if len(r) <= width {
-		return string(r)
+	s := value + caret
+	if textWidth(s) <= width {
+		return s
 	}
 	// Show the tail: that is where the caret is and where typing happens.
-	tail := string(r[len(r)-width+1:])
-	return "<" + tail
+	return "<" + ansi.TruncateLeft(s, textWidth(s)-(width-1), "")
 }

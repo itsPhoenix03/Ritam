@@ -2,7 +2,6 @@ package tui
 
 import (
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -98,7 +97,7 @@ func renderMarkdown(src string, width int) []line {
 			}
 			if level <= 2 {
 				// Under NO_COLOR a heading is still a heading: it gets a rule.
-				out = append(out, line{st(strings.Repeat(gl().horiz, minInt(width, utf8.RuneCountInString(text))), dimStyle)})
+				out = append(out, line{st(strings.Repeat(gl().horiz, minInt(width, textWidth(text))), dimStyle)})
 			}
 			i++
 
@@ -148,7 +147,7 @@ func renderMarkdown(src string, width int) []line {
 					bullet = bulletGlyph() + " "
 				}
 				first := pad + bullet
-				rest := strings.Repeat(" ", utf8.RuneCountInString(first))
+				rest := strings.Repeat(" ", textWidth(first))
 				out = append(out, wrapSpans(parseInline(strings.TrimSpace(item)), width, first, rest)...)
 			}
 
@@ -322,15 +321,15 @@ func isListLine(out []line) bool {
 // wrapped rather than word wrapped (code has no word boundaries to trust).
 func codeLines(l string, width int) []line {
 	inner := width - 2
-	r := []rune(strings.TrimRight(l, " "))
-	if len(r) == 0 {
+	rest := strings.TrimRight(l, " ")
+	if rest == "" {
 		return []line{{txt("  ")}}
 	}
 	var out []line
-	for len(r) > 0 {
-		n := minInt(inner, len(r))
-		out = append(out, line{txt("  "), st(string(r[:n]), mdCodeStyle)})
-		r = r[n:]
+	for rest != "" {
+		var head string
+		head, rest = splitWidth(rest, inner)
+		out = append(out, line{txt("  "), st(head, mdCodeStyle)})
 	}
 	return out
 }
@@ -364,7 +363,7 @@ func tableLines(rows []string, width int) []line {
 	widths := make([]int, cols)
 	for _, r := range cells {
 		for i, c := range r {
-			widths[i] = maxInt(widths[i], utf8.RuneCountInString(c))
+			widths[i] = maxInt(widths[i], textWidth(c))
 		}
 	}
 	total := 0
@@ -520,7 +519,7 @@ func wrapSpans(spans []mdSpan, width int, first, rest string) []line {
 				if i > start {
 					seg := sp.text[start:i]
 					cur.parts = append(cur.parts, mdSpan{seg, sp.style})
-					cur.w += utf8.RuneCountInString(seg)
+					cur.w += textWidth(seg)
 				}
 				push()
 				start = i + 1
@@ -529,7 +528,7 @@ func wrapSpans(spans []mdSpan, width int, first, rest string) []line {
 		if start < len(sp.text) {
 			seg := sp.text[start:]
 			cur.parts = append(cur.parts, mdSpan{seg, sp.style})
-			cur.w += utf8.RuneCountInString(seg)
+			cur.w += textWidth(seg)
 		}
 	}
 	push()
@@ -537,14 +536,14 @@ func wrapSpans(spans []mdSpan, width int, first, rest string) []line {
 	var out []line
 	prefix := first
 	l := line{txt(prefix)}
-	used := utf8.RuneCountInString(prefix)
-	avail := func() int { return width - utf8.RuneCountInString(prefix) }
+	used := textWidth(prefix)
+	avail := func() int { return width - textWidth(prefix) }
 	empty := true
 	newLine := func() {
 		out = append(out, l)
 		prefix = rest
 		l = line{txt(prefix)}
-		used = utf8.RuneCountInString(prefix)
+		used = textWidth(prefix)
 		empty = true
 	}
 	for _, w := range words {
@@ -558,18 +557,27 @@ func wrapSpans(spans []mdSpan, width int, first, rest string) []line {
 		if w.w > avail() {
 			// A single word wider than the line (a path, a URL): hard break.
 			for _, p := range w.parts {
-				r := []rune(p.text)
-				for len(r) > 0 {
+				text := p.text
+				for text != "" {
 					space := width - used
 					if space <= 0 {
 						newLine()
 						space = width - used
 					}
-					n := minInt(space, len(r))
-					l = l.join(st(string(r[:n]), p.style))
-					used += n
+					head := cutWidth(text, space)
+					if head == "" {
+						// A wide character does not fit what is left of the
+						// line: it starts the next one.
+						if !empty {
+							newLine()
+							space = width - used
+						}
+						head, _ = splitWidth(text, space)
+					}
+					l = l.join(st(head, p.style))
+					used += textWidth(head)
 					empty = false
-					r = r[n:]
+					text = text[len(head):]
 				}
 			}
 			continue
