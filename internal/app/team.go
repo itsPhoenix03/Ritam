@@ -479,8 +479,13 @@ func (tm *Team) Dismiss(_ context.Context, id domain.AgentID) error {
 // register validates a recruit and adds it to the registry.
 func (tm *Team) register(r recruitRecord) (domain.Agent, error) {
 	id := domain.AgentID(r.Name)
-	if !agentName.MatchString(r.Name) || id == domain.HumanAgentID {
+	if !agentName.MatchString(r.Name) {
 		return domain.Agent{}, fmt.Errorf("agent name %q: use 1-32 lowercase letters, digits, - or _", r.Name)
+	}
+	// The human and the orchestrator are senders of their own: an agent
+	// carrying either name could not be told apart from them in the history.
+	if id == domain.HumanAgentID || id == domain.OrchestratorID {
+		return domain.Agent{}, fmt.Errorf("agent name %q is reserved; choose another", r.Name)
 	}
 	if _, exists := tm.reg.Get(id); exists {
 		return domain.Agent{}, fmt.Errorf("an agent called %s already exists", id)

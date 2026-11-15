@@ -72,6 +72,9 @@ func TestRecruitingRefusesWhatCannotWork(t *testing.T) {
 		"taken name":       {Name: "opus", Provider: "claude-code", Model: "opus"},
 		"bad name":         {Name: "Opus 2!", Provider: "claude-code", Model: "opus"},
 		"the human's name": {Name: "human", Provider: "claude-code", Model: "opus"},
+		// Its notes are signed "orchestrator"; an agent of that name would
+		// be read as the orchestrator in every task's history.
+		"the orchestrator's name": {Name: "orchestrator", Provider: "claude-code", Model: "opus"},
 		"unknown provider": {Name: "g1", Provider: "gemini", Model: "x"},
 	} {
 		if _, err := sys.Service.Recruit(ctx, in); err == nil {
