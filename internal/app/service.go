@@ -311,18 +311,12 @@ func (s *Service) Reject(ctx context.Context, id domain.TaskID, note string) err
 	}
 	// With no run alive the REJECT waits for one; start it off the
 	// caller's goroutine, as Resume does. Without this a rejected task sat
-	// in DELIBERATING with nothing driving it.
+	// in DELIBERATING with nothing driving it. It is a tracked run like any
+	// other, so quitting stops it and waits for it.
 	if s.orch.Running(id) {
 		return nil
 	}
-	go func() {
-		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
-			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
-				Type: domain.EvtTaskFailed, TaskID: id, Summary: "reject failed: " + err.Error(),
-			})
-		}
-	}()
-	return nil
+	return s.goRun(ctx, id, "reject")
 }
 
 // FollowUp reopens a completed task with content addressed to agent to, and
@@ -343,18 +337,12 @@ func (s *Service) SendInstruction(ctx context.Context, id domain.TaskID, to doma
 		return err
 	}
 	// A task with no run alive (a decision held for the human) has the
-	// message queued; start the run that delivers it, as Resume does.
+	// message queued; start the run that delivers it, as Resume does, and
+	// tracked like every other run so quitting stops it and waits for it.
 	if s.orch.Running(id) {
 		return nil
 	}
-	go func() {
-		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
-			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
-				Type: domain.EvtTaskFailed, TaskID: id, Summary: "instruction failed: " + err.Error(),
-			})
-		}
-	}()
-	return nil
+	return s.goRun(ctx, id, "instruction")
 }
 
 // SearchKnowledge queries shared project knowledge.
