@@ -618,28 +618,39 @@ func TestViewZeroWindowSizeDoesNotPanic(t *testing.T) {
 // dispatch tests
 // ---------------------------------------------------------------------------
 
+// TestDispatchHumanOverridesCallService: pause and resume act at once; cancel
+// is confirmed with y; approve and reject act on a pending decision, through
+// the note prompt (a rejection's note is required).
 func TestDispatchHumanOverridesCallService(t *testing.T) {
 	cases := []struct {
 		name   string
 		action Action
 		call   string
+		keys   []string // what the human types after the key
 	}{
-		{"pause", ActionPauseTask, "Pause"},
-		{"resume", ActionResumeTask, "Resume"},
-		{"cancel", ActionCancelTask, "Cancel"},
-		{"approve", ActionApprove, "Approve"},
-		{"reject", ActionReject, "Reject"},
+		{"pause", ActionPauseTask, "Pause", nil},
+		{"resume", ActionResumeTask, "Resume", nil},
+		{"cancel", ActionCancelTask, "Cancel", []string{"y"}},
+		{"approve", ActionApprove, "Approve", []string{"enter"}},
+		{"reject", ActionReject, "Reject", []string{"redo", "enter"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			svc := newFakeService()
 			m := populatedModel(svc)
+			m.decisions = []*domain.Decision{{ID: "DEC-1", TaskID: "TASK-001", Status: domain.DecisionProposed}}
 
-			newModel, cmd := m.dispatch(c.action, 0)
+			next, cmd := m.dispatch(c.action, 0)
+			m = next.(Model)
+			for _, k := range c.keys {
+				if cmd != nil {
+					t.Fatalf("dispatch(%s) acted before the human answered", c.action)
+				}
+				m, cmd = key(m, k)
+			}
 			if cmd == nil {
 				t.Fatalf("dispatch(%s) returned a nil tea.Cmd", c.action)
 			}
-			_ = newModel
 
 			msg := cmd()
 			res, ok := msg.(actionResultMsg)
@@ -651,6 +662,9 @@ func TestDispatchHumanOverridesCallService(t *testing.T) {
 			}
 			if got := svc.callCount(c.call); got != 1 {
 				t.Errorf("dispatch(%s): expected fakeService.%s to be called once, got %d", c.action, c.call, got)
+			}
+			if c.action == ActionReject && svc.lastNote != "redo" {
+				t.Errorf("the rejection note reaches Reject, got %q", svc.lastNote)
 			}
 		})
 	}
@@ -670,9 +684,13 @@ func TestDispatchWithNoCurrentTaskDoesNotCallService(t *testing.T) {
 	}
 }
 
+// TestDispatchQuit: with no task running, quit is immediate. (The fixture's
+// task is deliberating; quitting with it running asks first, see
+// TestQuitWithATaskRunningAsksFirst.)
 func TestDispatchQuit(t *testing.T) {
 	svc := newFakeService()
 	m := populatedModel(svc)
+	m.tasks[0].State = domain.TaskCompleted
 	newModel, cmd := m.dispatch(ActionQuit, 0)
 	if cmd == nil {
 		t.Fatalf("dispatch(quit) returned nil cmd")

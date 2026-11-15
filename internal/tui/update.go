@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -74,28 +75,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
-		switch m.mode {
-		case modeCreateForm:
-			return m.updateCreateForm(msg)
-		case modePrompt:
-			return m.updatePrompt(msg)
-		case modeCommand:
-			return m.updateCommandLine(msg)
-		case modeHelp:
-			// The reference is longer than most terminals, so the scroll keys
-			// keep working inside it; any other key closes it.
-			if a, _, ok := lookupAction(msg.String()); ok && isScrollAction(a) {
-				return m.dispatch(a, 0)
-			}
-			m.mode = modeNormal
-			return m, nil
-		default:
-			action, arg, ok := lookupAction(msg.String())
-			if !ok {
-				return m, nil
-			}
-			return m.dispatch(action, arg)
+		m = m.noteKey()
+		wasText := m.mode.isText()
+		next, cmd := m.updateKey(msg)
+		if mm, ok := next.(Model); ok && wasText && !mm.mode.isText() {
+			mm.leftTextAt = mm.keyAt
+			next = mm
 		}
+		return next, cmd
 
 	case agentsLoadedMsg:
 		if msg.err != nil {
@@ -232,6 +219,166 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// updateKey routes one key press to the active mode's handler.
+func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case modeCreateForm:
+		return m.updateCreateForm(msg)
+	case modePrompt:
+		return m.updatePrompt(msg)
+	case modeCommand:
+		return m.updateCommandLine(msg)
+	case modeConfirm:
+		return m.updateConfirm(msg)
+	case modeHelp:
+		// The reference is longer than most terminals, so the scroll keys
+		// keep working inside it; any other key closes it.
+		if a, _, ok := lookupAction(msg.String()); ok && isScrollAction(a) {
+			return m.dispatch(a, 0)
+		}
+		m.mode = modeNormal
+		return m, nil
+	}
+	action, arg, ok := lookupAction(msg.String())
+	if !ok {
+		return m, nil
+	}
+	if isDestructive(action) && m.guarded() {
+		m.setStatus("ignored %s: it came with pasted text or right after a text field closed; press it again", msg.String())
+		return m, nil
+	}
+	return m.dispatch(action, arg)
+}
+
+// updateConfirm handles the answer to a confirmation: y or enter does it,
+// esc or n does not, and any other key leaves the question open.
+func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n", "N":
+		m.mode = modeNormal
+		m.setStatus("not done")
+		return m, nil
+	case "y", "Y", "enter":
+		if m.burst {
+			// A confirmation answered by a paste is not an answer.
+			m.setStatus("ignored %s: it came with pasted text; press y to confirm", msg.String())
+			return m, nil
+		}
+		c := m.confirm
+		m.mode = modeNormal
+		m.confirm = confirmState{}
+		return m.confirmed(c)
+	}
+	return m, nil
+}
+
+// askConfirm opens a confirmation for an action.
+func (m Model) askConfirm(c confirmState) Model {
+	m.mode = modeConfirm
+	m.confirm = c
+	m.inputSelected = false
+	return m
+}
+
+// confirmed carries out a confirmed action.
+func (m Model) confirmed(c confirmState) (Model, tea.Cmd) {
+	switch c.action {
+	case ActionQuit:
+		m.quitting = true
+		return m, tea.Quit
+	case ActionCancelTask:
+		m.setStatus("cancelling %s...", c.taskID)
+		return m, cancelCmd(m.ctx, m.svc, c.taskID, c.reason)
+	}
+	return m, nil
+}
+
+// runningTasks counts the tasks whose run quitting would stop.
+func (m Model) runningTasks() int {
+	n := 0
+	for _, t := range m.tasks {
+		if !t.State.IsTerminal() && t.State != domain.TaskPaused {
+			n++
+		}
+	}
+	return n
+}
+
+// requestQuit quits, first asking when tasks are running: quitting stops
+// their agents mid-turn.
+func (m Model) requestQuit() (Model, tea.Cmd) {
+	if n := m.runningTasks(); n > 0 {
+		return m.askConfirm(confirmState{action: ActionQuit, label: fmt.Sprintf(
+			"Quit with %d task(s) running? Their agents are stopped mid-turn; resume the tasks (r) next time.", n)}), nil
+	}
+	m.quitting = true
+	return m, tea.Quit
+}
+
+// requestCancel asks before cancelling the selected task: a cancelled task
+// can never be resumed or reopened.
+func (m Model) requestCancel(reason string) (Model, tea.Cmd) {
+	t := m.currentTask()
+	if t == nil {
+		m.setStatus("no task selected")
+		return m, nil
+	}
+	if t.State.IsTerminal() {
+		m.setStatus("%s is already %s", t.ID, t.State)
+		return m, nil
+	}
+	return m.askConfirm(confirmState{action: ActionCancelTask, taskID: t.ID, reason: reason, label: fmt.Sprintf(
+		"Cancel %s? A cancelled task cannot be resumed or reopened (p pauses it instead).", t.ID)}), nil
+}
+
+// requestVerdict starts approving or rejecting the pending decision. Both
+// mean something only while a decision waits on the human, so otherwise
+// they do nothing and say why. With a note given (the ":" command) the
+// verdict is sent; without one a prompt asks for it: optional for an
+// approval, required for a rejection, which has to tell the authority what
+// to change.
+func (m Model) requestVerdict(a Action, note string, given bool) (Model, tea.Cmd) {
+	t := m.currentTask()
+	if t == nil {
+		m.setStatus("no task selected")
+		return m, nil
+	}
+	d, ok := m.pendingDecision()
+	if !ok {
+		m.setStatus("nothing to %s: no decision of %s waits on you", verbOf(a), t.ID)
+		return m, nil
+	}
+	note = strings.TrimSpace(note)
+	if given && (a == ActionApprove || note != "") {
+		return m.sendVerdict(a, t.ID, note)
+	}
+	label := "approve " + string(d.ID) + ", optional note:"
+	if a == ActionReject {
+		label = "reject " + string(d.ID) + ", what must change (required):"
+	}
+	m.mode = modePrompt
+	m.inputSelected = false
+	m.prompt = promptState{action: a, label: label, taskID: t.ID}
+	return m, nil
+}
+
+// sendVerdict sends an approval or a rejection.
+func (m Model) sendVerdict(a Action, id domain.TaskID, note string) (Model, tea.Cmd) {
+	if a == ActionReject {
+		m.setStatus("rejecting %s...", id)
+		return m, rejectCmd(m.ctx, m.svc, id, note)
+	}
+	m.setStatus("approving %s...", id)
+	return m, approveCmd(m.ctx, m.svc, id, note)
+}
+
+func verbOf(a Action) string {
+	if a == ActionReject {
+		return "reject"
+	}
+	return "approve"
 }
 
 // beginCreate records a task creation about to be submitted, so its result
@@ -394,8 +541,7 @@ func (m Model) scrollPane(p pane, delta int) Model {
 func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 	switch a {
 	case ActionQuit:
-		m.quitting = true
-		return m, tea.Quit
+		return m.requestQuit()
 
 	case ActionHelp:
 		m.mode = modeHelp
@@ -568,11 +714,10 @@ func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 	case ActionFocusAgent:
 		return m.setFocus(arg)
 
-	// Pause/resume/cancel/approve/reject are single-key, immediate human
-	// overrides: each maps straight onto one ports.Service call. A richer
-	// reason/note prompt (like the one send-instruction uses) is deliberately
-	// left for a later phase -- see TODO(phase-next) below -- because the
-	// override must never be one keypress away from being blocked on typing.
+	// Pause and resume are single-key, immediate human overrides: each maps
+	// straight onto one ports.Service call and can be undone by the other.
+	// Cancel cannot be undone, so it asks first; approve and reject answer a
+	// pending decision, so they act only while one waits, and take a note.
 	case ActionPauseTask:
 		t := m.currentTask()
 		if t == nil {
@@ -592,34 +737,10 @@ func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 		return m, resumeCmd(m.ctx, m.svc, t.ID)
 
 	case ActionCancelTask:
-		t := m.currentTask()
-		if t == nil {
-			m.setStatus("no task selected")
-			return m, nil
-		}
-		m.setStatus("cancelling %s...", t.ID)
-		// TODO(phase-next): prompt for a cancellation reason instead of "".
-		return m, cancelCmd(m.ctx, m.svc, t.ID, "")
+		return m.requestCancel("")
 
-	case ActionApprove:
-		t := m.currentTask()
-		if t == nil {
-			m.setStatus("no task selected")
-			return m, nil
-		}
-		m.setStatus("approving %s...", t.ID)
-		// TODO(phase-next): prompt for an approval note instead of "".
-		return m, approveCmd(m.ctx, m.svc, t.ID, "")
-
-	case ActionReject:
-		t := m.currentTask()
-		if t == nil {
-			m.setStatus("no task selected")
-			return m, nil
-		}
-		m.setStatus("rejecting %s...", t.ID)
-		// TODO(phase-next): prompt for a rejection note instead of "".
-		return m, rejectCmd(m.ctx, m.svc, t.ID, "")
+	case ActionApprove, ActionReject:
+		return m.requestVerdict(a, "", false)
 
 	case ActionSendInstruction:
 		t := m.currentTask()
@@ -657,6 +778,10 @@ func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 
 // updateCommandLine handles key input while the ":" command line is active.
 func (m Model) updateCommandLine(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pastedBreak(msg) {
+		m.cmd.input, m.inputSelected = typeSpace(m.cmd.input, m.inputSelected), false
+		return m, nil
+	}
 	switch msg.String() {
 	case "esc":
 		m.mode = modeNormal
@@ -717,6 +842,21 @@ func (m Model) updateCommandLine(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateCreateForm handles key input while the new-task form is active.
 func (m Model) updateCreateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.burst && m.form.focus >= fieldRecruit {
+		// Pasted text landing on the team fields would change counts (digits),
+		// start paid model checks (c), tick the authority (space) and submit
+		// (enter). None of it is meant.
+		m.setStatus("ignored pasted keys: paste into the title or the description")
+		return m, nil
+	}
+	if m.pastedBreak(msg) && (m.form.focus == 0 || m.form.focus == 1) {
+		field := &m.form.title
+		if m.form.focus == 1 {
+			field = &m.form.description
+		}
+		*field, m.inputSelected = typeSpace(*field, m.inputSelected), false
+		return m, nil
+	}
 	switch msg.String() {
 	case "esc":
 		m.mode = modeNormal
@@ -815,6 +955,10 @@ func (m Model) submitCreateForm() (tea.Model, tea.Cmd) {
 // updatePrompt handles key input for the text prompt used by
 // pause/cancel/approve/reject/send-instruction.
 func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pastedBreak(msg) {
+		m.prompt.input, m.inputSelected = typeSpace(m.prompt.input, m.inputSelected), false
+		return m, nil
+	}
 	switch msg.String() {
 	case "esc":
 		m.mode = modeNormal
@@ -849,6 +993,17 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	m.mode = modeNormal
 	if p.action == ActionSetAccess {
 		return m.confirmLevel(p)
+	}
+	if p.action == ActionApprove || p.action == ActionReject {
+		note := strings.TrimSpace(p.input)
+		if p.action == ActionReject && note == "" {
+			// The authority is asked to change its decision; with no note it
+			// cannot know what to change. Keep the prompt open.
+			m.mode = modePrompt
+			m.setStatus("a rejection needs a note: say what must change")
+			return m, nil
+		}
+		return m.sendVerdict(p.action, p.taskID, note)
 	}
 	if p.action == ActionRecruit {
 		name := strings.TrimSpace(p.input)
@@ -937,6 +1092,16 @@ func sanitizeText(rs []rune) string {
 		}
 	}
 	return b.String()
+}
+
+// typeSpace types the space a pasted line break or tab stands for: the
+// fields are single-line, and sanitizeText turns a pasted newline into a
+// space too, so both paths read the same.
+func typeSpace(value string, selected bool) string {
+	if selected {
+		return " "
+	}
+	return value + " "
 }
 
 // trimLastRune removes the last rune of s, respecting UTF-8 boundaries.

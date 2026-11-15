@@ -54,7 +54,26 @@ const (
 	// argument, "filter agent=x" needs a value, and binding a key to each
 	// would exhaust the keyboard long before it covered the verbs.
 	modeCommand
+	// modeConfirm asks before an action that cannot be taken back (quit with
+	// runs going, cancel a task): y or enter does it, esc or n does not.
+	modeConfirm
 )
+
+// isText reports whether keys in this mode type text rather than run
+// commands. Leaving such a mode starts the short guard against keys that
+// were meant as text arriving as commands (see guarded).
+func (md mode) isText() bool {
+	return md == modePrompt || md == modeCommand || md == modeCreateForm
+}
+
+// confirmState is the question modeConfirm is asking.
+type confirmState struct {
+	action Action
+	taskID domain.TaskID
+	// reason is passed on to the action (a cancel's reason).
+	reason string
+	label  string
+}
 
 // centerTab selects what the centre column shows.
 //
@@ -302,10 +321,22 @@ type Model struct {
 	// met is the rolling throughput window behind the THROUGHPUT pane.
 	met metrics
 
-	mode   mode
-	form   createForm
-	prompt promptState
-	cmd    commandState
+	mode    mode
+	form    createForm
+	prompt  promptState
+	cmd     commandState
+	confirm confirmState
+
+	// The paste defence (input.go). now is the clock it reads, replaced in
+	// tests; keyAt is when the key being handled arrived and lastKeyAt the
+	// one before it; burst is whether the key came too close after the last
+	// to have been typed by hand; leftTextAt is when a text mode was last
+	// left.
+	now        func() time.Time
+	keyAt      time.Time
+	lastKeyAt  time.Time
+	burst      bool
+	leftTextAt time.Time
 
 	// frameIdents is the identity table for the frame being rendered. It is
 	// set only on View()'s private copy of the Model (a value receiver), so it

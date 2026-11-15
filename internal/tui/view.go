@@ -301,7 +301,15 @@ func (m Model) commandRows(width, height int) []string {
 		spec = boxSpec{active: true, right: keyLegend("enter run", "tab complete", "esc cancel", inputHelp())}
 		body = m.inputBodyLines(inner)
 	case modePrompt:
-		spec = boxSpec{active: true, right: keyLegend("tab recipient", "enter send", "esc cancel", inputHelp())}
+		legend := keyLegend("enter send", "esc cancel", inputHelp())
+		if m.prompt.action == ActionSendInstruction {
+			legend = keyLegend("tab recipient", legend)
+		}
+		spec = boxSpec{active: true, right: legend}
+		body = m.inputBodyLines(inner)
+	case modeConfirm:
+		accent := colorYellow
+		spec = boxSpec{active: true, accent: &accent, right: keyLegend("y/enter confirm", "esc/n keep")}
 		body = m.inputBodyLines(inner)
 	default:
 		status := m.statusLine

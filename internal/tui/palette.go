@@ -213,26 +213,17 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		m.setStatus("resuming %s...", t.ID)
 		return m, resumeCmd(m.ctx, m.svc, t.ID)
 
+	// The typed forms of the keys follow the same rules: cancel asks first,
+	// approve and reject act only on a pending decision, and a rejection
+	// without a note asks for one.
 	case "cancel":
-		if !needTask() {
-			return m, nil
-		}
-		m.setStatus("cancelling %s...", t.ID)
-		return m, cancelCmd(m.ctx, m.svc, t.ID, unquote(rest))
+		return m.requestCancel(unquote(rest))
 
 	case "approve":
-		if !needTask() {
-			return m, nil
-		}
-		m.setStatus("approving %s...", t.ID)
-		return m, approveCmd(m.ctx, m.svc, t.ID, unquote(rest))
+		return m.requestVerdict(ActionApprove, unquote(rest), true)
 
 	case "reject":
-		if !needTask() {
-			return m, nil
-		}
-		m.setStatus("rejecting %s...", t.ID)
-		return m, rejectCmd(m.ctx, m.svc, t.ID, unquote(rest))
+		return m.requestVerdict(ActionReject, unquote(rest), true)
 
 	case "task":
 		sub, title := splitVerb(rest)
@@ -416,8 +407,7 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		return m, nil
 
 	case "quit":
-		m.quitting = true
-		return m, tea.Quit
+		return m.requestQuit()
 	}
 
 	m.setStatus("unknown command: %s", verb)
