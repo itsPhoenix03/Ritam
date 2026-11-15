@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,50 @@ func TestAnUnrelatedAppHomeUnderTheFormerNameIsNotAdopted(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, brand.ConfigFile())); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("no global settings are made from it: %v", err)
+	}
+}
+
+// TestBackupsOfAProjectOnAnUnmountedDriveAreKept: with "delete" and no
+// days of grace, a project whose drive is not plugged in is not taken for
+// deleted, and its backups stay; a project really deleted loses them.
+func TestBackupsOfAProjectOnAnUnmountedDriveAreKept(t *testing.T) {
+	home, _ := inProject(t)
+	away := filepath.Join(string(filepath.Separator), "no-such-volume-ritam-test", "work", "away")
+	if runtime.GOOS == "windows" {
+		away = ""
+		for l := 'Z'; l >= 'D' && away == ""; l-- {
+			if _, err := os.Stat(string(l) + `:\`); err != nil {
+				away = filepath.Join(string(l)+`:\`, "work", "away")
+			}
+		}
+		if away == "" {
+			t.Skip("every drive letter is in use")
+		}
+	}
+	gone := filepath.Join(t.TempDir(), "gone")
+	entries := []layout.Entry{
+		{ID: "a0a0a0a0", Name: "away", Path: away, LastSeen: time.Now()},
+		{ID: "b0b0b0b0", Name: "gone", Path: gone, LastSeen: time.Now()},
+	}
+	writeRegistry(t, home, entries...)
+	for _, e := range entries {
+		if err := os.MkdirAll(filepath.Join(home, "backups", e.Key()), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, brand.ConfigFile()),
+		[]byte("backups:\n  whenProjectDeleted: delete\n  deleteAfterDays: 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := prepare(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "backups", entries[0].Key())); err != nil {
+		t.Errorf("the unmounted project's backups must be kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "backups", entries[1].Key())); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the deleted project's backups go, as set: %v", err)
 	}
 }
 

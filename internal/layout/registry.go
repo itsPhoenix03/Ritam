@@ -221,13 +221,18 @@ func addNames(list []string, names ...string) []string {
 }
 
 // Missing lists the known projects whose folder no longer exists, noting
-// when each was first found gone.
+// when each was first found gone. A project on a drive or share that cannot
+// be reached is not missing: deleting its backups because a USB drive is
+// unplugged would lose them for nothing.
 func (r *Registry) Missing() []Entry {
 	r.mu.Lock()
 	var out []Entry
 	changed := false
 	for i := range r.entries {
 		if _, err := os.Stat(r.entries[i].Path); !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if !reachable(r.entries[i].Path) {
 			continue
 		}
 		if r.entries[i].MissingSince.IsZero() {
@@ -241,6 +246,24 @@ func (r *Registry) Missing() []Entry {
 		_ = r.Save()
 	}
 	return out
+}
+
+// reachable reports whether the place a project folder lives can be seen
+// at all, so its absence means it was deleted rather than that its drive is
+// not plugged in: the volume (a drive letter or network share on Windows)
+// and the folder holding the project must both exist. An unmounted drive
+// usually takes its mount point away, or leaves it empty, without the
+// project's parent folder; a share that is offline has no root to stat.
+// When in doubt the project is not "missing", and its backups are kept.
+func reachable(path string) bool {
+	if vol := filepath.VolumeName(path); vol != "" {
+		if _, err := os.Stat(vol + string(filepath.Separator)); err != nil {
+			return false
+		}
+	}
+	parent := filepath.Dir(filepath.Clean(path))
+	info, err := os.Stat(parent)
+	return err == nil && info.IsDir()
 }
 
 // SetKeep records that a missing project's backups are to be kept.
