@@ -115,9 +115,9 @@ func prepare(configPath string) (*config.Config, place, error) {
 	}
 	pl.place(cfg, root)
 	pl.trustAccess(cfg, global.Access)
-	// A sandbox check that was cut short can leave its file behind; clear
-	// them at every start, so nothing else has to.
-	if err := layout.ClearCanary(home); err != nil {
+	// A sandbox check that was cut short can leave its folder behind; remove
+	// the old ones at every start, never one a check may still be using.
+	if err := layout.PruneCanary(home); err != nil {
 		return nil, pl, err
 	}
 	pl.adoptOldModelsFile()

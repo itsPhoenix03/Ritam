@@ -24,8 +24,9 @@ import (
 // Each adapter declares whether its CLI runs the agent's commands in a
 // sandbox (RunsInSandbox). A declaration is a claim, so ritam checks it with
 // a canary, judged by ritam's own code and not by the agent: the agent is
-// asked to write one file inside the workspace and one in the app home's
-// canary folder, outside it. The file inside proves the agent ran the
+// asked to write one file inside the workspace and one in a folder of the
+// check's own under the app home's canary folder, outside it. The file
+// inside proves the agent ran the
 // commands; the file outside must then be missing, or the CLI is not
 // sandboxed. The result is kept per model in models.json with the CLI's
 // version, and checked again when the version changes. An adapter that
@@ -189,12 +190,22 @@ func (tm *Team) canaryCLI(ctx context.Context, provider, model string) (bool, st
 	if err := os.MkdirAll(ac.ScratchDir, 0o700); err != nil {
 		return false, "", err
 	}
+	// The canary folder is shared by every ritam on this machine. A check
+	// writes into a folder of its own, which nothing else removes while it
+	// is young (layout.PruneCanary): with one folder for all, a ritam
+	// starting mid-check emptied it, deleted the file an unsandboxed CLI had
+	// just written, and the check passed.
+	runDir, err := os.MkdirTemp(outsideDir, "check-")
+	if err != nil {
+		return false, "", err
+	}
+	defer func() { _ = os.RemoveAll(runDir) }()
 	nonce := canaryNonce()
 	inside := filepath.Join(ac.ScratchDir, "canary-"+nonce+".txt")
-	outside := filepath.Join(outsideDir, "canary-"+nonce+".txt")
+	outside := filepath.Join(runDir, "canary-"+nonce+".txt")
 	reply := filepath.Join(ac.ScratchDir, "canary-"+nonce+"-reply.txt")
 	defer func() {
-		for _, p := range []string{inside, outside, reply} {
+		for _, p := range []string{inside, reply} {
 			_ = os.Remove(p)
 		}
 	}()
@@ -207,6 +218,11 @@ func (tm *Team) canaryCLI(ctx context.Context, provider, model string) (bool, st
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
+	// A missing outside file counts for the sandbox only if the folder it
+	// was to be written in was still there to hold it.
+	if _, err := os.Stat(runDir); err != nil {
+		return false, "", fmt.Errorf("the check's folder %s went away while it ran, so its result proves nothing", runDir)
+	}
 	return judgeCanary(inside, outside, runErr, stderr.String())
 }
 

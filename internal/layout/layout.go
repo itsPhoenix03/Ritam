@@ -89,19 +89,32 @@ func (h Home) SpendFile() string { return filepath.Join(h.Root, "spend.json") }
 // CanaryDir is where sandbox checks try to write.
 func (h Home) CanaryDir() string { return filepath.Join(h.Root, "canary") }
 
-// ClearCanary empties the canary folder, creating it if needed: a check cut
-// short may have left a file there, and a stale file must not be mistaken
-// for the next check's.
-func ClearCanary(h Home) error {
+// CanaryMaxAge is how long a sandbox check's folder may sit in the canary
+// folder before a start removes it. A check takes minutes at most, so a
+// folder this old was left by a check that was cut short.
+const CanaryMaxAge = time.Hour
+
+// PruneCanary removes what checks cut short left in the canary folder,
+// creating it if needed. Only what is older than CanaryMaxAge goes: every
+// check writes into a folder of its own and removes it, and emptying the
+// whole folder at every start once deleted a running check's file outside
+// the workspace, so a start of any other ritam (even `where`) made an
+// unsandboxed CLI pass as sandboxed.
+func PruneCanary(h Home) error {
 	dir := h.CanaryDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("canary: %w", err)
 	}
+	cutoff := time.Now().Add(-CanaryMaxAge)
 	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
-			return fmt.Errorf("canary: %w", err)
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
 		}
+		// A leftover that cannot be removed now (a file still open on
+		// Windows) harms nothing: no check looks outside its own folder.
+		_ = os.RemoveAll(filepath.Join(dir, e.Name()))
 	}
 	return os.MkdirAll(dir, 0o700)
 }

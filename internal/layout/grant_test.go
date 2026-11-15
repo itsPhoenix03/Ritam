@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"ritam/internal/brand"
 )
@@ -50,23 +51,46 @@ func TestAnApprovalCoversOneFolderOnly(t *testing.T) {
 	}
 }
 
-// TestLeftoverCanaryFilesAreClearedAtStart: a sandbox check cut short can
-// leave its file; the next start removes it so it is never mistaken for a
-// new check's.
-func TestLeftoverCanaryFilesAreClearedAtStart(t *testing.T) {
+// TestOnlyOldCanaryFoldersAreRemovedAtStart: a sandbox check cut short can
+// leave its folder; a start removes it once it is old, but never the folder
+// of a check that may still be running, in this ritam or another.
+func TestOnlyOldCanaryFoldersAreRemovedAtStart(t *testing.T) {
 	h := Home{Root: setHome(t, brand.Name)}
-	if err := ClearCanary(h); err != nil {
+	if err := PruneCanary(h); err != nil {
 		t.Fatal(err)
 	}
-	stale := filepath.Join(h.CanaryDir(), "canary-old.txt")
-	if err := os.WriteFile(stale, []byte("x"), 0o600); err != nil {
+	leave := func(name string, age time.Duration) string {
+		t.Helper()
+		dir := filepath.Join(h.CanaryDir(), name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "canary.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		when := time.Now().Add(-age)
+		if err := os.Chtimes(dir, when, when); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	stale := leave("check-old", CanaryMaxAge+time.Minute)
+	running := leave("check-running", 2*time.Minute)
+	oldFile := filepath.Join(h.CanaryDir(), "canary-old.txt") // as an older version left them
+	_ = os.WriteFile(oldFile, []byte("x"), 0o600)
+	when := time.Now().Add(-2 * CanaryMaxAge)
+	_ = os.Chtimes(oldFile, when, when)
+
+	if err := PruneCanary(h); err != nil {
 		t.Fatal(err)
 	}
-	if err := ClearCanary(h); err != nil {
-		t.Fatal(err)
+	for _, gone := range []string{stale, oldFile} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s is old and should be gone: %v", gone, err)
+		}
 	}
-	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Errorf("the leftover file should be gone: %v", err)
+	if _, err := os.Stat(filepath.Join(running, "canary.txt")); err != nil {
+		t.Errorf("a check that may still be running keeps its file: %v", err)
 	}
 	if fi, err := os.Stat(h.CanaryDir()); err != nil || !fi.IsDir() {
 		t.Errorf("the canary folder stays: %v", err)
