@@ -135,7 +135,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tasks = msg.tasks
 		var cmds []tea.Cmd
-		if m.currentTask() == nil && len(m.tasks) > 0 {
+		// Only when nothing is selected: a list fetched just before a task was
+		// created can arrive after it, without it, and must not move the human
+		// off the task they were just shown.
+		if m.currentTaskID == "" && len(m.tasks) > 0 {
 			m.currentTaskID = m.tasks[0].ID
 			cmds = append(cmds, loadTaskDetailCmd(m.ctx, m.svc, m.currentTaskID))
 		}
@@ -169,17 +172,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case taskCreatedMsg:
-		if msg.err != nil {
-			m.setError(msg.err)
-			return m, nil
-		}
-		m.setStatus("created %s", msg.task.ID)
-		m.currentTaskID = msg.task.ID
-		m.mode = modeNormal
-		return m, tea.Batch(
-			loadTasksCmd(m.ctx, m.svc),
-			loadTaskDetailCmd(m.ctx, m.svc, msg.task.ID),
-		)
+		return m.taskCreated(msg)
 
 	case actionResultMsg:
 		if msg.err != nil {
@@ -239,6 +232,54 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// beginCreate records a task creation about to be submitted, so its result
+// can tell whether the human is still where the submit left them.
+func (m Model) beginCreate() (Model, int) {
+	m.createSeq++
+	m.awaitCreate = m.createSeq
+	m.createFrom = m.currentTaskID
+	return m, m.createSeq
+}
+
+// taskCreated applies a creation's result.
+//
+// Like every result of a background command it may update data and the
+// status line, but never the mode, the field being edited or the task on
+// screen: it can land while the human is typing an instruction to another
+// task, and taking the screen from them there turns the rest of their typing
+// into hotkeys. The one exception is the submit path itself: the new task is
+// shown when the human is still where the submit left them (normal mode, the
+// same task on screen, no newer creation since), or when nothing is shown.
+func (m Model) taskCreated(msg taskCreatedMsg) (Model, tea.Cmd) {
+	awaited := msg.seq != 0 && msg.seq == m.awaitCreate
+	onPath := m.mode == modeNormal && ((awaited && m.currentTaskID == m.createFrom) || m.currentTaskID == "")
+	if awaited {
+		m.awaitCreate = 0
+	}
+	if msg.err != nil {
+		m.setError(msg.err)
+		return m, nil
+	}
+	if msg.task == nil {
+		return m, loadTasksCmd(m.ctx, m.svc)
+	}
+	known := false
+	for _, t := range m.tasks {
+		known = known || t.ID == msg.task.ID
+	}
+	if !known {
+		// Shown at once rather than after the list reloads.
+		m.tasks = append(append([]*domain.Task(nil), m.tasks...), msg.task)
+	}
+	if !onPath {
+		m.setStatus("created and started %s ({ and } switch tasks)", msg.task.ID)
+		return m, loadTasksCmd(m.ctx, m.svc)
+	}
+	m, sel := m.selectTaskID(msg.task.ID)
+	m.setStatus("created and started %s", msg.task.ID)
+	return m, tea.Batch(loadTasksCmd(m.ctx, m.svc), sel)
 }
 
 // applyAgentActivity folds one AgentActivity event into the target agent's
@@ -762,12 +803,13 @@ func (m Model) submitCreateForm() (tea.Model, tea.Cmd) {
 		Builder:      m.formBuilder(),
 	}
 	m.mode = modeNormal
+	m, seq := m.beginCreate()
 	if len(recruits) > 0 {
 		m.setStatus("recruiting %d agent(s) and creating the task...", len(recruits))
-		return m, createTaskWithRecruitsCmd(m.ctx, m.svc, in, recruits)
+		return m, createTaskWithRecruitsCmd(m.ctx, m.svc, in, recruits, seq)
 	}
 	m.setStatus("creating task...")
-	return m, createTaskCmd(m.ctx, m.svc, in)
+	return m, createTaskCmd(m.ctx, m.svc, in, seq)
 }
 
 // updatePrompt handles key input for the text prompt used by

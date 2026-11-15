@@ -255,9 +255,10 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 			participants = append(participants, a.ID)
 		}
 		m.setStatus("creating task...")
+		m, seq := m.beginCreate()
 		return m, createTaskCmd(m.ctx, m.svc, ports.CreateTaskInput{
 			Title: unquote(title), Authority: authority, Participants: participants,
-		})
+		}, seq)
 
 	case "filter":
 		arg := strings.TrimSpace(rest)

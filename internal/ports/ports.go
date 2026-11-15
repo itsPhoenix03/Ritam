@@ -434,6 +434,11 @@ type AccessChange struct {
 type Service interface {
 	CreateTask(ctx context.Context, in CreateTaskInput) (*domain.Task, error)
 	RunTask(ctx context.Context, id domain.TaskID) error
+	// StartTask creates a task and starts running it in the background. It
+	// returns as soon as the task exists: a run takes minutes, and a caller
+	// that waited for it (the TUI used to) is blocked for all of them. How
+	// the run goes is told by the task's events.
+	StartTask(ctx context.Context, in CreateTaskInput) (*domain.Task, error)
 
 	ListTasks(ctx context.Context) ([]*domain.Task, error)
 	GetTask(ctx context.Context, id domain.TaskID) (*domain.Task, error)

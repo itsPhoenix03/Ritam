@@ -202,6 +202,16 @@ type Model struct {
 	tasks         []*domain.Task
 	currentTaskID domain.TaskID
 
+	// createSeq numbers the task creations this UI has asked for.
+	// awaitCreate is the one whose result may still select the new task, and
+	// createFrom the task that was on screen when it was submitted: the new
+	// task is shown only if the human is still where the submit left them.
+	// Anyone who has since opened a prompt or moved to another task is doing
+	// something else, and a result arriving must not pull them away from it.
+	createSeq   int
+	awaitCreate int
+	createFrom  domain.TaskID
+
 	messages  []*domain.Message
 	events    []domain.Event // events for the current task (task detail)
 	decisions []*domain.Decision
@@ -327,6 +337,9 @@ func (m Model) Init() tea.Cmd {
 		loadAccessCmd(m.ctx, m.svc),
 	}
 	if m.opts.DemoOnStart {
+		// Init cannot record a creation on the model (it returns only a
+		// command), so the demo's result carries no sequence; with nothing
+		// selected yet the handler selects it anyway.
 		cmds = append(cmds, createTaskCmd(m.ctx, m.svc, ports.CreateTaskInput{
 			Title:       "Fix authentication cookie bug",
 			Description: "Cookies are not consistently scoped; investigate and resolve.",
@@ -334,7 +347,7 @@ func (m Model) Init() tea.Cmd {
 			Participants: []domain.AgentID{
 				m.opts.DefaultAuthority,
 			},
-		}))
+		}, 0))
 	}
 	return tea.Batch(cmds...)
 }

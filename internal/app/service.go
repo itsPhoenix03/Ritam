@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"ritam/internal/domain"
 	"ritam/internal/knowledge"
@@ -47,6 +48,26 @@ func (s *Service) CreateTask(ctx context.Context, in ports.CreateTaskInput) (*do
 // their own goroutine.
 func (s *Service) RunTask(ctx context.Context, id domain.TaskID) error {
 	return s.orch.RunTask(ctx, id)
+}
+
+// StartTask creates a task and runs it on its own goroutine, returning as
+// soon as the task is recorded. The run's outcome reaches the caller as
+// events, the same way a resumed run's does.
+func (s *Service) StartTask(ctx context.Context, in ports.CreateTaskInput) (*domain.Task, error) {
+	t, err := s.CreateTask(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		// A run cancelled by a pause or a cancel has ended as asked; only a
+		// run that broke is reported as one.
+		if err := s.orch.RunTask(context.WithoutCancel(ctx), t.ID); err != nil && !errors.Is(err, context.Canceled) {
+			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
+				Type: domain.EvtTaskFailed, TaskID: t.ID, Summary: "run failed: " + err.Error(),
+			})
+		}
+	}()
+	return t, nil
 }
 
 // ListTasks returns every task.

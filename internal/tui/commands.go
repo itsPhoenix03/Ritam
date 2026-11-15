@@ -211,7 +211,10 @@ type taskDetailMsg struct {
 }
 
 // taskCreatedMsg carries the result of creating (and starting) a new task.
+// seq is the creation it answers (Model.createSeq), so the handler can tell
+// whether the human is still where that creation left them.
 type taskCreatedMsg struct {
+	seq  int
 	task *domain.Task
 	err  error
 }
@@ -304,38 +307,28 @@ func loadTaskDetailCmd(ctx context.Context, svc ports.Service, id domain.TaskID)
 
 // createTaskWithRecruitsCmd recruits the agents chosen in the form, adds them
 // to the task's participants, then creates and starts the task.
-func createTaskWithRecruitsCmd(ctx context.Context, svc ports.Service, in ports.CreateTaskInput, recruits []ports.RecruitInput) tea.Cmd {
+func createTaskWithRecruitsCmd(ctx context.Context, svc ports.Service, in ports.CreateTaskInput, recruits []ports.RecruitInput, seq int) tea.Cmd {
 	return func() tea.Msg {
 		for _, r := range recruits {
 			a, err := svc.Recruit(ctx, r)
 			if err != nil {
-				return taskCreatedMsg{err: fmt.Errorf("recruiting %s: %w", r.Name, err)}
+				return taskCreatedMsg{seq: seq, err: fmt.Errorf("recruiting %s: %w", r.Name, err)}
 			}
 			in.Participants = append(in.Participants, a.ID)
 		}
-		t, err := svc.CreateTask(ctx, in)
-		if err != nil {
-			return taskCreatedMsg{err: err}
-		}
-		if err := svc.RunTask(ctx, t.ID); err != nil {
-			return taskCreatedMsg{task: t, err: err}
-		}
-		return taskCreatedMsg{task: t}
+		t, err := svc.StartTask(ctx, in)
+		return taskCreatedMsg{seq: seq, task: t, err: err}
 	}
 }
 
-// createTaskCmd creates a task and immediately asks the service to run it,
-// mirroring what a human expects from "new task": submit and go.
-func createTaskCmd(ctx context.Context, svc ports.Service, in ports.CreateTaskInput) tea.Cmd {
+// createTaskCmd creates a task and starts it, mirroring what a human expects
+// from "new task": submit and go. StartTask returns once the task exists, so
+// the result arrives while the human is still looking at what they submitted
+// rather than minutes later, when they are typing something else.
+func createTaskCmd(ctx context.Context, svc ports.Service, in ports.CreateTaskInput, seq int) tea.Cmd {
 	return func() tea.Msg {
-		t, err := svc.CreateTask(ctx, in)
-		if err != nil {
-			return taskCreatedMsg{err: err}
-		}
-		if err := svc.RunTask(ctx, t.ID); err != nil {
-			return taskCreatedMsg{task: t, err: err}
-		}
-		return taskCreatedMsg{task: t}
+		t, err := svc.StartTask(ctx, in)
+		return taskCreatedMsg{seq: seq, task: t, err: err}
 	}
 }
 

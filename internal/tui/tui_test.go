@@ -91,6 +91,11 @@ func (f *fakeService) RunTask(ctx context.Context, id domain.TaskID) error {
 	return nil
 }
 
+func (f *fakeService) StartTask(ctx context.Context, in ports.CreateTaskInput) (*domain.Task, error) {
+	f.record("StartTask")
+	return f.CreateTask(ctx, in)
+}
+
 func (f *fakeService) ListTasks(ctx context.Context) ([]*domain.Task, error) {
 	f.record("ListTasks")
 	return f.tasks, nil

@@ -2,6 +2,8 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+
+	"ritam/internal/domain"
 )
 
 // Navigation: what j/k, the arrows, page up/down, enter and the mouse do.
@@ -128,7 +130,14 @@ func (m Model) selectTask(idx int) (Model, tea.Cmd) {
 	if idx < 0 || idx >= len(m.tasks) || m.tasks[idx].ID == m.currentTaskID {
 		return m, nil
 	}
-	m.currentTaskID = m.tasks[idx].ID
+	return m.selectTaskID(m.tasks[idx].ID)
+}
+
+// selectTaskID makes task id current and loads what is shown of it. Every
+// change of the current task goes through here, so the roster and the
+// conversation are always reloaded for the task they now describe.
+func (m Model) selectTaskID(id domain.TaskID) (Model, tea.Cmd) {
+	m.currentTaskID = id
 	m.conversationScroll = 0
 	m.follow = true
 	m.convSel = 0
