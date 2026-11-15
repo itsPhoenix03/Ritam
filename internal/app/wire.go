@@ -129,7 +129,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		}
 	}()
 	know := knowledge.New(store.Knowledge)
-	dec := decisions.New(store.Decisions)
+	dec := decisions.NewInStorage(store)
 
 	registry := core.NewRegistry()
 	agentMgr := core.NewManager(registry, log)
