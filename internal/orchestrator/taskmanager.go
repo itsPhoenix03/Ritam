@@ -57,6 +57,13 @@ func (tm *TaskManager) Create(ctx context.Context, in ports.CreateTaskInput) (*d
 	if dup := firstDuplicate(participants); dup != "" {
 		return nil, fmt.Errorf("create task: agent %q listed twice as a participant", dup)
 	}
+	for _, p := range participants {
+		// An agent under one of these ids would be taken for the human or
+		// the orchestrator, whose messages pass checks an agent's do not.
+		if domain.IsReservedAgentID(p) {
+			return nil, fmt.Errorf("create task: %q is reserved and cannot be an agent's id", p)
+		}
+	}
 
 	seq, err := tm.repo.NextSequence(ctx)
 	if err != nil {

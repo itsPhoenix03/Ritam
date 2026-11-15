@@ -162,7 +162,7 @@ func TestTheAddressedAgentRelayingTheAnswerAlsoCompletes(t *testing.T) {
 // each other but never to the human.
 func TestAnUnansweredQuestionGetsOneReminderThenAClearPause(t *testing.T) {
 	codex := func(_ domain.AgentID, _ *domain.Task, in domain.Message) []domain.Message {
-		if in.FromAgent == domain.HumanAgentID && in.Type == domain.MsgInformation {
+		if (in.FromAgent == domain.HumanAgentID || in.FromAgent == domain.OrchestratorID) && in.Type == domain.MsgInformation {
 			// Neither the question nor the reminder gets an answer to the human.
 			return []domain.Message{{ToAgent: "opus", Type: domain.MsgInformation, Content: "noted " + string(in.ID)}}
 		}
@@ -189,7 +189,7 @@ func TestAnUnansweredQuestionGetsOneReminderThenAClearPause(t *testing.T) {
 
 func TestAReminderThatGetsAnAnswerCompletes(t *testing.T) {
 	codex := func(_ domain.AgentID, _ *domain.Task, in domain.Message) []domain.Message {
-		if in.FromAgent == domain.HumanAgentID && in.Metadata["orchestrator"] == "reminder" {
+		if in.FromAgent == domain.OrchestratorID && in.Metadata["orchestrator"] == "reminder" {
 			return []domain.Message{{ToAgent: domain.HumanAgentID, Type: domain.MsgAnswer, Content: "Yes, it is safe."}}
 		}
 		if fromHuman(in) {

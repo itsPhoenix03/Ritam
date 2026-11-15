@@ -79,8 +79,66 @@ func (t MessageType) RequiresAuthority() bool {
 // overrides. It can never be an agent-controlled runtime.
 const HumanAgentID AgentID = "human"
 
+// OrchestratorID is the sender of the orchestrator's own notes to agents:
+// reminders, checkpoints, notices about unreadable or refused replies, resume
+// and authority-change notes. It is never a participant and never a
+// recipient.
+//
+// Those notes used to be sent as the human. The request ledger then took a
+// checkpoint for the human answering an agent's question, so a decision that
+// should have waited for the human's answer was accepted without it; and
+// agents, told an error came FROM human, replied to the human about their own
+// format mistakes.
+const OrchestratorID AgentID = "orchestrator"
+
 // BroadcastAgentID addresses every participant of a task.
 const BroadcastAgentID AgentID = "*"
+
+// IsReservedAgentID reports whether id belongs to the system rather than to
+// an agent: an agent with one of these ids could speak as the human or the
+// orchestrator.
+func IsReservedAgentID(id AgentID) bool {
+	return id == HumanAgentID || id == OrchestratorID || id == BroadcastAgentID
+}
+
+// Metadata keys the orchestrator puts on its own notes.
+const (
+	// MetaOrchestrator names the kind of note: "reminder", "checkpoint",
+	// "resumed", "authority", "closed-notify" and so on.
+	MetaOrchestrator = "orchestrator"
+	// MetaReason marks a notice about an agent's unreadable reply
+	// ("malformed-reply") or partly readable one ("partial-reply").
+	MetaReason = "reason"
+	// MetaViolation carries the kind of a refused action on the notice that
+	// tells the agent about it.
+	MetaViolation = "violation"
+)
+
+// FromOrchestrator reports whether m is one of the orchestrator's notes.
+//
+// History written before the orchestrator had an id of its own records those
+// notes as sent by the human. They are recognised by the metadata every one
+// of them carried, so a task started before the change reads the same as one
+// started after it. The rule lives here so every reader of the history (the
+// ledger, the run loop, the TUI) applies the same one.
+func FromOrchestrator(m *Message) bool {
+	if m == nil {
+		return false
+	}
+	switch m.FromAgent {
+	case OrchestratorID:
+		return true
+	case HumanAgentID:
+		if m.Metadata[MetaOrchestrator] != "" || m.Metadata[MetaViolation] != "" {
+			return true
+		}
+		switch m.Metadata[MetaReason] {
+		case "malformed-reply", "partial-reply":
+			return true
+		}
+	}
+	return false
+}
 
 // Message is a single routed interaction. Every agent interaction becomes one
 // of these; agents never talk to each other by any other means.

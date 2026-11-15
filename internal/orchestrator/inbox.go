@@ -219,8 +219,11 @@ func (o *Orchestrator) holdFor(t *domain.Task, ledger []domain.Request, agent do
 	}
 	ids := map[domain.MessageID]bool{}
 	for _, m := range waiting {
+		// The human never waits. A notice is not the human and waits like any
+		// other message: it says nothing the agent needs before the answers it
+		// is waiting for, and it is read together with them.
 		if m.FromAgent == domain.HumanAgentID {
-			return nil // the human never waits
+			return nil
 		}
 		ids[m.ID] = true
 	}
@@ -331,14 +334,19 @@ func combine(msgs []*domain.Message) *domain.Message {
 		if m.Type == domain.MsgTaskAssignment {
 			env.Type = domain.MsgTaskAssignment
 		}
-		from := string(m.FromAgent)
-		if m.FromAgent == domain.HumanAgentID {
+		// A notice is the orchestrator's, never the human's. Tagged [HUMAN],
+		// with "answer those first (to=human)" above it, a notice about an
+		// agent's own unreadable reply had agents writing to the human about
+		// their format mistakes.
+		what, from := string(m.Type), string(m.FromAgent)
+		switch {
+		case domain.FromOrchestrator(m):
+			what, from = "NOTICE", string(domain.OrchestratorID)
+		case m.FromAgent == domain.HumanAgentID:
 			from = "[HUMAN] human"
-			if m.Metadata["orchestrator"] == "" {
-				env.Metadata[ports.BatchHumanMetadataKey] = "true"
-			}
+			env.Metadata[ports.BatchHumanMetadataKey] = "true"
 		}
-		fmt.Fprintf(&b, "=== %d of %d · %s from %s · %s · %s ===\n", i+1, len(msgs), m.Type, from,
+		fmt.Fprintf(&b, "=== %d of %d · %s from %s · %s · %s ===\n", i+1, len(msgs), what, from,
 			m.Timestamp.Format("15:04:05"), m.ID)
 		if note := strings.TrimSpace(m.Metadata[ports.ThreadMetadataKey]); note != "" {
 			fmt.Fprintf(&b, "(This is part of a question from the human: %s. If you can answer it, answer the human directly.)\n", note)

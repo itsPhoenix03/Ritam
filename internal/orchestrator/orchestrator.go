@@ -129,7 +129,7 @@ func New(d Deps) *Orchestrator {
 		// A closing note that needs no action is history, not a turn: waking
 		// an agent just to tell it a reply it no longer needs is not coming
 		// would cost a CLI call for nothing.
-		return o.decisionCompletesTask(t, m) || m.Metadata["orchestrator"] == "closed"
+		return o.decisionCompletesTask(t, m) || m.Metadata[domain.MetaOrchestrator] == "closed"
 	}
 	return o
 }
@@ -234,7 +234,13 @@ func (o *Orchestrator) attachRecap(ctx context.Context, t *domain.Task, m *domai
 		if r := []rune(body); len(r) > recapChars {
 			body = string(r[:recapChars]) + "..."
 		}
-		lines = append(lines, fmt.Sprintf("- [R%d] %s -> %s %s: %s", h.Round, h.FromAgent, h.ToAgent, h.Type, body))
+		// A note recorded as the human's before the orchestrator had its own
+		// id is shown as what it was: the human did not say it.
+		from := h.FromAgent
+		if domain.FromOrchestrator(h) {
+			from = domain.OrchestratorID
+		}
+		lines = append(lines, fmt.Sprintf("- [R%d] %s -> %s %s: %s", h.Round, from, h.ToAgent, h.Type, body))
 	}
 	if len(lines) == 0 {
 		return
@@ -258,7 +264,10 @@ const threadExcerptChars = 300
 // agents should prefer, and one the ledger now recognises as answering the
 // whole chain.
 func (o *Orchestrator) attachThread(ctx context.Context, t *domain.Task, m *domain.Message) {
-	if t == nil || m.FromAgent == domain.HumanAgentID {
+	// The human's own message needs no label, and a notice is never a
+	// request, so it belongs to no thread: labelling one "answer the human
+	// directly" would send the agent to the human about the notice.
+	if t == nil || m.FromAgent == domain.HumanAgentID || m.FromAgent == domain.OrchestratorID {
 		return
 	}
 	ledger, err := o.ledger(ctx, t.ID)
@@ -324,9 +333,17 @@ func waitingReason(q *domain.Message) string {
 	return fmt.Sprintf("waiting for an answer to your question to %s: %q", q.ToAgent, excerpt(q.Content, 80))
 }
 
-// missingReply names the reply the task is waiting for, preferring the human's
-// own question, or "" when nothing is outstanding.
+// missingReply names the reply the task is waiting for, or "" when nothing is
+// outstanding. An agent's question to the human comes first: the agents
+// cannot move until the human answers it, and since the orchestrator's notes
+// stopped counting as that answer it stays open until the human does. Then
+// the human's own question, then anything the agents owe each other.
 func missingReply(ledger []domain.Request) string {
+	for _, r := range domain.OpenRequests(ledger) {
+		if q := r.Message; q.ToAgent == domain.HumanAgentID {
+			return fmt.Sprintf("waiting for your answer to %s's %s: %q", q.FromAgent, q.Type, excerpt(q.Content, 80))
+		}
+	}
 	if qs := openHumanQuestions(ledger); len(qs) > 0 {
 		return waitingReason(qs[0])
 	}
@@ -340,7 +357,8 @@ func missingReply(ledger []domain.Request) string {
 
 // remind asks the agent the human addressed to answer, once. It is sent as
 // the orchestrator's note rather than a new human request, so it neither
-// opens a second question in the ledger nor resets the allowance.
+// opens a second question in the ledger, nor answers one the agent put to
+// the human, nor resets the allowance.
 func (o *Orchestrator) remind(ctx context.Context, t *domain.Task, q *domain.Message) {
 	summary := "reminder: the human's question to " + string(q.ToAgent) + " is unanswered"
 	content := fmt.Sprintf("Reminder from the orchestrator: the human asked you %q and has not had an "+
@@ -354,11 +372,11 @@ func (o *Orchestrator) remind(ctx context.Context, t *domain.Task, q *domain.Mes
 	}
 	o.Events.emit(ctx, domain.EvtHumanOverride, t.ID, domain.HumanAgentID, summary, nil)
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   q.ToAgent,
 		Type:      domain.MsgInformation,
 		Content:   content,
-		Metadata:  map[string]string{"orchestrator": "reminder"},
+		Metadata:  map[string]string{domain.MetaOrchestrator: "reminder"},
 	}); err != nil {
 		o.log.Warn("remind", "taskId", string(t.ID), "error", err)
 	}
@@ -600,6 +618,14 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 
 	m := out.Message.Clone()
 	switch {
+	case domain.IsReservedAgentID(out.AgentID):
+		// An agent running under the human's or the orchestrator's id would
+		// pass every check those senders pass. Task creation refuses such a
+		// participant; this keeps one from speaking if it got in anyway.
+		o.Events.emit(ctx, domain.EvtValidationRejected, id, out.AgentID,
+			fmt.Sprintf("%s: an agent may not run as the reserved id %s", ViolationIdentity, out.AgentID),
+			map[string]string{"kind": string(ViolationIdentity)})
+		return o.pauseIfOverTimeOrBudget(ctx, t, out.AgentID)
 	case m.FromAgent == "":
 		m.FromAgent = out.AgentID
 	case m.FromAgent != out.AgentID:
@@ -879,18 +905,20 @@ func (o *Orchestrator) checkpoint(ctx context.Context, t *domain.Task) {
 		fmt.Sprintf("checkpoint: %d agent rounds since your last input; agents continue", t.AgentRounds),
 		map[string]string{"agentRounds": fmt.Sprint(t.AgentRounds), "messages": fmt.Sprint(t.AgentMessages)})
 
-	// Sent as "human" so the authority treats it as the operator's request,
-	// but marked as the orchestrator's: it is not human input and must not
-	// reset the allowance it is reporting on.
+	// Sent as the orchestrator's, not the human's: it is not human input, so
+	// it must not reset the allowance it is reporting on, and it must not
+	// count as the human answering a question the authority asked. It used to
+	// be sent as "human", and a checkpoint arriving before the human's reply
+	// let a decision through that should have waited for it.
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   t.AuthorityAgent,
 		Type:      domain.MsgInformation,
 		Content: fmt.Sprintf("Checkpoint from the orchestrator: the agents have worked %d rounds since the "+
 			"operator last spoke. Send the operator (to=human) a short STATUS_UPDATE: what is done, what is "+
 			"still open and who it is waiting on, and what happens next. Then carry on; nobody has asked you "+
 			"to stop.", t.AgentRounds),
-		Metadata: map[string]string{"orchestrator": "checkpoint"},
+		Metadata: map[string]string{domain.MetaOrchestrator: "checkpoint"},
 	}); err != nil {
 		o.log.Warn("checkpoint request", "taskId", string(t.ID), "error", err)
 	}
@@ -1275,11 +1303,11 @@ func (o *Orchestrator) giveUpOn(ctx context.Context, t *domain.Task, agent domai
 			fmt.Sprintf("%s's replies could not be read: %s's %s closed as unanswered", agent, q.FromAgent, q.Type),
 			map[string]string{"request": string(q.ID)})
 		if err := o.Bus.Route(ctx, t, &domain.Message{
-			FromAgent: domain.HumanAgentID,
+			FromAgent: domain.OrchestratorID,
 			ToAgent:   to,
 			Type:      domain.MsgInformation,
 			Content:   content,
-			Metadata:  map[string]string{"orchestrator": "closed-notify", domain.MetaCloses: string(q.ID)},
+			Metadata:  map[string]string{domain.MetaOrchestrator: "closed-notify", domain.MetaCloses: string(q.ID)},
 		}); err != nil {
 			o.log.Warn("close request to unreadable agent", "taskId", string(t.ID), "error", err)
 		}
@@ -1288,11 +1316,11 @@ func (o *Orchestrator) giveUpOn(ctx context.Context, t *domain.Task, agent domai
 		return
 	}
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   t.AuthorityAgent,
 		Type:      domain.MsgInformation,
 		Content:   why + ". Carry on without it, and do not send it more work unless nobody else can do it.",
-		Metadata:  map[string]string{"orchestrator": "unreadable"},
+		Metadata:  map[string]string{domain.MetaOrchestrator: "unreadable"},
 	}); err != nil {
 		o.log.Warn("announce unreadable agent", "taskId", string(t.ID), "agentId", string(agent), "error", err)
 	}
@@ -1320,11 +1348,11 @@ func (o *Orchestrator) notifyMalformed(ctx context.Context, t *domain.Task, agen
 		what, o.headerExample(t, agent), recipientList(t, agent), next)
 
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   agent,
 		Type:      domain.MsgError,
 		Content:   content,
-		Metadata:  map[string]string{"reason": "malformed-reply"},
+		Metadata:  map[string]string{domain.MetaReason: "malformed-reply"},
 	}); err != nil {
 		o.log.Warn("notify malformed reply", "taskId", string(t.ID),
 			"agentId", string(agent), "error", err)
@@ -1437,12 +1465,12 @@ func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent do
 		return true, err
 	}
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   t.AuthorityAgent,
 		Type:      domain.MsgInformation,
 		Content: fmt.Sprintf("%s cannot work on this task: its CLI could not run %s (%s). "+
 			"Carry on without it and do not send it more work; reassign anything it owed.", agent, what, kind.Advice()),
-		Metadata: map[string]string{"orchestrator": "unavailable"},
+		Metadata: map[string]string{domain.MetaOrchestrator: "unavailable"},
 	}); err != nil {
 		o.log.Warn("announce unavailable agent", "taskId", string(id), "agentId", string(agent), "error", err)
 	}
@@ -1460,13 +1488,13 @@ func (o *Orchestrator) notifyPartialReply(ctx context.Context, t *domain.Task, a
 		return
 	}
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   agent,
 		Type:      domain.MsgError,
 		Content: "Part of your last reply did not follow the protocol: " + problems + ". " +
 			"The rest was delivered as written. Use only the message types listed in your brief, " +
 			"and give every block a recipient (to=).",
-		Metadata: map[string]string{"reason": "partial-reply"},
+		Metadata: map[string]string{domain.MetaReason: "partial-reply"},
 	}); err != nil {
 		o.log.Warn("notify partial reply", "taskId", string(t.ID), "agentId", string(agent), "error", err)
 	}
@@ -1496,12 +1524,12 @@ func (o *Orchestrator) notifyRejection(ctx context.Context, t *domain.Task, m *d
 		m.Type, v.Kind, v.Reason)
 
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   m.FromAgent,
 		Type:      domain.MsgError,
 		Content:   content,
 		InReplyTo: m.ID,
-		Metadata:  map[string]string{"violation": string(v.Kind)},
+		Metadata:  map[string]string{domain.MetaViolation: string(v.Kind)},
 	}); err != nil {
 		o.log.Warn("notify rejection", "taskId", string(t.ID),
 			"agentId", string(m.FromAgent), "error", err)
@@ -1679,7 +1707,7 @@ func (o *Orchestrator) chaseOpenRequests(ctx context.Context, id domain.TaskID, 
 	if err != nil {
 		return false, false, err
 	}
-	r := oldestLeaf(domain.OpenRequests(ledger))
+	r := oldestLeaf(ledger)
 	if r == nil {
 		return false, false, nil
 	}
@@ -1720,17 +1748,43 @@ func (o *Orchestrator) chaseOpenRequests(ctx context.Context, id domain.TaskID, 
 // oldestLeaf returns the oldest open request whose owner is not itself
 // waiting on anyone -- the one actually holding things up. Requests the human
 // owes are skipped: the orchestrator cannot remind the human.
-func oldestLeaf(open []domain.Request) *domain.Request {
-	waiting := map[domain.AgentID]bool{}
-	for _, r := range open {
-		waiting[r.Message.FromAgent] = true
+//
+// An owner waiting only on requests that the one in hand was asked in service
+// of is not held up by them. When opus delegates to codex and codex asks opus
+// to clarify, each waits on the other, but it is opus who must speak: codex's
+// question is what the delegation is waiting for. Without this, now that the
+// question no longer closes the delegation, neither would ever be reminded.
+func oldestLeaf(ledger []domain.Request) *domain.Request {
+	byID := map[domain.MessageID]*domain.Request{}
+	for i := range ledger {
+		byID[ledger[i].Message.ID] = &ledger[i]
 	}
+	open := domain.OpenRequests(ledger)
 	for i := range open {
-		owner := open[i].Message.ToAgent
-		if owner == domain.HumanAgentID || waiting[owner] {
+		r := &open[i]
+		owner := r.Message.ToAgent
+		if owner == domain.HumanAgentID {
 			continue
 		}
-		return &open[i]
+		above := map[domain.MessageID]bool{}
+		for p := r.Parent; p != "" && !above[p]; {
+			above[p] = true
+			parent, ok := byID[p]
+			if !ok {
+				break
+			}
+			p = parent.Parent
+		}
+		blocked := false
+		for _, q := range open {
+			if q.Message.FromAgent == owner && !above[q.Message.ID] {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			return r
+		}
 	}
 	return nil
 }
@@ -1766,11 +1820,11 @@ func (o *Orchestrator) abandon(ctx context.Context, t *domain.Task, ledger []dom
 		fmt.Sprintf("%s never answered %s's %s: closed as unanswered", q.ToAgent, q.FromAgent, q.Type),
 		map[string]string{"request": string(q.ID)})
 	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   q.FromAgent,
 		Type:      domain.MsgInformation,
 		Content:   content,
-		Metadata:  map[string]string{"orchestrator": mode, domain.MetaCloses: string(q.ID)},
+		Metadata:  map[string]string{domain.MetaOrchestrator: mode, domain.MetaCloses: string(q.ID)},
 	}); err != nil {
 		o.log.Warn("close unanswered request", "taskId", string(t.ID), "error", err)
 	}
@@ -1964,23 +2018,23 @@ func (o *Orchestrator) waitsOnlyOnTheHuman(ctx context.Context, t *domain.Task) 
 // know whether the decision stands after the human's input; this asks it to
 // say so, by sending FINAL_DECISION again, revised or not, which supersedes d.
 //
-// It points (InReplyTo) at the human's message. That pins it, in the
-// request ledger, to a request it does not answer, so this note is never
-// taken for the human's reply to a question the authority asked.
+// It points (InReplyTo) at the human's message it is about. Being the
+// orchestrator's note, it is never taken for the human's reply to a question
+// the authority asked: only the human's own message is that.
 func decisionPendingNote(t *domain.Task, d *domain.Decision, answer *domain.Message) *domain.Message {
 	to := "you"
 	if answer.ToAgent != t.AuthorityAgent {
 		to = string(answer.ToAgent)
 	}
 	return &domain.Message{
-		FromAgent: domain.HumanAgentID,
+		FromAgent: domain.OrchestratorID,
 		ToAgent:   t.AuthorityAgent,
 		Type:      domain.MsgInformation,
 		InReplyTo: answer.ID,
 		Content: fmt.Sprintf("Note from the orchestrator: the human has sent %s a message, and your decision %s "+
 			"(%q) is still waiting for the human. Once you have what you need, confirm it by sending "+
 			"FINAL_DECISION again, or send a revised FINAL_DECISION.", to, d.ID, excerpt(d.Decision, 160)),
-		Metadata: map[string]string{"orchestrator": "decision-pending", "decisionId": string(d.ID)},
+		Metadata: map[string]string{domain.MetaOrchestrator: "decision-pending", "decisionId": string(d.ID)},
 	}
 }
 
@@ -2252,11 +2306,11 @@ func (o *Orchestrator) resumeAfterPause(ctx context.Context, t *domain.Task, pau
 			content += "Carry on with the task from where it stood."
 		}
 		if err := o.Bus.Route(ctx, t, &domain.Message{
-			FromAgent: domain.HumanAgentID,
+			FromAgent: domain.OrchestratorID,
 			ToAgent:   agent,
 			Type:      domain.MsgInformation,
 			Content:   content,
-			Metadata:  map[string]string{"orchestrator": "resumed"},
+			Metadata:  map[string]string{domain.MetaOrchestrator: "resumed"},
 		}); err != nil {
 			return fmt.Errorf("resume %s: %w", t.ID, err)
 		}
@@ -2312,11 +2366,11 @@ func (o *Orchestrator) SetAuthority(ctx context.Context, id domain.TaskID, to do
 				"Report to %s from now on.", to, from, to)
 		}
 		if err := o.Bus.Route(ctx, t, &domain.Message{
-			FromAgent: domain.HumanAgentID,
+			FromAgent: domain.OrchestratorID,
 			ToAgent:   p,
 			Type:      domain.MsgInformation,
 			Content:   content,
-			Metadata:  map[string]string{"orchestrator": "authority"},
+			Metadata:  map[string]string{domain.MetaOrchestrator: "authority"},
 		}); err != nil {
 			o.log.Warn("announce authority change", "taskId", string(id), "agentId", string(p), "error", err)
 		}

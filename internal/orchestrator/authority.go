@@ -57,6 +57,10 @@ func (a *AuthorityManager) IsAuthority(t *domain.Task, agent domain.AgentID) boo
 //
 // The human (domain.HumanAgentID) is always permitted: the human remains
 // authoritative over the whole system even when an agent holds task authority.
+// So is the orchestrator (domain.OrchestratorID), which writes its own notes
+// and is not a participant. No agent can send as either: the transport
+// identity of an agent's message always replaces the sender it claims, and
+// neither id can be a participant (see TaskManager.Create).
 func (a *AuthorityManager) Authorize(t *domain.Task, m *domain.Message) error {
 	if !domain.IsKnownMessageType(m.Type) {
 		return &Violation{
@@ -65,7 +69,7 @@ func (a *AuthorityManager) Authorize(t *domain.Task, m *domain.Message) error {
 		}
 	}
 
-	if m.FromAgent == domain.HumanAgentID {
+	if m.FromAgent == domain.HumanAgentID || m.FromAgent == domain.OrchestratorID {
 		return a.checkRouting(t, m)
 	}
 
@@ -141,6 +145,15 @@ func (a *AuthorityManager) checkRouting(t *domain.Task, m *domain.Message) error
 		return &Violation{
 			Kind: ViolationRouting, TaskID: t.ID, AgentID: m.FromAgent, Message: m.Type,
 			Reason: "no recipient",
+		}
+	case domain.OrchestratorID:
+		// Agents see notices FROM orchestrator and will answer them. There is
+		// nobody to receive the answer, and the refusal says so, so the agent
+		// carries on rather than retrying.
+		return &Violation{
+			Kind: ViolationRouting, TaskID: t.ID, AgentID: m.FromAgent, Message: m.Type,
+			Reason: "the orchestrator is not a recipient: its notices need no reply; " +
+				"act on them and address the human, a participant or * instead",
 		}
 	}
 	if m.ToAgent == m.FromAgent {
