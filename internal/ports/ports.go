@@ -103,6 +103,36 @@ type Storage struct {
 	Disagreements DisagreementRepository
 	Knowledge     KnowledgeRepository
 	Artifacts     ArtifactRepository
+
+	// Tx runs a group of writes as one; the backend sets it. Callers use
+	// WithTx rather than this field.
+	Tx Transactor
+}
+
+// Transactor runs fn against a Storage whose repositories all act inside
+// one transaction: everything fn wrote is kept when it returns nil, and
+// nothing of it when it returns an error or panics.
+type Transactor interface {
+	WithTx(ctx context.Context, fn func(tx *Storage) error) error
+}
+
+// ErrNoTransactions is returned by WithTx on a Storage built without a
+// Transactor: running the writes one by one instead would quietly give up
+// the all-or-nothing the caller asked for.
+var ErrNoTransactions = errors.New("storage: this store does not support transactions")
+
+// WithTx runs fn inside one transaction (see Transactor).
+//
+// fn must use only the Storage it is given. The store lets nothing else in
+// while a transaction is open, so a call through the outer Storage from
+// inside fn waits for fn to finish -- for ever. Calling WithTx on the
+// Storage fn was given nests: an error inside rolls back only the inner
+// function's writes.
+func (s *Storage) WithTx(ctx context.Context, fn func(tx *Storage) error) error {
+	if s == nil || s.Tx == nil {
+		return ErrNoTransactions
+	}
+	return s.Tx.WithTx(ctx, fn)
 }
 
 // ---------------------------------------------------------------------------

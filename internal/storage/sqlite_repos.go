@@ -10,7 +10,7 @@ import (
 )
 
 // nextSequence atomically increments and returns a named counter.
-func nextSequence(ctx context.Context, db *sql.DB, name string) (int, error) {
+func nextSequence(ctx context.Context, db dbtx, name string) (int, error) {
 	var n int
 	err := db.QueryRowContext(ctx,
 		`INSERT INTO sequences(name, n) VALUES (?, 1)
@@ -26,7 +26,7 @@ func nextSequence(ctx context.Context, db *sql.DB, name string) (int, error) {
 // tasks
 // ---------------------------------------------------------------------------
 
-type sqlTasks struct{ db *sql.DB }
+type sqlTasks struct{ db dbtx }
 
 var _ ports.TaskRepository = (*sqlTasks)(nil)
 
@@ -66,7 +66,7 @@ func (r *sqlTasks) NextSequence(ctx context.Context) (int, error) {
 // messages
 // ---------------------------------------------------------------------------
 
-type sqlMessages struct{ db *sql.DB }
+type sqlMessages struct{ db dbtx }
 
 var _ ports.MessageRepository = (*sqlMessages)(nil)
 
@@ -141,7 +141,7 @@ func (r *sqlMessages) CountByTask(ctx context.Context, id domain.TaskID) (int, e
 // events
 // ---------------------------------------------------------------------------
 
-type sqlEvents struct{ db *sql.DB }
+type sqlEvents struct{ db dbtx }
 
 var _ ports.EventRepository = (*sqlEvents)(nil)
 
@@ -198,7 +198,7 @@ func (r *sqlEvents) ListAll(ctx context.Context) ([]domain.Event, error) {
 // decisions
 // ---------------------------------------------------------------------------
 
-type sqlDecisions struct{ db *sql.DB }
+type sqlDecisions struct{ db dbtx }
 
 var _ ports.DecisionRepository = (*sqlDecisions)(nil)
 
@@ -238,7 +238,7 @@ func (r *sqlDecisions) NextSequence(ctx context.Context) (int, error) {
 // disagreements
 // ---------------------------------------------------------------------------
 
-type sqlDisagreements struct{ db *sql.DB }
+type sqlDisagreements struct{ db dbtx }
 
 var _ ports.DisagreementRepository = (*sqlDisagreements)(nil)
 
@@ -280,7 +280,7 @@ func (r *sqlDisagreements) ListOpen(ctx context.Context, id domain.TaskID) ([]*d
 // knowledge
 // ---------------------------------------------------------------------------
 
-type sqlKnowledge struct{ db *sql.DB }
+type sqlKnowledge struct{ db dbtx }
 
 var _ ports.KnowledgeRepository = (*sqlKnowledge)(nil)
 
@@ -343,7 +343,7 @@ func (r *sqlKnowledge) Search(ctx context.Context, q domain.KnowledgeQuery) ([]d
 // artifacts
 // ---------------------------------------------------------------------------
 
-type sqlArtifacts struct{ db *sql.DB }
+type sqlArtifacts struct{ db dbtx }
 
 var _ ports.ArtifactRepository = (*sqlArtifacts)(nil)
 

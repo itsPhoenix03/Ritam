@@ -10,17 +10,10 @@ import (
 )
 
 // NewInMemory builds a fully populated ports.Storage backed by the
-// implementations in this package. This is the scaffold default.
+// implementations in this package, with transactions (see memory_tx.go).
 func NewInMemory() *ports.Storage {
-	return &ports.Storage{
-		Tasks:         NewMemTaskRepository(),
-		Messages:      NewMemMessageRepository(),
-		Events:        NewMemEventRepository(),
-		Decisions:     NewMemDecisionRepository(),
-		Disagreements: NewMemDisagreementRepository(),
-		Knowledge:     NewMemKnowledgeRepository(),
-		Artifacts:     NewMemArtifactRepository(),
-	}
+	s := newMemStore()
+	return s.storage(s.outerDoor, &memTransactor{s})
 }
 
 // MemTaskRepository is an in-memory, goroutine-safe ports.TaskRepository.
