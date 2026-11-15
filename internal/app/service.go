@@ -167,7 +167,9 @@ func (s *Service) Resume(ctx context.Context, id domain.TaskID) error {
 	// Resuming means the task starts deliberating again; do it off the
 	// caller's goroutine so the UI stays responsive.
 	go func() {
-		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
+		// A pause or a cancel ends the run by cancelling it: that is the run
+		// stopping as asked, not a resume that failed.
+		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil && !errors.Is(err, context.Canceled) {
 			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
 				Type: domain.EvtTaskFailed, TaskID: id, Summary: "resume failed: " + err.Error(),
 			})
@@ -215,7 +217,7 @@ func (s *Service) FollowUp(ctx context.Context, id domain.TaskID, to domain.Agen
 		return err
 	}
 	go func() {
-		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
+		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil && !errors.Is(err, context.Canceled) {
 			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
 				Type: domain.EvtTaskFailed, TaskID: id, Summary: "follow-up failed: " + err.Error(),
 			})
