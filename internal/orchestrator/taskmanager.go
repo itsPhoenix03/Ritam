@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"ritam/internal/domain"
@@ -15,12 +16,19 @@ import (
 // TaskManager owns task records and the task state machine. It is the only
 // component permitted to change a task's state, so every transition is
 // validated in one place and produces exactly one event.
+//
+// Every change to an existing task goes through change: the run loop and
+// the UI change the same task at the same time, and a change made from a
+// copy read before the other's write used to undo it.
 type TaskManager struct {
 	repo   ports.TaskRepository
 	events *EventBus
 	log    *logging.Logger
 
 	defaultLimits domain.TaskLimits
+
+	locksMu sync.Mutex
+	locks   map[domain.TaskID]*sync.Mutex
 }
 
 // NewTaskManager builds a TaskManager.
@@ -28,7 +36,70 @@ func NewTaskManager(repo ports.TaskRepository, events *EventBus, limits domain.T
 	if log == nil {
 		log = logging.NewDiscard()
 	}
-	return &TaskManager{repo: repo, events: events, log: log, defaultLimits: limits}
+	return &TaskManager{repo: repo, events: events, log: log, defaultLimits: limits,
+		locks: map[domain.TaskID]*sync.Mutex{}}
+}
+
+// maxChangeAttempts bounds how often change re-reads a task that another
+// writer changed under it. The per-task lock leaves only writers outside
+// this TaskManager to race with, so running out means something else
+// rewrites the task without pause.
+const maxChangeAttempts = 8
+
+// errNoChange, returned by a change's function, means there is nothing to
+// write: change returns the task as it was read.
+var errNoChange = errors.New("no change")
+
+// lockTask serialises this TaskManager's changes to one task.
+func (tm *TaskManager) lockTask(id domain.TaskID) (unlock func()) {
+	tm.locksMu.Lock()
+	l, ok := tm.locks[id]
+	if !ok {
+		l = &sync.Mutex{}
+		tm.locks[id] = l
+	}
+	tm.locksMu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// change is the one way an existing task is written: read it, apply f, and
+// write it back, all under the task's lock. The lock is the cheap first
+// line; the storage's version check is the guarantee -- a write from a copy
+// that someone else changed in the meantime is refused, and f is applied
+// again to a fresh read. f may therefore run more than once, and must
+// derive everything it does from the task it is given.
+//
+// UpdatedAt is set before f runs, so f can use it as "now".
+func (tm *TaskManager) change(ctx context.Context, id domain.TaskID, f func(t *domain.Task) error) (*domain.Task, error) {
+	unlock := tm.lockTask(id)
+	defer unlock()
+	var conflict error
+	for attempt := 0; attempt < maxChangeAttempts; attempt++ {
+		t, err := tm.repo.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		read := t.UpdatedAt
+		t.UpdatedAt = time.Now()
+		if err := f(t); err != nil {
+			if errors.Is(err, errNoChange) {
+				t.UpdatedAt = read
+				return t, nil
+			}
+			return nil, err
+		}
+		err = tm.repo.Update(ctx, t)
+		if errors.Is(err, ports.ErrConflict) {
+			conflict = err
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return t.Clone(), nil
+	}
+	return nil, fmt.Errorf("task %s kept changing during an update (%d attempts): %w", id, maxChangeAttempts, conflict)
 }
 
 // Create records a new task in state CREATED.
@@ -125,22 +196,21 @@ var ErrNotReopenable = errors.New("only a completed task can be reopened")
 // produces a new FINAL_DECISION, it supersedes the old one, which stays on
 // record.
 func (tm *TaskManager) Reopen(ctx context.Context, id domain.TaskID, by domain.AgentID, reason string) (*domain.Task, error) {
-	t, err := tm.repo.Get(ctx, id)
+	var from domain.TaskState
+	t, err := tm.change(ctx, id, func(t *domain.Task) error {
+		if t.State != domain.TaskCompleted {
+			return fmt.Errorf("reopen %s (%s): %w", id, t.State, ErrNotReopenable)
+		}
+		from = t.State
+		t.State = domain.TaskDeliberating
+		t.CompletedAt = nil
+		t.FollowUp = true
+		t.FollowUpWork = false
+		t.Closing = false
+		resetAllowance(t)
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	if t.State != domain.TaskCompleted {
-		return nil, fmt.Errorf("reopen %s (%s): %w", id, t.State, ErrNotReopenable)
-	}
-	from := t.State
-	t.State = domain.TaskDeliberating
-	t.CompletedAt = nil
-	t.UpdatedAt = time.Now()
-	t.FollowUp = true
-	t.FollowUpWork = false
-	t.Closing = false
-	resetAllowance(t)
-	if err := tm.repo.Update(ctx, t); err != nil {
 		return nil, err
 	}
 	tm.events.emit(ctx, domain.EvtTaskStateChanged, t.ID, by,
@@ -151,23 +221,37 @@ func (tm *TaskManager) Reopen(ctx context.Context, id domain.TaskID, by domain.A
 }
 
 func (tm *TaskManager) Transition(ctx context.Context, id domain.TaskID, to domain.TaskState, by domain.AgentID, reason string) (*domain.Task, error) {
-	t, err := tm.repo.Get(ctx, id)
+	var from domain.TaskState
+	t, err := tm.change(ctx, id, func(t *domain.Task) error {
+		from = ""
+		if t.State == to {
+			return errNoChange
+		}
+		var err error
+		from, err = applyTransition(t, to, reason)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	if t.State == to {
+	if from == "" {
 		return t, nil
 	}
-	if !domain.CanTransition(t.State, to) {
-		return nil, domain.ErrInvalidTransition{From: t.State, To: to}
-	}
+	tm.emitTransition(ctx, t.ID, from, to, by, reason)
+	return t, nil
+}
 
+// applyTransition moves t to the state to, validating the transition table,
+// and returns the state it left. It only changes t; the caller writes it.
+func applyTransition(t *domain.Task, to domain.TaskState, reason string) (domain.TaskState, error) {
+	if !domain.CanTransition(t.State, to) {
+		return "", domain.ErrInvalidTransition{From: t.State, To: to}
+	}
 	from := t.State
 	if to == domain.TaskPaused {
 		t.PreviousState = from
 	}
 	t.State = to
-	t.UpdatedAt = time.Now()
 	if to.IsTerminal() {
 		// Nothing is left to wait for once the task has ended.
 		t.Closing = false
@@ -184,26 +268,25 @@ func (tm *TaskManager) Transition(ctx context.Context, id domain.TaskID, to doma
 	case domain.TaskPaused:
 		t.PauseReason = reason
 	}
+	return from, nil
+}
 
-	if err := tm.repo.Update(ctx, t); err != nil {
-		return nil, err
-	}
-
-	tm.events.emit(ctx, domain.EvtTaskStateChanged, t.ID, by,
+// emitTransition reports a state change once it is written.
+func (tm *TaskManager) emitTransition(ctx context.Context, id domain.TaskID, from, to domain.TaskState, by domain.AgentID, reason string) {
+	tm.events.emit(ctx, domain.EvtTaskStateChanged, id, by,
 		fmt.Sprintf("%s -> %s", from, to),
 		map[string]string{"from": string(from), "to": string(to), "reason": reason})
 
 	switch to {
 	case domain.TaskCompleted:
-		tm.events.emit(ctx, domain.EvtTaskCompleted, t.ID, by, string(t.ID)+" completed", nil)
+		tm.events.emit(ctx, domain.EvtTaskCompleted, id, by, string(id)+" completed", nil)
 	case domain.TaskFailed:
-		tm.events.emit(ctx, domain.EvtTaskFailed, t.ID, by, reason, nil)
+		tm.events.emit(ctx, domain.EvtTaskFailed, id, by, reason, nil)
 	case domain.TaskCancelled:
-		tm.events.emit(ctx, domain.EvtTaskCancelled, t.ID, by, reason, nil)
+		tm.events.emit(ctx, domain.EvtTaskCancelled, id, by, reason, nil)
 	case domain.TaskPaused:
-		tm.events.emit(ctx, domain.EvtTaskPaused, t.ID, by, reason, nil)
+		tm.events.emit(ctx, domain.EvtTaskPaused, id, by, reason, nil)
 	}
-	return t.Clone(), nil
 }
 
 // Pause halts a task and records why a human is needed.
@@ -212,31 +295,32 @@ func (tm *TaskManager) Pause(ctx context.Context, id domain.TaskID, by domain.Ag
 }
 
 // Resume restores the state the task held before it was paused.
+//
+// The fresh allowance and the state change are one write: as two, a failed
+// or refused state change left the allowance reset on a task still paused.
 func (tm *TaskManager) Resume(ctx context.Context, id domain.TaskID, by domain.AgentID) (*domain.Task, error) {
-	t, err := tm.repo.Get(ctx, id)
+	var prev domain.TaskState
+	t, err := tm.change(ctx, id, func(t *domain.Task) error {
+		if t.State != domain.TaskPaused {
+			return fmt.Errorf("resume %s: task is %s, not PAUSED", id, t.State)
+		}
+		prev = t.PreviousState
+		if prev == "" || prev.IsTerminal() || prev == domain.TaskPaused {
+			prev = domain.TaskDeliberating
+		}
+		// Resuming is human input, so it starts a fresh allowance. Without
+		// this a task paused by a limit was still over it, and re-paused on
+		// the very next agent message.
+		resetAllowance(t)
+		_, err := applyTransition(t, prev, "resumed")
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	if t.State != domain.TaskPaused {
-		return nil, fmt.Errorf("resume %s: task is %s, not PAUSED", id, t.State)
-	}
-	prev := t.PreviousState
-	if prev == "" || prev.IsTerminal() {
-		prev = domain.TaskDeliberating
-	}
-	// Resuming is human input, so it starts a fresh allowance. Without this a
-	// task paused by a limit was still over it, and re-paused on the very
-	// next agent message.
-	resetAllowance(t)
-	if err := tm.repo.Update(ctx, t); err != nil {
-		return nil, err
-	}
-	out, err := tm.Transition(ctx, id, prev, by, "resumed")
-	if err != nil {
-		return nil, err
-	}
+	tm.emitTransition(ctx, id, domain.TaskPaused, prev, by, "resumed")
 	tm.events.emit(ctx, domain.EvtTaskResumed, id, by, "resumed at "+string(prev), nil)
-	return out, nil
+	return t, nil
 }
 
 // Cancel terminates a task at the human's request.
@@ -272,33 +356,26 @@ const (
 // the work on (see Orchestrator.isProgress); a run of messages that do not is
 // a stall.
 func (tm *TaskManager) NoteMessage(ctx context.Context, id domain.TaskID, m *domain.Message, p Progress) (*domain.Task, error) {
-	t, err := tm.repo.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	t.MessageCount++
-	// A readable message ends the sender's run of unreadable ones.
-	delete(t.MalformedCount, m.FromAgent)
-	if m.ToAgent != domain.HumanAgentID {
-		t.AgentMessages++
-		if m.FromAgent == t.AuthorityAgent {
-			t.Round++
-			t.AgentRounds++
-		}
-		switch p {
-		case MadeProgress:
+	return tm.update(ctx, id, func(t *domain.Task) {
+		t.MessageCount++
+		// A readable message ends the sender's run of unreadable ones.
+		delete(t.MalformedCount, m.FromAgent)
+		if m.ToAgent != domain.HumanAgentID {
+			t.AgentMessages++
+			if m.FromAgent == t.AuthorityAgent {
+				t.Round++
+				t.AgentRounds++
+			}
+			switch p {
+			case MadeProgress:
+				t.StallCount = 0
+			case NoProgress:
+				t.StallCount++
+			}
+		} else if p == MadeProgress {
 			t.StallCount = 0
-		case NoProgress:
-			t.StallCount++
 		}
-	} else if p == MadeProgress {
-		t.StallCount = 0
-	}
-	t.UpdatedAt = time.Now()
-	if err := tm.repo.Update(ctx, t); err != nil {
-		return nil, err
-	}
-	return t.Clone(), nil
+	})
 }
 
 // NoteMalformed records a reply from agent that could not be read. It extends
@@ -364,17 +441,12 @@ func (tm *TaskManager) MarkFollowUpWork(ctx context.Context, id domain.TaskID) (
 	return tm.update(ctx, id, func(t *domain.Task) { t.FollowUpWork = true })
 }
 
+// update is change for a function that cannot fail.
 func (tm *TaskManager) update(ctx context.Context, id domain.TaskID, f func(*domain.Task)) (*domain.Task, error) {
-	t, err := tm.repo.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	f(t)
-	t.UpdatedAt = time.Now()
-	if err := tm.repo.Update(ctx, t); err != nil {
-		return nil, err
-	}
-	return t.Clone(), nil
+	return tm.change(ctx, id, func(t *domain.Task) error {
+		f(t)
+		return nil
+	})
 }
 
 func resetAllowance(t *domain.Task) {
