@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -80,7 +81,9 @@ func (m *Manager) Snapshot(ctx context.Context, reason string) (string, error) {
 		return "", err
 	}
 	m.last = n
-	if err := Prune(m.dir, m.keep); err != nil {
+	// The snapshot just taken is spared by name, not only by being newest:
+	// a clock set back would sort it behind older ones.
+	if err := Prune(m.dir, m.keep, path); err != nil {
 		m.log.Warn("prune backups", "dir", m.dir, "error", err)
 	}
 	m.log.Info("backup taken", "reason", reason, "file", path)
@@ -88,9 +91,12 @@ func (m *Manager) Snapshot(ctx context.Context, reason string) (string, error) {
 }
 
 // Run takes a snapshot every interval until ctx ends. Unchanged databases
-// are skipped, so this costs nothing while the project is idle.
+// are skipped, so this costs nothing while the project is idle. An interval
+// of 0 (backups.interval: 0) takes no periodic snapshots; that is said in
+// the log, so it is never a silent surprise.
 func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
+		m.log.Info("periodic backups are off", "interval", interval.String())
 		return
 	}
 	t := time.NewTicker(interval)
@@ -165,19 +171,37 @@ func List(dir string) ([]Snapshot, error) {
 	return out, nil
 }
 
-// Prune deletes all but the newest keep snapshots in dir.
-func Prune(dir string, keep int) error {
+// Prune deletes all but the newest keep snapshots in dir, and never the ones
+// named in spare. The newest is always kept, whatever keep says: a keep of 0
+// or less, from a bad setting, would otherwise delete every backup, the one
+// just taken included.
+func Prune(dir string, keep int, spare ...string) error {
+	keep = max(keep, 1)
 	list, err := List(dir)
 	if err != nil {
 		return err
 	}
 	var errs []error
 	for i := keep; i < len(list); i++ {
+		if slices.ContainsFunc(spare, func(p string) bool { return samePath(p, list[i].Path) }) {
+			continue
+		}
 		if err := os.Remove(list[i].Path); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// samePath reports whether a and b name the same file, however they are
+// written.
+func samePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib)
 }
 
 // Restore replaces the database at dbPath with a snapshot. The database must

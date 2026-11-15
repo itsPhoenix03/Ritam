@@ -131,8 +131,12 @@ func cmdBackups(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		_ = backup.Prune(pl.home.BackupDir(pl.proj), cfg.Backups.Keep)
 		fmt.Fprintf(out, "backup taken: %s\n", path)
+		// The backup just asked for is spared by name: whatever keep says,
+		// pruning must not undo the command.
+		if err := backup.Prune(pl.home.BackupDir(pl.proj), cfg.Backups.Keep, path); err != nil {
+			fmt.Fprintf(out, "note: older backups could not all be removed: %v\n", err)
+		}
 	case "projects":
 		for _, e := range pl.reg.Entries() {
 			list, _ := backup.List(filepath.Join(pl.home.BackupsDir(), e.Key()))

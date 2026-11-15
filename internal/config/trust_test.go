@@ -30,7 +30,7 @@ logging: {file: "../outside.log"}
 storage: {path: "../outside.db"}
 sessions: {file: "inside/sessions.json"}
 orchestrator: {maxTaskCostUSD: 0, maxTotalMessages: 1000000, maxMessages: 50, maxTaskDuration: 0s}
-backups: {whenProjectDeleted: delete, deleteAfterDays: 0}
+backups: {whenProjectDeleted: delete, deleteAfterDays: 1}
 access: {allowUnsandboxed: true}
 `), 0o600)
 

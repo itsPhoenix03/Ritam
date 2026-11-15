@@ -105,10 +105,12 @@ storage:
 # `ritam restore` brings one back.
 backups:
   enabled: true
-  keep: 5                  # snapshots kept per project
+  keep: 5                  # snapshots kept per project, at least 1
+  # At least 1m. 0 turns the periodic snapshots off (those when a task
+  # finishes and at exit are still taken); a negative value is an error.
   interval: 10m
   # A project whose folder was deleted: ask (say so at start, keep its
-  # backups until told), keep, or delete (after deleteAfterDays).
+  # backups until told), keep, or delete (after deleteAfterDays, at least 1).
   whenProjectDeleted: ask
   deleteAfterDays: 30
 

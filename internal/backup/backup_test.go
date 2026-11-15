@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -64,6 +65,56 @@ func TestSnapshotsAreTakenOnlyWhenSomethingChanged(t *testing.T) {
 	list, _ := List(m.Dir())
 	if len(list) != 2 || list[0].Reason != "periodic" || !list[0].Taken.After(list[1].Taken) {
 		t.Fatalf("want the newest 2 snapshots, newest first: %+v", list)
+	}
+}
+
+// fakeSnapshots writes empty snapshot files with the given stamps.
+func fakeSnapshots(t *testing.T, dir string, stamps ...string) []string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, s := range stamps {
+		p := filepath.Join(dir, s+"-periodic"+suffix)
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, p)
+	}
+	return paths
+}
+
+// TestPruneNeverDeletesTheNewestWhateverKeepSays: a keep of -1 used to panic
+// with an index out of range, and a keep of 0 deleted every snapshot, the
+// one `ritam backups now` had just taken included.
+func TestPruneNeverDeletesTheNewestWhateverKeepSays(t *testing.T) {
+	for _, keep := range []int{0, -1} {
+		t.Run(fmt.Sprint(keep), func(t *testing.T) {
+			dir := t.TempDir()
+			paths := fakeSnapshots(t, dir, "20260101-100000.000", "20260101-110000.000", "20260101-120000.000")
+			if err := Prune(dir, keep); err != nil {
+				t.Fatal(err)
+			}
+			list, _ := List(dir)
+			if len(list) != 1 || list[0].Path != paths[2] {
+				t.Errorf("only the newest is kept: %+v", list)
+			}
+		})
+	}
+}
+
+// TestPruneSparesTheSnapshotJustTaken: with the clock set back, the snapshot
+// just taken sorts behind an older one; it is kept all the same.
+func TestPruneSparesTheSnapshotJustTaken(t *testing.T) {
+	dir := t.TempDir()
+	paths := fakeSnapshots(t, dir, "20260101-100000.000", "20991231-235959.000")
+	if err := Prune(dir, 1, paths[0]); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := List(dir)
+	if len(list) != 2 {
+		t.Errorf("the spared snapshot and the newest are both kept: %+v", list)
 	}
 }
 
