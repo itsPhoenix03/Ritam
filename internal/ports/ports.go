@@ -23,6 +23,9 @@ var (
 	ErrNotSupported  = errors.New("not supported")
 	// ErrNotImplemented marks a scaffolded seam that a later phase will fill in.
 	ErrNotImplemented = errors.New("not implemented in this phase")
+	// ErrConflict is an update refused because the record changed after the
+	// copy being written was read. Read it again and redo the change.
+	ErrConflict = errors.New("changed since it was read")
 )
 
 // ---------------------------------------------------------------------------
@@ -32,7 +35,12 @@ var (
 // TaskRepository persists tasks. The in-memory implementation is authoritative
 // for the scaffold; a SQLite implementation can be added behind this interface.
 type TaskRepository interface {
+	// Create stores a new task at Version 1 and sets t.Version to it.
 	Create(ctx context.Context, t *domain.Task) error
+	// Update writes t only if the stored task is still at t.Version, the
+	// revision t was read at, and then sets t.Version to the new one. A
+	// stored task that moved on is ErrConflict: writing the whole task
+	// back would undo whatever changed it.
 	Update(ctx context.Context, t *domain.Task) error
 	Get(ctx context.Context, id domain.TaskID) (*domain.Task, error)
 	List(ctx context.Context) ([]*domain.Task, error)

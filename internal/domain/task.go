@@ -214,6 +214,12 @@ type Task struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	CompletedAt *time.Time
+
+	// Version is the stored revision this copy was read at, kept by the
+	// storage layer: an update written from an older revision is refused
+	// instead of silently undoing the writes made since. It is not part of
+	// the stored document.
+	Version int64 `json:"-"`
 }
 
 // AgentUsage is what one agent's CLI turns on a task consumed, summed.

@@ -211,6 +211,13 @@ var migrations = []string{
 	);
 	CREATE INDEX artifacts_task ON artifacts(task_id, seq);
 	`,
+
+	// 2: a revision number on each task, so an update written from a copy
+	// read before someone else's change is refused rather than undoing it.
+	// Existing tasks start at revision 1, like new ones.
+	`
+	ALTER TABLE tasks ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+	`,
 }
 
 func (s *SQLite) migrate(ctx context.Context) error {
