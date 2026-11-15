@@ -74,8 +74,13 @@ type Orchestrator struct {
 	requireHumanApproval bool
 	sem                  chan struct{}
 
-	mu      sync.Mutex
-	running map[domain.TaskID]context.CancelFunc
+	mu sync.Mutex
+	// running holds every RunTask holding a task, from before it waits for
+	// a slot until it returns. A run used to be entered here only once it
+	// had a slot: a queued run could not be paused or cancelled, started
+	// on a task paused while it waited, and a second resume queued a
+	// second run.
+	running map[domain.TaskID]*taskRun
 	// queued holds the human's messages for a task with no run loop: a
 	// reopened task's follow-up, an answer or instruction sent while a
 	// decision waits for the human, a rejection. They are delivered by the
@@ -130,7 +135,7 @@ func New(d Deps) *Orchestrator {
 		idleTimeout:          d.IdleTimeout,
 		requireHumanApproval: d.RequireHumanApproval,
 		sem:                  make(chan struct{}, d.MaxConcurrentTasks),
-		running:              map[domain.TaskID]context.CancelFunc{},
+		running:              map[domain.TaskID]*taskRun{},
 		queued:               map[domain.TaskID][]*domain.Message{},
 		resumed:              map[domain.TaskID]string{},
 		inboxes:              map[domain.TaskID]*taskInbox{},
@@ -438,38 +443,65 @@ func (o *Orchestrator) CreateTask(ctx context.Context, in ports.CreateTaskInput)
 // evidence exists; the configured limits only ever pause the task and ask for
 // a human, they never declare a winner.
 func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
-	select {
-	case o.sem <- struct{}{}:
-		defer func() { <-o.sem }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
 	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// The run is entered before it waits for a slot, so a pause or a cancel
+	// finds it and a second start sees it.
+	r := &taskRun{cancel: cancel}
 	o.mu.Lock()
 	if _, already := o.running[id]; already {
 		// A human action starts a run when it finds none; two in quick
 		// succession can both start one. A second loop on the same task
-		// would deliver everything twice, so the later one stands down.
+		// would deliver everything twice, so the later one stands down,
+		// whether the first is running or still queued.
 		o.mu.Unlock()
-		cancel()
 		return nil
 	}
-	o.running[id] = cancel
+	o.running[id] = r
 	o.mu.Unlock()
 	defer func() {
-		cancel()
 		o.mu.Lock()
-		delete(o.running, id)
+		if o.running[id] == r {
+			delete(o.running, id)
+		}
 		o.mu.Unlock()
 	}()
 
+	waited, err := o.acquireSlot(runCtx, id)
+	if err != nil {
+		return err
+	}
+	defer func() { <-o.sem }()
+	started := false
+	if waited {
+		defer func() {
+			if !started {
+				o.Events.emit(context.WithoutCancel(runCtx), domain.EvtRunUnqueued, id, "",
+					"the queued run ended without starting", nil)
+			}
+		}()
+	}
+	if err := runCtx.Err(); err != nil {
+		// Paused or cancelled at the moment the slot came free.
+		return err
+	}
+
+	// The task is read again now that the run has its slot: while it was
+	// queued the human may have paused it, or it may have ended. A queued run
+	// used to start on a paused task anyway, and the authority took a paid
+	// turn whose reply was refused because the task was PAUSED.
 	t, err := o.Tasks.Get(runCtx, id)
 	if err != nil {
 		return err
 	}
 	if t.State.IsTerminal() {
+		if waited {
+			return nil
+		}
 		return fmt.Errorf("run %s: task is already %s", id, t.State)
+	}
+	if t.State == domain.TaskPaused {
+		return nil
 	}
 	if o.waitsOnlyOnTheHuman(runCtx, t) {
 		return nil
@@ -480,6 +512,8 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 		return o.completeAfterDecision(runCtx, id, t.AuthorityAgent)
 	}
 
+	started = true
+	o.Events.emit(runCtx, domain.EvtRunStarted, id, "", "run started", nil)
 	if err := o.startParticipants(runCtx, t); err != nil {
 		// One agent that cannot start (its CLI is not installed, say) is
 		// something the human can fix; it used to send the task to FAILED,
@@ -1852,6 +1886,9 @@ func (o *Orchestrator) kickoff(ctx context.Context, t *domain.Task) error {
 		return err
 	}
 	o.mu.Lock()
+	if r := o.running[t.ID]; r != nil {
+		r.live = true
+	}
 	queued := o.queued[t.ID]
 	delete(o.queued, t.ID)
 	pausedFor, resumed := o.resumed[t.ID]
@@ -1918,13 +1955,82 @@ func (o *Orchestrator) queue(id domain.TaskID, msgs ...*domain.Message) {
 	o.mu.Unlock()
 }
 
-// Running reports whether a run loop is alive for the task, so that a caller
-// that has just queued something for it knows whether to start one.
+// taskRun is one RunTask holding a task: queued for a slot, then live.
+type taskRun struct {
+	cancel context.CancelFunc
+	// live is set once the run's agents are up and it delivers messages
+	// itself. Until then what the human sends is queued for its kickoff
+	// (deliverOrQueue): routed straight away, it would reach agents that
+	// are not started.
+	live bool
+}
+
+// acquireSlot waits for one of the slots that bound how many tasks run at
+// once, and reports whether the run had to wait. A run that waits is
+// announced, so the human can see it is queued rather than stuck.
+func (o *Orchestrator) acquireSlot(ctx context.Context, id domain.TaskID) (waited bool, err error) {
+	select {
+	case o.sem <- struct{}{}:
+		return false, nil
+	default:
+	}
+	o.Events.emit(ctx, domain.EvtRunQueued, id, "",
+		fmt.Sprintf("queued: %d task(s) already running, the most allowed at once; it starts when one ends", cap(o.sem)),
+		nil)
+	select {
+	case o.sem <- struct{}{}:
+		return true, nil
+	case <-ctx.Done():
+		o.Events.emit(context.WithoutCancel(ctx), domain.EvtRunUnqueued, id, "",
+			"the queued run was withdrawn before it started", nil)
+		return true, ctx.Err()
+	}
+}
+
+// Running reports whether a run is alive or queued for the task, so that a
+// caller that has just queued something for it knows whether to start one.
 func (o *Orchestrator) Running(id domain.TaskID) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	_, ok := o.running[id]
 	return ok
+}
+
+// Queued reports whether the task's run is waiting for a slot.
+func (o *Orchestrator) Queued(id domain.TaskID) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	r, ok := o.running[id]
+	return ok && !r.live
+}
+
+// live reports whether the task's run has its agents up and is delivering.
+func (o *Orchestrator) live(id domain.TaskID) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	r, ok := o.running[id]
+	return ok && r.live
+}
+
+// deliverOrQueue routes msgs on a task whose run is live, and otherwise
+// queues them for the next run's kickoff. Deciding and queueing are one step
+// under o.mu, as is the kickoff marking its run live and taking the queue:
+// a message queued a moment before the run went live is still delivered by
+// it, never left for a run that may not come.
+func (o *Orchestrator) deliverOrQueue(ctx context.Context, t *domain.Task, msgs ...*domain.Message) error {
+	o.mu.Lock()
+	if r, ok := o.running[t.ID]; !ok || !r.live {
+		o.queued[t.ID] = append(o.queued[t.ID], msgs...)
+		o.mu.Unlock()
+		return nil
+	}
+	o.mu.Unlock()
+	for _, m := range msgs {
+		if err := o.Bus.Route(ctx, t, m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // heldDecision returns the task's decision still waiting for the human, or
@@ -2343,10 +2449,8 @@ func (o *Orchestrator) SetAuthority(ctx context.Context, id domain.TaskID, to do
 	o.Events.emit(ctx, domain.EvtHumanOverride, id, domain.HumanAgentID,
 		fmt.Sprintf("AUTHORITY %s -> %s", from, to), map[string]string{"from": string(from), "to": string(to)})
 
-	o.mu.Lock()
-	_, running := o.running[id]
-	o.mu.Unlock()
-	if !running {
+	if !o.live(id) {
+		// A queued run's agents learn it from their next turn's brief.
 		return nil
 	}
 	for _, p := range t.Participants {
@@ -2527,11 +2631,7 @@ func (o *Orchestrator) Reject(ctx context.Context, id domain.TaskID, note string
 		RequiresResponse: true,
 		Metadata:         map[string]string{"decisionId": string(d.ID)},
 	}
-	if !running {
-		o.queue(id, m)
-		return nil
-	}
-	return o.Bus.Route(ctx, t, m)
+	return o.deliverOrQueue(ctx, t, m)
 }
 
 // SendInstruction lets the human inject a message into a task.
@@ -2588,22 +2688,14 @@ func (o *Orchestrator) SendInstruction(ctx context.Context, id domain.TaskID, to
 			msgs = append(msgs, decisionPendingNote(t, d, m))
 		}
 	}
-	if !running {
-		o.queue(id, msgs...)
-		return nil
-	}
-	for _, msg := range msgs {
-		if err := o.Bus.Route(ctx, t, msg); err != nil {
-			return err
-		}
-	}
-	return nil
+	return o.deliverOrQueue(ctx, t, msgs...)
 }
 
 func (o *Orchestrator) cancelRun(id domain.TaskID) {
 	o.mu.Lock()
-	if cancel, ok := o.running[id]; ok {
-		cancel()
+	// A queued run is cancelled the same way: it never starts.
+	if r, ok := o.running[id]; ok {
+		r.cancel()
 	}
 	o.mu.Unlock()
 }

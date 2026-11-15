@@ -27,6 +27,10 @@ type testGateway struct {
 	states   map[domain.AgentID]domain.AgentState
 	// onSend, when set, sees every delivery exactly as the adapter gets it.
 	onSend func(m domain.Message)
+
+	// mu guards starts: two tasks' runs start their agents at once.
+	mu     sync.Mutex
+	starts map[domain.AgentID]int
 }
 
 func newGateway() *testGateway {
@@ -34,6 +38,7 @@ func newGateway() *testGateway {
 		adapters: map[domain.AgentID]ports.AgentAdapter{},
 		roles:    map[domain.AgentID]domain.AgentRole{},
 		states:   map[domain.AgentID]domain.AgentState{},
+		starts:   map[domain.AgentID]int{},
 	}
 }
 
@@ -43,7 +48,17 @@ func (g *testGateway) add(ad ports.AgentAdapter, role domain.AgentRole) {
 }
 
 func (g *testGateway) StartFor(ctx context.Context, _ domain.TaskID, id domain.AgentID) error {
+	g.mu.Lock()
+	g.starts[id]++
+	g.mu.Unlock()
 	return g.adapters[id].Start(ctx)
+}
+
+// started reports how many times agent id was started.
+func (g *testGateway) started(id domain.AgentID) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.starts[id]
 }
 
 func (g *testGateway) StopFor(ctx context.Context, _ domain.TaskID, id domain.AgentID) error {
@@ -126,6 +141,13 @@ func newHarnessWith(t *testing.T, limits domain.TaskLimits, idle time.Duration, 
 
 func newHarnessFull(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *testGateway, requireApproval bool, backoff []time.Duration) *harness {
 	t.Helper()
+	return newHarnessSlots(t, limits, idle, gw, requireApproval, backoff, 2)
+}
+
+// newHarnessSlots is newHarnessFull with the number of tasks that may run at
+// once given.
+func newHarnessSlots(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *testGateway, requireApproval bool, backoff []time.Duration, slots int) *harness {
+	t.Helper()
 	store := storage.NewInMemory()
 	h := &harness{store: *store, gw: gw}
 	h.orch = orchestrator.New(orchestrator.Deps{
@@ -135,7 +157,7 @@ func newHarnessFull(t *testing.T, limits domain.TaskLimits, idle time.Duration, 
 		Decisions:          decisions.New(store.Decisions),
 		Logger:             logging.NewDiscard(),
 		Limits:             limits,
-		MaxConcurrentTasks: 2,
+		MaxConcurrentTasks: slots,
 		IdleTimeout:        idle,
 		RetryBackoff:       backoff,
 
@@ -163,6 +185,17 @@ func (h *harness) hasEvent(tp domain.EventType) bool {
 		}
 	}
 	return false
+}
+
+// eventsFor returns the events of type tp recorded for task id.
+func (h *harness) eventsFor(tp domain.EventType, id domain.TaskID) []domain.Event {
+	var out []domain.Event
+	for _, e := range h.snapshot() {
+		if e.Type == tp && e.TaskID == id {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (h *harness) eventSummary(tp domain.EventType) string {

@@ -275,6 +275,10 @@ type Model struct {
 	// backlog is how many messages wait undelivered for each agent of the
 	// selected task, while it runs.
 	backlog map[domain.AgentID]int
+	// queuedRuns holds the tasks whose run waits for a free slot, from the
+	// RunQueued events: such a task looks exactly like a running one that
+	// has gone quiet, and the human needs to know nothing has started.
+	queuedRuns map[domain.TaskID]bool
 	// inputSelected is true while the whole text of the field being edited
 	// is selected (ctrl+a): typing replaces it, backspace clears it.
 	inputSelected bool

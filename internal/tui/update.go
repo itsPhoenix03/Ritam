@@ -227,6 +227,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case domain.EvtAccessLevel:
 			cmds = append(cmds, loadAccessCmd(m.ctx, m.svc))
+		case domain.EvtRunQueued:
+			m = m.markQueued(ev.TaskID, true)
+			if ev.TaskID == m.currentTaskID {
+				m.setStatus("%s is queued: it starts when a running task ends (p pauses it)", ev.TaskID)
+			}
+		case domain.EvtRunStarted, domain.EvtRunUnqueued:
+			m = m.markQueued(ev.TaskID, false)
 		}
 		if len(cmds) == 0 {
 			return m, nil
