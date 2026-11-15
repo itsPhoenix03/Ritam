@@ -191,6 +191,26 @@ func TestBackupsOfAProjectOnAnUnmountedDriveAreKept(t *testing.T) {
 	}
 }
 
+// TestAnEmptySessionsFileDoesNotStopStartUp: the empty sessions.json a
+// power cut can leave is kept aside with a warning, and ritam starts.
+func TestAnEmptySessionsFileDoesNotStopStartUp(t *testing.T) {
+	_, project := inProject(t)
+	hidden := filepath.Join(project, brand.HiddenDir())
+	if err := os.MkdirAll(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "sessions.json"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, pl, err := prepare("")
+	if err != nil {
+		t.Fatalf("ritam must start: %v", err)
+	}
+	if !strings.Contains(strings.Join(pl.notices, "\n"), "sessions.json.bad-") {
+		t.Errorf("the human is told where the file was kept: %v", pl.notices)
+	}
+}
+
 // TestTheDataCommandsWorkTogether: archive -clear empties the project, and
 // restore brings the archive back.
 func TestTheDataCommandsWorkTogether(t *testing.T) {

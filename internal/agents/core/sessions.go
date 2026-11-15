@@ -13,6 +13,7 @@ import (
 
 	"ritam/internal/config"
 	"ritam/internal/domain"
+	"ritam/internal/fsutil"
 )
 
 // Persistent agent sessions.
@@ -140,6 +141,8 @@ type SessionRegistry struct {
 	// guard learns of every write, so the file is not taken for an
 	// agent's edit (see FileGuard).
 	guard *FileGuard
+	// recovered is the warning about an unreadable file set aside on open.
+	recovered string
 }
 
 // UseGuard routes the registry's writes through g.
@@ -153,30 +156,64 @@ func (r *SessionRegistry) UseGuard(g *FileGuard) {
 // An empty path keeps the registry in memory only, which tests and mock runs
 // use.
 //
-// A file that exists but cannot be parsed is an error rather than an empty
-// registry: silently starting over would orphan every session it recorded, and
-// each agent would quietly lose its context.
+// A file that exists but cannot be parsed (an empty one is what a power cut
+// mid-write can leave) is kept aside and the registry starts empty, with
+// Recovered saying so. Refusing to start would leave the human nothing to do
+// but delete it by hand; keeping it lets a human still find the sessions it
+// recorded. Only a file that can be neither read nor moved is an error.
 func OpenSessionRegistry(path string) (*SessionRegistry, error) {
 	r := &SessionRegistry{path: path, entries: map[SessionKey]Session{}}
 	if path == "" {
 		return r, nil
 	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return r, nil
-	}
+	list, notice, err := loadSessions(path)
 	if err != nil {
-		return nil, fmt.Errorf("sessions: reading %s: %w", path, err)
+		return nil, err
 	}
-	var list []Session
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, fmt.Errorf("sessions: %s is not valid (fix or remove it): %w", path, err)
-	}
+	r.recovered = notice
 	for _, s := range list {
 		r.entries[s.Key] = s
 	}
 	return r, nil
 }
+
+// CheckSessionsFile keeps an unreadable sessions file at path aside, as
+// OpenSessionRegistry would, and returns the warning for the human ("" when
+// the file is fine or absent). Start-up calls it so the warning is shown
+// and logged with the other start-up notices.
+func CheckSessionsFile(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	_, notice, err := loadSessions(path)
+	return notice, err
+}
+
+// loadSessions reads the sessions file at path. One that does not parse is
+// renamed to <path>.bad-<time> and reported in notice, with no sessions.
+func loadSessions(path string) (list []Session, notice string, err error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("sessions: reading %s: %w", path, err)
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		keptAs, mvErr := fsutil.SetAside(path)
+		if mvErr != nil {
+			return nil, "", fmt.Errorf("sessions: %s is not valid (%v) and could not be kept aside (fix or remove it): %w",
+				path, err, mvErr)
+		}
+		return nil, fmt.Sprintf("warning: the agents' session record %s could not be read (%v); it was kept as %s "+
+			"and agents start new conversations", path, err, keptAs), nil
+	}
+	return list, "", nil
+}
+
+// Recovered is the warning about an unreadable sessions file found when the
+// registry was opened, "" when there was none.
+func (r *SessionRegistry) Recovered() string { return r.recovered }
 
 // Path reports where the registry is stored, "" when in memory only.
 func (r *SessionRegistry) Path() string { return r.path }
@@ -198,8 +235,9 @@ func (r *SessionRegistry) Save(s Session) error {
 }
 
 // flushLocked writes the registry atomically: a temporary file in the same
-// directory, renamed over the old one, so a crash mid-write can never leave a
-// truncated registry behind.
+// directory, flushed to disk and renamed over the old one (and the folder
+// flushed where the platform allows), so neither a crash nor a power cut
+// mid-write can leave a truncated or empty registry behind.
 func (r *SessionRegistry) flushLocked() error {
 	if r.path == "" {
 		return nil
@@ -213,27 +251,7 @@ func (r *SessionRegistry) flushLocked() error {
 	if err != nil {
 		return err
 	}
-
-	dir := filepath.Dir(r.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("sessions: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".sessions-*.tmp")
-	if err != nil {
-		return fmt.Errorf("sessions: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("sessions: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("sessions: %w", err)
-	}
-	if err := os.Rename(tmpName, r.path); err != nil {
-		os.Remove(tmpName)
+	if err := fsutil.WriteAtomic(r.path, data); err != nil {
 		return fmt.Errorf("sessions: %w", err)
 	}
 	return nil

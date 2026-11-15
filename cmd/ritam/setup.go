@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"ritam/internal/agents/core"
 	"ritam/internal/backup"
 	"ritam/internal/brand"
 	"ritam/internal/config"
@@ -120,6 +121,16 @@ func prepare(configPath string) (*config.Config, place, error) {
 	}
 	pl.place(cfg, root)
 	pl.trustAccess(cfg, global.Access)
+	// An unreadable sessions file (a power cut mid-write) is kept aside
+	// here, so the human sees and the log records why the agents start
+	// new conversations, instead of ritam refusing to start.
+	msg, err := core.CheckSessionsFile(cfg.Sessions.File)
+	if err != nil {
+		return nil, pl, err
+	}
+	if msg != "" {
+		pl.notices = append(pl.notices, msg)
+	}
 	// A sandbox check that was cut short can leave its folder behind; remove
 	// the old ones at every start, never one a check may still be using.
 	if err := layout.PruneCanary(home); err != nil {
