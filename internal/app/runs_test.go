@@ -33,6 +33,9 @@ type stallAgent struct {
 	started chan struct{} // receives once per turn started
 	running sync.WaitGroup
 	stops   int
+	// hold, when set, keeps Stop from returning until it is closed: an
+	// agent whose process will not die.
+	hold chan struct{}
 }
 
 func newStallAgent(id domain.AgentID) *stallAgent {
@@ -72,6 +75,9 @@ func (a *stallAgent) SendMessage(ctx context.Context, _ *domain.Task, _ domain.M
 
 func (a *stallAgent) Stop(context.Context) error {
 	a.running.Wait()
+	if a.hold != nil {
+		<-a.hold
+	}
 	a.mu.Lock()
 	a.stops++
 	a.mu.Unlock()
@@ -208,10 +214,10 @@ func TestPausingAResumedRunIsNotAFailedResume(t *testing.T) {
 	if err := svc.Pause(ctx, task.ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	waitStops(t, lead, 2)
-	// The failure, when there was one, was published just after the run
-	// returned; give it the moment it took.
-	time.Sleep(100 * time.Millisecond)
+	// Shutdown returns once every run, failure report included, is done.
+	if err := shutdown(svc, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, f := range log.failures() {
 		if strings.Contains(f, "context canceled") {
@@ -221,5 +227,67 @@ func TestPausingAResumedRunIsNotAFailedResume(t *testing.T) {
 	got, _ := svc.GetTask(ctx, task.ID)
 	if got.State != domain.TaskPaused {
 		t.Errorf("state = %s, want PAUSED", got.State)
+	}
+}
+
+// shutdown calls Service.Shutdown with a bounded wait.
+func shutdown(svc *Service, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	return svc.Shutdown(ctx)
+}
+
+// TestQuitDuringATurnWaitsForTheRun is quitting while an agent is mid-turn:
+// Shutdown must not return until the run has stopped its agents and
+// returned, since the database is closed right after it.
+func TestQuitDuringATurnWaitsForTheRun(t *testing.T) {
+	svc, lead, log := stallService(t)
+	ctx := context.Background()
+	task, err := svc.StartTask(ctx, stallTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTurn(t, lead)
+	if got := svc.ActiveRuns(); len(got) != 1 || got[0] != task.ID {
+		t.Fatalf("active runs = %v", got)
+	}
+
+	if err := shutdown(svc, 10*time.Second); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	// No waiting here: by the time Shutdown returns the run is over.
+	if lead.stopCount() != 1 {
+		t.Error("Shutdown returned before the run stopped its agents")
+	}
+	if n := len(svc.ActiveRuns()); n != 0 {
+		t.Errorf("%d runs still active after Shutdown", n)
+	}
+	if f := log.failures(); len(f) != 0 {
+		t.Errorf("stopping for a quit is not a failure: %v", f)
+	}
+
+	if _, err := svc.StartTask(ctx, stallTask()); err == nil {
+		t.Error("no new run may start once shutting down")
+	}
+	if err := svc.Resume(ctx, task.ID); err == nil {
+		t.Error("no resume may start once shutting down")
+	}
+}
+
+// TestShutdownSaysWhatIsStillRunningWhenTheWaitRunsOut: a run whose agent
+// will not stop is not waited for forever.
+func TestShutdownSaysWhatIsStillRunningWhenTheWaitRunsOut(t *testing.T) {
+	svc, lead, _ := stallService(t)
+	lead.hold = make(chan struct{})
+	defer close(lead.hold)
+	task, err := svc.StartTask(context.Background(), stallTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTurn(t, lead)
+
+	err = shutdown(svc, 100*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), string(task.ID)) {
+		t.Fatalf("the error names the task still running, got %v", err)
 	}
 }

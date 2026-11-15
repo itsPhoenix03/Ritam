@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"time"
 
 	"ritam/internal/app"
 	"ritam/internal/brand"
@@ -87,6 +88,9 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		return err
 	}
 	defer sys.Close()
+	// Registered after Close, so it runs before it: every run is stopped and
+	// waited for before the exit backup is taken and the database closed.
+	defer stopRuns(sys.Service, log)
 	if info, err := sys.Service.Access(context.Background()); err == nil && info.HeldBack != "" {
 		log.Warn("access held back", "reason", info.HeldBack)
 		pl.notices = append(pl.notices, "access "+info.HeldBack)
@@ -132,6 +136,26 @@ func chooseAgents(cfg *config.Config, useReal, useMock bool) error {
 	}
 	cfg.ApplyRealAgentIdleFloor()
 	return nil
+}
+
+// stopRunsWait bounds how long quitting waits for the agents' runs to stop.
+// A CLI turn being ended usually returns within a second or two; past this
+// the exit goes ahead and says what was still running.
+const stopRunsWait = 15 * time.Second
+
+// stopRuns cancels the background runs and waits for them, saying so on
+// stderr: the TUI has already left the screen, and a silent pause of several
+// seconds reads as a hang.
+func stopRuns(svc *app.Service, log *logging.Logger) {
+	if len(svc.ActiveRuns()) > 0 {
+		fmt.Fprintln(os.Stderr, brand.Name+": stopping agents...")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stopRunsWait)
+	defer cancel()
+	if err := svc.Shutdown(ctx); err != nil {
+		log.Warn("shutdown", "error", err)
+		fmt.Fprintln(os.Stderr, brand.Name+":", err)
+	}
 }
 
 // runHeadlessDemo exercises the full mock orchestration flow and prints the
