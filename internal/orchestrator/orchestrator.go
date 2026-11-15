@@ -1138,6 +1138,10 @@ var recoverableErrors = []string{
 	"unknown message type", // invented a type outside the protocol
 	"missing 'to'",         // header without a recipient
 	"missing TO",           //   "        "     "  "
+	// The adapters' current wording for the same thing, when every block of
+	// the reply lacked a recipient. Matching only the older phrasing above
+	// sent such a reply to FAILED -- terminal -- over one bad turn.
+	"had no recipient (to=)",
 	"produced no final message",
 	"not the expected JSON envelope",
 	"envelope carried no result text",
