@@ -672,12 +672,15 @@ func (a *CodexAdapter) fail(err error) {
 	a.emit(ports.Outbound{AgentID: a.id, Err: err})
 }
 
-// emit publishes an outbound value, dropping it once the adapter has stopped.
+// emit publishes an outbound value without blocking. Once the adapter has
+// stopped, messages and failures are dropped, but a usage report is not:
+// the turn Stop killed still cost what it cost, and the orchestrator reads
+// the channel until its agents have stopped to bill it.
 func (a *CodexAdapter) emit(o ports.Outbound) {
 	a.mu.Lock()
 	stopped := a.stopped
 	a.mu.Unlock()
-	if stopped {
+	if stopped && !o.IsUsageOnly() {
 		return
 	}
 	select {

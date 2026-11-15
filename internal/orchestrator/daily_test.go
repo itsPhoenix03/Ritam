@@ -105,7 +105,9 @@ func TestAnUnreadableDailyRecordPausesTheTask(t *testing.T) {
 			t.Errorf("the pause reason must say %q: %q", want, final.PauseReason)
 		}
 	}
-	if final.CostUSD != 0.60 || final.InputTokens != 100 {
+	// At least that turn: a second one of codex's, if the authority's reply
+	// had started it before the pause, is billed too as the run ends.
+	if final.CostUSD < 0.60 || final.InputTokens < 100 || final.AgentUsage["codex"].CostUSD != final.CostUSD {
 		t.Errorf("the turn's usage is still recorded on the task: $%.2f, %d tokens in", final.CostUSD, final.InputTokens)
 	}
 }

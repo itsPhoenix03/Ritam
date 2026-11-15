@@ -43,6 +43,10 @@ type Turn struct {
 	RetryAfter time.Duration
 	// Usage is what the turn reports it cost; nil reports a small default.
 	Usage *ports.Usage
+	// KilledUsage is what the turn reports if it is ended before it
+	// finishes, as the Claude adapter reports the tokens streamed before
+	// its CLI was killed; nil reports nothing, as Codex does.
+	KilledUsage *ports.Usage
 }
 
 // Script decides each turn: n counts the adapter's turns from 1, in is what
@@ -223,6 +227,9 @@ func (a *Agent) run(ctx context.Context, t *domain.Task, m domain.Message) {
 		a.killed++
 		a.mu.Unlock()
 		a.activity.Emit(ports.ActivityStatus, "cancelled")
+		if turn.KilledUsage != nil {
+			a.emit(ports.Outbound{AgentID: a.id, Usage: turn.KilledUsage})
+		}
 		return
 	case <-time.After(wait):
 	}
@@ -330,7 +337,9 @@ func (a *Agent) emit(o ports.Outbound) {
 	a.mu.Lock()
 	stopped := a.stopped
 	a.mu.Unlock()
-	if stopped {
+	if stopped && !o.IsUsageOnly() {
+		// Like the real adapters: a stopped agent's messages are dropped,
+		// its usage is still reported.
 		return
 	}
 	select {

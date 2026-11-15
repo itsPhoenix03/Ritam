@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +31,36 @@ func TestAKilledTurnStillCountsItsTokens(t *testing.T) {
 	}
 	if u.CostUSD != 0 {
 		t.Errorf("the stream carries no cost: %+v", u)
+	}
+}
+
+// TestATurnKilledByStopStillReportsItsUsage: Stop marks the adapter stopped
+// before it kills the turn, and everything emitted after that used to be
+// dropped -- the killed turn's tokens with it, so a turn ended by a pause, a
+// cancel or the task completing was never billed. Its usage is now still
+// reported; only messages and failures are dropped.
+func TestATurnKilledByStopStillReportsItsUsage(t *testing.T) {
+	a, cliLog, _ := fakeAdapter(t, "streamthenhang")
+	if err := a.SendMessage(context.Background(), testTask(), msg("Go on.")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the turn to stream its first calls", func() bool { return strings.Contains(readFile(cliLog), "streamed") })
+	if err := a.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case o := <-a.Outbound():
+			if o.Usage == nil {
+				t.Fatalf("a stopped adapter may send only usage, got %+v", o)
+			}
+			if o.Usage.InputTokens != 2+2957+40 || o.Usage.OutputTokens != 121 {
+				t.Errorf("the killed turn's tokens: %+v", o.Usage)
+			}
+			return
+		default:
+			t.Fatal("a turn killed by Stop reported no usage")
+		}
 	}
 }
 

@@ -524,14 +524,24 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 		if _, perr := o.Tasks.Pause(runCtx, id, domain.HumanAgentID, reason); perr != nil {
 			o.log.Error("pause task", "taskId", string(id), "error", perr)
 		}
+		// Those that did start are not left running with no run behind them.
+		stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(runCtx), stopDeadline)
+		o.stopParticipants(stopCtx, t)
+		stopCancel()
 		return err
 	}
-	defer o.stopParticipants(context.WithoutCancel(runCtx), t)
 	defer o.forgetRun(id)
 
 	o.openInbox(id)
 	defer o.closeInbox(id)
-	inbox := o.mergeOutbound(runCtx, t)
+	// The channels are taken now, not when the run ends: a task's own agent
+	// instance is discarded once it is stopped, and asking for its adapter
+	// then returns the shared one, whose channel holds none of this task's
+	// usage. enders are the agents whose outbound ended the loop.
+	merge := o.mergeOutbound(t)
+	var enders []domain.AgentID
+	defer func() { o.endRun(context.WithoutCancel(runCtx), t, merge, enders) }()
+	inbox := merge.out
 	alive := make(chan struct{}, 1)
 	o.streamActivity(runCtx, t, alive)
 
@@ -637,11 +647,9 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 			}
 
 			done, err := o.handleOutbound(runCtx, id, out)
-			if err != nil {
+			if err != nil || done {
+				enders = append(enders, out.AgentID)
 				return err
-			}
-			if done {
-				return nil
 			}
 			o.dispatch(runCtx, id)
 		}
@@ -804,13 +812,12 @@ func (o *Orchestrator) overDailyLimit(u ports.Usage) (string, bool) {
 	return "", false
 }
 
-// recordUsage adds one CLI turn's reported usage to the task, and to the
-// day's spending, and pauses if a spending ceiling has been reached.
-func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+// addUsage adds one CLI turn's reported usage to the task and records it.
+func (o *Orchestrator) addUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (*domain.Task, error) {
 	u := *out.Usage
 	t, err := o.Tasks.AddUsage(ctx, id, out.AgentID, u)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	o.Events.emit(ctx, domain.EvtAgentUsage, id, out.AgentID, usageSummary(out.AgentID, u, t),
 		map[string]string{
@@ -820,6 +827,17 @@ func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out po
 			"cacheReadTokens": fmt.Sprint(u.CacheReadTokens),
 			"taskCostUSD":     fmt.Sprintf("%.6f", t.CostUSD),
 		})
+	return t, nil
+}
+
+// recordUsage adds one CLI turn's reported usage to the task, and to the
+// day's spending, and pauses if a spending ceiling has been reached.
+func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+	u := *out.Usage
+	t, err := o.addUsage(ctx, id, out)
+	if err != nil {
+		return false, err
+	}
 	reason, over := LimitExceeded(t)
 	over = over && strings.HasPrefix(reason, domain.PauseReasonBudget)
 	if r, ok := o.overDailyLimit(u); ok && !over {
@@ -2254,20 +2272,58 @@ func (o *Orchestrator) startParticipants(ctx context.Context, t *domain.Task) er
 	return nil
 }
 
+// stopParticipants stops the task's agents all at once, waiting for them no
+// longer than ctx allows. They used to be stopped one after another, each
+// taking as long as its CLI took to die.
 func (o *Orchestrator) stopParticipants(ctx context.Context, t *domain.Task) {
+	var wg sync.WaitGroup
 	for _, p := range t.Participants {
-		if err := o.Agents.StopFor(ctx, t.ID, p); err != nil {
-			o.log.Warn("stop agent", "agentId", string(p), "error", err)
-		}
+		wg.Add(1)
+		go func(p domain.AgentID) {
+			defer wg.Done()
+			if err := o.Agents.StopFor(ctx, t.ID, p); err != nil {
+				o.log.Warn("stop agent", "agentId", string(p), "error", err)
+			}
+		}(p)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		o.log.Warn("agents still stopping after the deadline", "taskId", string(t.ID))
 	}
 }
 
-// mergeOutbound fans every participant's adapter channel into one inbox. The
-// merged channel closes once all participants have closed theirs.
-func (o *Orchestrator) mergeOutbound(ctx context.Context, t *domain.Task) <-chan ports.Outbound {
-	merged := make(chan ports.Outbound, 64)
-	var wg sync.WaitGroup
+// outboundMerge fans every participant's outbound channel into out, which
+// closes once every goroutine feeding it has finished: when its adapter
+// closed its channel, when flush is closed and what was left in the channel
+// has been handed on, or when abort is called.
+type outboundMerge struct {
+	out   chan ports.Outbound
+	flush chan struct{}
+	abort context.CancelFunc
+}
 
+// mergeOutbound takes every participant's outbound channel and starts
+// feeding them into one. It outlives the run loop: what the agents report
+// after the loop has ended is still read (endRun), which is why it is not
+// bound to the run's context.
+func (o *Orchestrator) mergeOutbound(t *domain.Task) *outboundMerge {
+	ctx, abort := context.WithCancel(context.Background())
+	mg := &outboundMerge{out: make(chan ports.Outbound, 64), flush: make(chan struct{}), abort: abort}
+	send := func(out ports.Outbound) bool {
+		select {
+		case mg.out <- out:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	var wg sync.WaitGroup
 	for _, p := range t.Participants {
 		ad, ok := o.Agents.AdapterFor(t.ID, p)
 		if !ok {
@@ -2280,25 +2336,126 @@ func (o *Orchestrator) mergeOutbound(ctx context.Context, t *domain.Task) <-chan
 				select {
 				case <-ctx.Done():
 					return
-				case out, ok := <-ch:
-					if !ok {
-						return
+				case <-mg.flush:
+					// The adapter has stopped: whatever it reported is in its
+					// channel by now.
+					for {
+						select {
+						case out, ok := <-ch:
+							if !ok || !send(out) {
+								return
+							}
+						default:
+							return
+						}
 					}
-					select {
-					case merged <- out:
-					case <-ctx.Done():
+				case out, ok := <-ch:
+					if !ok || !send(out) {
 						return
 					}
 				}
 			}
 		}(ad.Outbound())
 	}
-
 	go func() {
 		wg.Wait()
-		close(merged)
+		close(mg.out)
 	}()
-	return merged
+	return mg
+}
+
+// usageGrace bounds how long the agents whose outbound ended the run are
+// given to finish the turn it came from before they are stopped: their usage
+// is sent after their messages.
+var usageGrace = time.Second
+
+// stopDeadline bounds stopping a run's agents and collecting what they still
+// report.
+var stopDeadline = 15 * time.Second
+
+// endRun stops the task's agents and bills every turn they took.
+//
+// Usage is sent after a turn's messages, so the message that ended the run
+// -- the deciding FINAL_DECISION, a decision held for the human, the one that
+// crossed a limit, a failure -- always arrived before its turn's usage, and
+// nobody read the channels once the loop had returned: the deciding turn of
+// every task was never billed. Nor was any turn killed by the stop, whether
+// by a pause, a cancel, a completion or a co-worker crossing the budget.
+//
+// So, in order: the agents that ended the run get a short grace to finish
+// their turn; every agent is stopped at once; and what they report until
+// they have stopped is read, its usage added to the task and the day and
+// everything else ignored -- the run is over, nothing more is routed.
+func (o *Orchestrator) endRun(ctx context.Context, t *domain.Task, mg *outboundMerge, enders []domain.AgentID) {
+	defer mg.abort()
+	in := mg.out
+	take := func(out ports.Outbound, ok bool) {
+		if !ok {
+			in = nil
+			return
+		}
+		if out.IsUsageOnly() {
+			o.recordLateUsage(ctx, t.ID, out)
+		}
+	}
+
+	if len(enders) > 0 {
+		grace := time.NewTimer(usageGrace)
+		tick := time.NewTicker(10 * time.Millisecond)
+	wait:
+		for in != nil && o.anyWorking(t.ID, enders) {
+			select {
+			case out, ok := <-in:
+				take(out, ok)
+			case <-tick.C:
+			case <-grace.C:
+				break wait
+			}
+		}
+		grace.Stop()
+		tick.Stop()
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, stopDeadline)
+	defer cancel()
+	stopped := make(chan struct{})
+	go func() {
+		o.stopParticipants(stopCtx, t)
+		close(stopped)
+	}()
+	for in != nil || stopped != nil {
+		select {
+		case out, ok := <-in:
+			take(out, ok)
+		case <-stopped:
+			stopped = nil
+			close(mg.flush)
+		case <-stopCtx.Done():
+			o.log.Warn("stopped collecting the agents' last usage at the deadline", "taskId", string(t.ID))
+			return
+		}
+	}
+}
+
+// anyWorking reports whether any of agents is in the middle of a turn.
+func (o *Orchestrator) anyWorking(id domain.TaskID, agents []domain.AgentID) bool {
+	for _, a := range agents {
+		if ad, ok := o.Agents.AdapterFor(id, a); ok && ad.Status() == domain.AgentStateWorking {
+			return true
+		}
+	}
+	return false
+}
+
+// recordLateUsage adds the usage of a turn reported after the run ended to
+// the task and to the day's spending. Nothing else is done with it: the task
+// has already stopped.
+func (o *Orchestrator) recordLateUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) {
+	if _, err := o.addUsage(ctx, id, out); err != nil {
+		o.log.Error("record the usage of a turn that ended with the run", "taskId", string(id), "error", err)
+		return
+	}
+	o.overDailyLimit(*out.Usage)
 }
 
 // streamActivity forwards each participant's live output to subscribers for

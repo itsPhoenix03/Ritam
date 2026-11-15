@@ -809,13 +809,16 @@ func (a *ClaudeCodeAdapter) fail(err error) {
 	a.emit(ports.Outbound{AgentID: a.id, Err: err})
 }
 
-// emit publishes an outbound value, dropping it if the adapter has stopped so
-// a late-finishing invocation cannot block forever on an unread channel.
+// emit publishes an outbound value without blocking. Once the adapter has
+// stopped, messages and failures are dropped -- nobody acts on them -- but a
+// usage report is not: the turn Stop killed still cost what it cost, and the
+// orchestrator reads the channel until its agents have stopped to bill it.
+// Dropping usage too left every killed turn unbilled.
 func (a *ClaudeCodeAdapter) emit(o ports.Outbound) {
 	a.mu.Lock()
 	stopped := a.stopped
 	a.mu.Unlock()
-	if stopped {
+	if stopped && !o.IsUsageOnly() {
 		return
 	}
 	select {

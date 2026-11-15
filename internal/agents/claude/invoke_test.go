@@ -71,6 +71,13 @@ func runFakeCLI(mode string) {
 		_ = readAll(os.Stdin)
 		_, _ = os.Stdout.WriteString(killedStream)
 		os.Exit(1)
+	case "streamthenhang":
+		// A turn still working when it is stopped: it has streamed some
+		// calls and would go on for minutes.
+		_ = readAll(os.Stdin)
+		_, _ = os.Stdout.WriteString(killedStream)
+		fakeLog("streamed")
+		time.Sleep(2 * time.Minute)
 	case "overbudget":
 		// What the real CLI does when --max-budget-usd stops a turn: an
 		// error result that still carries the cost, and a non-zero exit.
