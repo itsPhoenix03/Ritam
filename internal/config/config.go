@@ -390,6 +390,23 @@ func (c *Config) overlay(path string) error {
 	return nil
 }
 
+// RealAgentIdleFloor is the shortest idle timeout used with the real CLIs.
+// They are slow next to the mocks: one investigation can take minutes, and
+// the 60-second default would pause a task in the middle of an answer.
+const RealAgentIdleFloor = 10 * time.Minute
+
+// ApplyRealAgentIdleFloor raises the idle timeout to RealAgentIdleFloor when
+// the real CLIs are in use, however they were chosen (the -real flag or
+// tui.useMockAgents: false), and reports whether it did. With the mocks it
+// changes nothing. A longer timeout that was set is kept.
+func (c *Config) ApplyRealAgentIdleFloor() bool {
+	if c.TUI.UseMockAgents || c.Orchestrator.IdleTimeout >= RealAgentIdleFloor {
+		return false
+	}
+	c.Orchestrator.IdleTimeout = RealAgentIdleFloor
+	return true
+}
+
 // MinBackupInterval is the shortest periodic backup interval. Only the newest
 // few snapshots are kept, so a shorter one would push the older ones out
 // within minutes of steady work.

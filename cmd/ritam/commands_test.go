@@ -9,6 +9,7 @@ import (
 
 	"ritam/internal/backup"
 	"ritam/internal/brand"
+	"ritam/internal/config"
 )
 
 // writeGlobal writes the global settings file in the app home.
@@ -63,5 +64,38 @@ func TestASettingsMistakeStopsEveryCommand(t *testing.T) {
 	_, err := runCommand([]string{"backups", "now"}, &out)
 	if err == nil || !strings.Contains(err.Error(), "backups.keep must be at least 1, got -1") {
 		t.Errorf("want the settings error, got %v", err)
+	}
+}
+
+// TestRealAgentsFromTheSettingsGetTheIdleFloorWithoutTheFlag: only -real
+// used to raise the idle timeout; settings choosing real agents did not.
+func TestRealAgentsFromTheSettingsGetTheIdleFloorWithoutTheFlag(t *testing.T) {
+	home, _ := inProject(t)
+	writeGlobal(t, home, "tui:\n  useMockAgents: false\n")
+	cfg, _, err := prepare("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chooseAgents(cfg, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TUI.UseMockAgents || cfg.Orchestrator.IdleTimeout != config.RealAgentIdleFloor {
+		t.Errorf("real agents without -real get the floor: mocks %v, idle %v",
+			cfg.TUI.UseMockAgents, cfg.Orchestrator.IdleTimeout)
+	}
+
+	cfg, _, err = prepare("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chooseAgents(cfg, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TUI.UseMockAgents || cfg.Orchestrator.IdleTimeout == config.RealAgentIdleFloor {
+		t.Errorf("-mock wins and keeps the mocks' timeout: mocks %v, idle %v",
+			cfg.TUI.UseMockAgents, cfg.Orchestrator.IdleTimeout)
+	}
+	if chooseAgents(cfg, true, true) == nil {
+		t.Error("-real and -mock together are an error")
 	}
 }

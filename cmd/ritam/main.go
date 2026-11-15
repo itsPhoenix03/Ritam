@@ -15,10 +15,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"time"
 
 	"ritam/internal/app"
 	"ritam/internal/brand"
+	"ritam/internal/config"
 	"ritam/internal/domain"
 	"ritam/internal/logging"
 	"ritam/internal/ports"
@@ -61,21 +61,8 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		return err
 	}
 
-	if useMock {
-		// An explicit request for mocks wins over anything in the config.
-		cfg.TUI.UseMockAgents = true
-	}
-	if useReal && useMock {
-		return fmt.Errorf("-real and -mock are mutually exclusive")
-	}
-
-	if useReal {
-		// Real CLIs are slow compared to mocks: a single investigation can
-		// take minutes, so the idle timeout must not fire mid-answer.
-		cfg.TUI.UseMockAgents = false
-		if cfg.Orchestrator.IdleTimeout < 10*time.Minute {
-			cfg.Orchestrator.IdleTimeout = 10 * time.Minute
-		}
+	if err := chooseAgents(cfg, useReal, useMock); err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Logging.File), 0o700); err != nil {
@@ -127,6 +114,24 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		WorkspaceNotice:  sys.Workspace.Notice,
 		Notices:          pl.notices,
 	})
+}
+
+// chooseAgents applies the -real and -mock flags over the settings, then the
+// real-agent idle floor. The floor follows the agents actually used, not the
+// flag: settings that say useMockAgents: false get it too.
+func chooseAgents(cfg *config.Config, useReal, useMock bool) error {
+	if useReal && useMock {
+		return fmt.Errorf("-real and -mock are mutually exclusive")
+	}
+	switch {
+	case useMock:
+		// An explicit request for mocks wins over anything in the config.
+		cfg.TUI.UseMockAgents = true
+	case useReal:
+		cfg.TUI.UseMockAgents = false
+	}
+	cfg.ApplyRealAgentIdleFloor()
+	return nil
 }
 
 // runHeadlessDemo exercises the full mock orchestration flow and prints the

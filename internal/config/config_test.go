@@ -277,3 +277,32 @@ func TestZeroIsTheWayToTurnALimitOrPeriodicBackupsOff(t *testing.T) {
 		t.Errorf("zero limits, no periodic backups and a one-day wait are all valid: %v", err)
 	}
 }
+
+// TestRealAgentsGetTheIdleFloorHoweverTheyAreChosen: the floor used to be
+// applied only by the -real flag, so useMockAgents: false in a settings file
+// kept the 60-second default and paused tasks mid-answer.
+func TestRealAgentsGetTheIdleFloorHoweverTheyAreChosen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ritam.yaml")
+	if err := os.WriteFile(path, []byte("tui:\n  useMockAgents: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ApplyRealAgentIdleFloor() || cfg.Orchestrator.IdleTimeout != RealAgentIdleFloor {
+		t.Errorf("real agents from the settings get the floor: %v", cfg.Orchestrator.IdleTimeout)
+	}
+
+	mocks := Default()
+	if mocks.ApplyRealAgentIdleFloor() || mocks.Orchestrator.IdleTimeout != 60*time.Second {
+		t.Errorf("the mocks keep the default: %v", mocks.Orchestrator.IdleTimeout)
+	}
+
+	longer := Default()
+	longer.TUI.UseMockAgents = false
+	longer.Orchestrator.IdleTimeout = 30 * time.Minute
+	if longer.ApplyRealAgentIdleFloor() || longer.Orchestrator.IdleTimeout != 30*time.Minute {
+		t.Errorf("a longer timeout that was set is kept: %v", longer.Orchestrator.IdleTimeout)
+	}
+}

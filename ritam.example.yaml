@@ -132,9 +132,10 @@ logging:
 tui:
   demoOnStart: false
   # Force every agent onto the mock adapter. Defaults to true so that nothing
-  # reaches a real provider by accident. The `-real` flag overrides this and
-  # also raises idleTimeout, since real CLIs take minutes rather than
-  # milliseconds to answer.
+  # reaches a real provider by accident. The `-real` flag overrides this.
+  # Whenever the real CLIs are used (false here, or `-real`), idleTimeout is
+  # raised to at least 10m, since they take minutes rather than milliseconds
+  # to answer.
   useMockAgents: true
 
 # Persistent agent sessions. Each agent keeps its own Claude Code / Codex
