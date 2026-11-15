@@ -96,6 +96,102 @@ func TestRitamsOwnWritesAreNotTakenForAnAgents(t *testing.T) {
 	}
 }
 
+// sharedGuard guards projects.json, shared with other ritam instances, and a
+// file of the project's own, and records who is told of a restore.
+func sharedGuard(t *testing.T) (g *FileGuard, projects, own string, told *[]string) {
+	t.Helper()
+	dir := t.TempDir()
+	projects, own = filepath.Join(dir, "projects.json"), filepath.Join(dir, "ritam.yaml")
+	_ = os.WriteFile(projects, []byte(`{"v":1}`), 0o600)
+	_ = os.WriteFile(own, []byte("agents: {}\n"), 0o600)
+	g = NewFileGuard(t.TempDir(), own)
+	g.GuardShared(projects)
+	told = &[]string{}
+	g.OnRestore = func(path string, agent domain.AgentID, _ string) {
+		*told = append(*told, string(agent)+" "+filepath.Base(path))
+	}
+	return g, projects, own, told
+}
+
+// TestAnotherRitamsWriteBetweenTurnsIsKept: another instance records its
+// start in projects.json while no agent turn runs here. The next turn here
+// keeps it and raises no alarm; the project's own file is still put back.
+func TestAnotherRitamsWriteBetweenTurnsIsKept(t *testing.T) {
+	g, projects, own, told := sharedGuard(t)
+	g.Begin("opus")()
+
+	_ = os.WriteFile(projects, []byte(`{"v":2}`), 0o600) // another instance
+	_ = os.WriteFile(own, []byte("agents: {opus: {executable: evil}}\n"), 0o600)
+	if got := g.Begin("opus")(); len(got) != 1 || filepath.Base(got[0]) != "ritam.yaml" {
+		t.Errorf("only the project's own file is put back: %v", got)
+	}
+	if data, _ := os.ReadFile(projects); string(data) != `{"v":2}` {
+		t.Errorf("the other instance's write must stay: %q", data)
+	}
+	if len(*told) != 1 || (*told)[0] != "opus ritam.yaml" {
+		t.Errorf("no alarm about projects.json: %v", *told)
+	}
+}
+
+// TestASharedFileChangedDuringATurnIsPutBack: a change to projects.json
+// while an agent's turn runs is the agent's, and is undone and reported.
+func TestASharedFileChangedDuringATurnIsPutBack(t *testing.T) {
+	g, projects, _, told := sharedGuard(t)
+	_ = os.WriteFile(projects, []byte(`{"v":2}`), 0o600) // before the turn: kept
+	end := g.Begin("codex")
+	_ = os.WriteFile(projects, []byte(`{"v":2,"grant":"level 3"}`), 0o600)
+	if got := end(); len(got) != 1 {
+		t.Fatalf("the agent's change must be put back: %v", got)
+	}
+	if data, _ := os.ReadFile(projects); string(data) != `{"v":2}` {
+		t.Errorf("projects.json must be as it was when the turn began: %q", data)
+	}
+	if len(*told) != 1 || (*told)[0] != "codex projects.json" {
+		t.Errorf("the human must be told: %v", *told)
+	}
+}
+
+// TestATamperIsNotAbsorbedWhenAnotherTurnStarts: agent A changes a shared
+// file mid-turn; agent B's turn starting before A's ends must not take A's
+// version as the way things are.
+func TestATamperIsNotAbsorbedWhenAnotherTurnStarts(t *testing.T) {
+	g, projects, _, told := sharedGuard(t)
+	endA := g.Begin("a")
+	_ = os.WriteFile(projects, []byte(`{"v":1,"grant":"level 3"}`), 0o600)
+	endB := g.Begin("b")
+	if got := endA(); len(got) != 1 {
+		t.Fatalf("A's change must be put back after A's turn: %v", got)
+	}
+	if got := endB(); len(got) != 0 {
+		t.Errorf("nothing left for B's turn: %v", got)
+	}
+	if data, _ := os.ReadFile(projects); string(data) != `{"v":1}` {
+		t.Errorf("projects.json must be as before A's turn: %q", data)
+	}
+	if len(*told) != 1 || (*told)[0] != "a projects.json" {
+		t.Errorf("the human must be told it was A: %v", *told)
+	}
+}
+
+// TestRitamsOwnWriteToASharedFileStays: ritam's own write through Write,
+// during a turn or between turns, is never put back.
+func TestRitamsOwnWriteToASharedFileStays(t *testing.T) {
+	g, projects, _, told := sharedGuard(t)
+	write := func(v string) {
+		if err := g.Write(projects, func() error { return os.WriteFile(projects, []byte(v), 0o600) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	end := g.Begin("opus")
+	write(`{"v":2}`)
+	end()
+	write(`{"v":3}`)
+	g.Begin("opus")()
+	if data, _ := os.ReadFile(projects); string(data) != `{"v":3}` || len(*told) != 0 {
+		t.Errorf("ritam's own writes stay: %q, told %v", data, *told)
+	}
+}
+
 // TestANilGuardChecksNothing: adapters built outside the app have none.
 func TestANilGuardChecksNothing(t *testing.T) {
 	var g *FileGuard
@@ -103,7 +199,7 @@ func TestANilGuardChecksNothing(t *testing.T) {
 	if err := g.Write("x", func() error { ran = true; return nil }); err != nil || !ran {
 		t.Error("a nil guard still writes")
 	}
-	if g.Check("opus") != nil {
+	if g.Check("opus") != nil || g.Begin("opus")() != nil {
 		t.Error("a nil guard checks nothing")
 	}
 }

@@ -54,7 +54,26 @@ const (
 	// argument, "filter agent=x" needs a value, and binding a key to each
 	// would exhaust the keyboard long before it covered the verbs.
 	modeCommand
+	// modeConfirm asks before an action that cannot be taken back (quit with
+	// runs going, cancel a task): y or enter does it, esc or n does not.
+	modeConfirm
 )
+
+// isText reports whether keys in this mode type text rather than run
+// commands. Leaving such a mode starts the short guard against keys that
+// were meant as text arriving as commands (see guarded).
+func (md mode) isText() bool {
+	return md == modePrompt || md == modeCommand || md == modeCreateForm
+}
+
+// confirmState is the question modeConfirm is asking.
+type confirmState struct {
+	action Action
+	taskID domain.TaskID
+	// reason is passed on to the action (a cancel's reason).
+	reason string
+	label  string
+}
 
 // centerTab selects what the centre column shows.
 //
@@ -202,6 +221,21 @@ type Model struct {
 	tasks         []*domain.Task
 	currentTaskID domain.TaskID
 
+	// createSeq numbers the task creations this UI has asked for.
+	// awaitCreate is the one whose result may still select the new task, and
+	// createFrom the task that was on screen when it was submitted: the new
+	// task is shown only if the human is still where the submit left them.
+	// Anyone who has since opened a prompt or moved to another task is doing
+	// something else, and a result arriving must not pull them away from it.
+	createSeq   int
+	awaitCreate int
+	createFrom  domain.TaskID
+
+	// detailSeq numbers the task-detail reloads asked for; detailShown is
+	// the newest one applied (see taskDetailMsg.seq).
+	detailSeq   int
+	detailShown int
+
 	messages  []*domain.Message
 	events    []domain.Event // events for the current task (task detail)
 	decisions []*domain.Decision
@@ -292,10 +326,22 @@ type Model struct {
 	// met is the rolling throughput window behind the THROUGHPUT pane.
 	met metrics
 
-	mode   mode
-	form   createForm
-	prompt promptState
-	cmd    commandState
+	mode    mode
+	form    createForm
+	prompt  promptState
+	cmd     commandState
+	confirm confirmState
+
+	// The paste defence (input.go). now is the clock it reads, replaced in
+	// tests; keyAt is when the key being handled arrived and lastKeyAt the
+	// one before it; burst is whether the key came too close after the last
+	// to have been typed by hand; leftTextAt is when a text mode was last
+	// left.
+	now        func() time.Time
+	keyAt      time.Time
+	lastKeyAt  time.Time
+	burst      bool
+	leftTextAt time.Time
 
 	// frameIdents is the identity table for the frame being rendered. It is
 	// set only on View()'s private copy of the Model (a value receiver), so it
@@ -327,6 +373,9 @@ func (m Model) Init() tea.Cmd {
 		loadAccessCmd(m.ctx, m.svc),
 	}
 	if m.opts.DemoOnStart {
+		// Init cannot record a creation on the model (it returns only a
+		// command), so the demo's result carries no sequence; with nothing
+		// selected yet the handler selects it anyway.
 		cmds = append(cmds, createTaskCmd(m.ctx, m.svc, ports.CreateTaskInput{
 			Title:       "Fix authentication cookie bug",
 			Description: "Cookies are not consistently scoped; investigate and resolve.",
@@ -334,7 +383,7 @@ func (m Model) Init() tea.Cmd {
 			Participants: []domain.AgentID{
 				m.opts.DefaultAuthority,
 			},
-		}))
+		}, 0))
 	}
 	return tea.Batch(cmds...)
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"ritam/internal/agents/core"
 	"ritam/internal/backup"
 	"ritam/internal/brand"
 	"ritam/internal/config"
@@ -34,12 +35,17 @@ type place struct {
 // <project>/.<name>/<name>.yaml.
 func prepare(configPath string) (*config.Config, place, error) {
 	var pl place
+	// An app home kept under both names is the human's to sort out; ritam
+	// uses the new one meanwhile rather than refuse to start.
 	for _, old := range brand.FormerNames {
 		msg, err := layout.RenameHome(old)
-		if err != nil {
+		var both *layout.BothExistError
+		switch {
+		case errors.As(err, &both):
+			pl.notices = append(pl.notices, "warning: "+err.Error())
+		case err != nil:
 			return nil, pl, err
-		}
-		if msg != "" {
+		case msg != "":
 			pl.notices = append(pl.notices, msg)
 		}
 	}
@@ -64,11 +70,11 @@ func prepare(configPath string) (*config.Config, place, error) {
 		root = filepath.Dir(visible)
 	}
 	for _, old := range brand.FormerNames {
-		done, err := layout.RenameAll(old, pl.reg, root)
+		done, err := layout.MigrateFormerName(old, pl.reg, root)
+		pl.notices = append(pl.notices, done...)
 		if err != nil {
 			return nil, pl, err
 		}
-		pl.notices = append(pl.notices, done...)
 	}
 
 	// The global settings are the user's own; the project's travel with it,
@@ -115,9 +121,19 @@ func prepare(configPath string) (*config.Config, place, error) {
 	}
 	pl.place(cfg, root)
 	pl.trustAccess(cfg, global.Access)
-	// A sandbox check that was cut short can leave its file behind; clear
-	// them at every start, so nothing else has to.
-	if err := layout.ClearCanary(home); err != nil {
+	// An unreadable sessions file (a power cut mid-write) is kept aside
+	// here, so the human sees and the log records why the agents start
+	// new conversations, instead of ritam refusing to start.
+	msg, err := core.CheckSessionsFile(cfg.Sessions.File)
+	if err != nil {
+		return nil, pl, err
+	}
+	if msg != "" {
+		pl.notices = append(pl.notices, msg)
+	}
+	// A sandbox check that was cut short can leave its folder behind; remove
+	// the old ones at every start, never one a check may still be using.
+	if err := layout.PruneCanary(home); err != nil {
 		return nil, pl, err
 	}
 	pl.adoptOldModelsFile()

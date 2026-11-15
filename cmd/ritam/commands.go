@@ -13,6 +13,7 @@ import (
 
 	"ritam/internal/backup"
 	"ritam/internal/brand"
+	"ritam/internal/config"
 	"ritam/internal/layout"
 	"ritam/internal/storage"
 )
@@ -36,6 +37,7 @@ func commandUsage() string {
 		"  " + n + " restore [latest|<file>]    restore this project from a backup or an archive",
 		"  " + n + " archive [-clear]           archive this project's tasks; -clear then starts it fresh",
 		"  " + n + " rename -from <old name>    rename folders made by a version with another name",
+		"  " + n + " config check               show the settings in force and where each came from",
 	}, "\n")
 }
 
@@ -55,6 +57,8 @@ func runCommand(args []string, out io.Writer) (bool, error) {
 		return true, cmdArchive(args[1:], out)
 	case "rename":
 		return true, cmdRename(args[1:], out)
+	case "config":
+		return true, cmdConfig(args[1:], out)
 	}
 	return false, nil
 }
@@ -131,8 +135,12 @@ func cmdBackups(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		_ = backup.Prune(pl.home.BackupDir(pl.proj), cfg.Backups.Keep)
 		fmt.Fprintf(out, "backup taken: %s\n", path)
+		// The backup just asked for is spared by name: whatever keep says,
+		// pruning must not undo the command.
+		if err := backup.Prune(pl.home.BackupDir(pl.proj), cfg.Backups.Keep, path); err != nil {
+			fmt.Fprintf(out, "note: older backups could not all be removed: %v\n", err)
+		}
 	case "projects":
 		for _, e := range pl.reg.Entries() {
 			list, _ := backup.List(filepath.Join(pl.home.BackupsDir(), e.Key()))
@@ -312,6 +320,88 @@ func cmdRename(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "nothing named %q found to rename\n", from)
 	}
 	return err
+}
+
+// cmdConfig is `config check`: the settings in force, after every layer and
+// what was held back, and where each value that is not the default came
+// from. A settings file that does not load stops it with the same error a
+// start would give, naming the file and the key.
+func cmdConfig(args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "check" {
+		args = args[1:]
+	}
+	fs, cfgPath, err := commandFlags("config check", args, nil)
+	if err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unknown config command %q%s", fs.Arg(0), commandUsage())
+	}
+	cfg, pl, err := prepare(cfgPath)
+	if err != nil {
+		return err
+	}
+
+	// The same layers prepare read, read again to see what each file sets
+	// and what the project's files were not allowed to decide.
+	root, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	visible := filepath.Join(root, brand.ConfigFile())
+	if cfgPath != "" {
+		if visible, err = filepath.Abs(cfgPath); err != nil {
+			return err
+		}
+		root = filepath.Dir(visible)
+	}
+	layers := []config.Layer{
+		{Name: "global", Path: pl.home.ConfigPath()},
+		{Name: "project", Path: visible},
+		{Name: "project", Path: pl.proj.ConfigPath()},
+	}
+	global, err := config.LoadLayers(layers[0].Path)
+	if err != nil {
+		return err
+	}
+	all, err := config.LoadLayers(layers[0].Path, layers[1].Path, layers[2].Path)
+	if err != nil {
+		return err
+	}
+	held := all.RestrictProject(global, root)
+
+	adjusted := map[string]string{}
+	if cfg.ApplyRealAgentIdleFloor() {
+		adjusted["orchestrator.idleTimeout"] = fmt.Sprintf("raised to %s for the real CLIs", config.RealAgentIdleFloor)
+	}
+	settings, err := config.Explain(cfg, layers, held, adjusted)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "settings files, each overriding the ones before:")
+	for _, l := range layers {
+		state := ""
+		if !fileExists(l.Path) {
+			state = "  (none)"
+		}
+		fmt.Fprintf(out, "  %-8s %s%s\n", l.Name, l.Path, state)
+	}
+	fmt.Fprintln(out, "\nsettings in force (a value with no note is the default):")
+	for _, s := range settings {
+		line := "  " + s.Key + ": " + s.Value
+		if s.Source != "" {
+			line += "    <- " + s.Source
+		}
+		fmt.Fprintln(out, line)
+	}
+	if len(held) > 0 {
+		fmt.Fprintf(out, "\nheld back from the project's settings (set them in %s if you mean them):\n", layers[0].Path)
+		for _, h := range held {
+			fmt.Fprintln(out, "  "+h)
+		}
+	}
+	return nil
 }
 
 func countTasks(db *storage.SQLite) (int, error) {

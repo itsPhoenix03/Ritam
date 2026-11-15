@@ -6,6 +6,11 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"sync"
 
 	"ritam/internal/domain"
 	"ritam/internal/knowledge"
@@ -14,13 +19,131 @@ import (
 )
 
 // Service implements ports.Service on top of the orchestrator. It holds no
-// state of its own: the orchestrator remains the source of truth.
+// task state of its own: the orchestrator remains the source of truth. What
+// it does hold is the set of runs it started in the background, so they can
+// be stopped and waited for before the program exits.
 type Service struct {
 	orch      *orchestrator.Orchestrator
 	storage   ports.Storage
 	knowledge *knowledge.Store
 	team      *Team
 	access    *accessControl
+
+	runs runSet
+}
+
+// runSet tracks the background runs (StartTask, Resume, FollowUp). Its zero
+// value is ready to use.
+//
+// Every run is cancelled through one context, base, so Shutdown stops them
+// all; and each is counted, so Shutdown can wait for them. Before this a run
+// was detached from every context (context.WithoutCancel) and nobody waited
+// for it: quitting closed the database under runs still writing to it.
+type runSet struct {
+	mu      sync.Mutex
+	base    context.Context
+	stop    context.CancelFunc
+	closed  bool
+	wg      sync.WaitGroup
+	running map[domain.TaskID]int
+}
+
+// errShuttingDown refuses a run asked for while the service is stopping.
+var errShuttingDown = errors.New("ritam is shutting down: no new run starts")
+
+// accepting reports whether a new run may still start.
+func (s *Service) accepting() error {
+	s.runs.mu.Lock()
+	defer s.runs.mu.Unlock()
+	if s.runs.closed {
+		return errShuttingDown
+	}
+	return nil
+}
+
+// goRun runs task id on a tracked goroutine. The run outlives the caller's
+// context (a request's context ends with the request) but not Shutdown, and
+// a pause or a cancel stopping it is a normal end. Any other error is
+// published as the task failing, prefixed with what the run was.
+func (s *Service) goRun(ctx context.Context, id domain.TaskID, what string) error {
+	r := &s.runs
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return errShuttingDown
+	}
+	if r.base == nil {
+		r.base, r.stop = context.WithCancel(context.Background())
+		r.running = map[domain.TaskID]int{}
+	}
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	unhook := context.AfterFunc(r.base, cancel)
+	r.wg.Add(1)
+	r.running[id]++
+	r.mu.Unlock()
+
+	go func() {
+		defer r.wg.Done()
+		defer func() {
+			unhook()
+			cancel()
+			r.mu.Lock()
+			if r.running[id]--; r.running[id] <= 0 {
+				delete(r.running, id)
+			}
+			r.mu.Unlock()
+		}()
+		if err := s.orch.RunTask(runCtx, id); err != nil && !errors.Is(err, context.Canceled) {
+			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
+				Type: domain.EvtTaskFailed, TaskID: id, Summary: what + " failed: " + err.Error(),
+			})
+		}
+	}()
+	return nil
+}
+
+// ActiveRuns lists the tasks with a background run going.
+func (s *Service) ActiveRuns() []domain.TaskID {
+	s.runs.mu.Lock()
+	defer s.runs.mu.Unlock()
+	out := make([]domain.TaskID, 0, len(s.runs.running))
+	for id := range s.runs.running {
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Shutdown stops every background run and waits for each to return, so
+// nothing is still writing when the storage closes. No new run starts once
+// it is called. If ctx ends first it says which tasks were still running;
+// their state is then whatever the run last wrote, and the next start pauses
+// them as interrupted.
+func (s *Service) Shutdown(ctx context.Context) error {
+	r := &s.runs
+	r.mu.Lock()
+	r.closed = true
+	if r.stop != nil {
+		r.stop()
+	}
+	r.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		ids := s.ActiveRuns()
+		names := make([]string, len(ids))
+		for i, id := range ids {
+			names[i] = string(id)
+		}
+		return fmt.Errorf("stopping agents: %s still running after the wait (%v)", strings.Join(names, ", "), ctx.Err())
+	}
 }
 
 // NewService builds the application service.
@@ -47,6 +170,23 @@ func (s *Service) CreateTask(ctx context.Context, in ports.CreateTaskInput) (*do
 // their own goroutine.
 func (s *Service) RunTask(ctx context.Context, id domain.TaskID) error {
 	return s.orch.RunTask(ctx, id)
+}
+
+// StartTask creates a task and runs it on a tracked goroutine, returning as
+// soon as the task is recorded. The run's outcome reaches the caller as
+// events, the same way a resumed run's does.
+func (s *Service) StartTask(ctx context.Context, in ports.CreateTaskInput) (*domain.Task, error) {
+	if err := s.accepting(); err != nil {
+		return nil, err
+	}
+	t, err := s.CreateTask(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.goRun(ctx, t.ID, "run"); err != nil {
+		return t, err
+	}
+	return t, nil
 }
 
 // ListTasks returns every task.
@@ -140,19 +280,17 @@ func (s *Service) Pause(ctx context.Context, id domain.TaskID, reason string) er
 
 // Resume restores a paused task and continues its deliberation.
 func (s *Service) Resume(ctx context.Context, id domain.TaskID) error {
+	if err := s.accepting(); err != nil {
+		return err
+	}
 	if err := s.orch.Resume(ctx, id); err != nil {
 		return err
 	}
 	// Resuming means the task starts deliberating again; do it off the
-	// caller's goroutine so the UI stays responsive.
-	go func() {
-		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
-			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
-				Type: domain.EvtTaskFailed, TaskID: id, Summary: "resume failed: " + err.Error(),
-			})
-		}
-	}()
-	return nil
+	// caller's goroutine so the UI stays responsive. A pause or a cancel
+	// ends the run by cancelling it: that is the run stopping as asked, not
+	// a resume that failed (goRun publishes only other errors).
+	return s.goRun(ctx, id, "resume")
 }
 
 // Cancel terminates a task.
@@ -168,28 +306,43 @@ func (s *Service) Approve(ctx context.Context, id domain.TaskID, note string) er
 // Reject refuses the pending final decision and returns the task to
 // deliberation.
 func (s *Service) Reject(ctx context.Context, id domain.TaskID, note string) error {
-	return s.orch.Reject(ctx, id, note)
+	if err := s.orch.Reject(ctx, id, note); err != nil {
+		return err
+	}
+	// With no run alive the REJECT waits for one; start it off the
+	// caller's goroutine, as Resume does. Without this a rejected task sat
+	// in DELIBERATING with nothing driving it. It is a tracked run like any
+	// other, so quitting stops it and waits for it.
+	if s.orch.Running(id) {
+		return nil
+	}
+	return s.goRun(ctx, id, "reject")
 }
 
 // FollowUp reopens a completed task with content addressed to agent to, and
 // runs it again off the caller's goroutine, as Resume does.
 func (s *Service) FollowUp(ctx context.Context, id domain.TaskID, to domain.AgentID, content string) error {
+	if err := s.accepting(); err != nil {
+		return err
+	}
 	if err := s.orch.Reopen(ctx, id, to, content); err != nil {
 		return err
 	}
-	go func() {
-		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
-			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
-				Type: domain.EvtTaskFailed, TaskID: id, Summary: "follow-up failed: " + err.Error(),
-			})
-		}
-	}()
-	return nil
+	return s.goRun(ctx, id, "follow-up")
 }
 
 // SendInstruction injects a human message into a live task.
 func (s *Service) SendInstruction(ctx context.Context, id domain.TaskID, to domain.AgentID, content string) error {
-	return s.orch.SendInstruction(ctx, id, to, content)
+	if err := s.orch.SendInstruction(ctx, id, to, content); err != nil {
+		return err
+	}
+	// A task with no run alive (a decision held for the human) has the
+	// message queued; start the run that delivers it, as Resume does, and
+	// tracked like every other run so quitting stops it and waits for it.
+	if s.orch.Running(id) {
+		return nil
+	}
+	return s.goRun(ctx, id, "instruction")
 }
 
 // SearchKnowledge queries shared project knowledge.

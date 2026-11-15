@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -21,6 +23,9 @@ type Registry struct {
 	// forgotten are ids this process removed, which a merge with the file
 	// on disk must not bring back.
 	forgotten map[string]bool
+	// pendingMigrated are former names already dealt with for folders not
+	// registered yet, applied when Touch registers them.
+	pendingMigrated map[string][]string
 }
 
 // Entry is one known project.
@@ -38,6 +43,10 @@ type Entry struct {
 	// a copy), so what they ask for is granted only up to what was approved
 	// here, for this project in this folder.
 	Access *AccessGrant `json:"access,omitempty"`
+	// Migrated lists the former app names whose hidden folder was already
+	// looked for in this project and renamed (or found absent or not ours),
+	// so the start-up migration does not run again here.
+	Migrated []string `json:"migrated,omitempty"`
 }
 
 // AccessGrant is an access level approved for one project folder.
@@ -151,18 +160,79 @@ func (r *Registry) Touch(p Project) error {
 	if !found {
 		r.entries = append(r.entries, Entry{ID: p.ID, Name: p.Name, Path: p.Root, LastSeen: time.Now()})
 	}
+	if names, ok := r.pendingMigrated[filepath.Clean(p.Root)]; ok {
+		for i := range r.entries {
+			if r.entries[i].ID == p.ID {
+				r.entries[i].Migrated = addNames(r.entries[i].Migrated, names...)
+			}
+		}
+		delete(r.pendingMigrated, filepath.Clean(p.Root))
+	}
 	r.mu.Unlock()
 	return r.Save()
 }
 
+// migrated reports whether the start-up rename from oldName was already
+// done for the project in folder path.
+func (r *Registry) migrated(path, oldName string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if samePath(e.Path, path) {
+			return slices.Contains(e.Migrated, oldName)
+		}
+	}
+	return false
+}
+
+// markMigrated records that the start-up rename from oldName is done for
+// the project in folder path. A folder not registered yet keeps the mark
+// until Touch registers it. The caller saves.
+func (r *Registry) markMigrated(path, oldName string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.entries {
+		if samePath(r.entries[i].Path, path) {
+			r.entries[i].Migrated = addNames(r.entries[i].Migrated, oldName)
+			return
+		}
+	}
+	if r.pendingMigrated == nil {
+		r.pendingMigrated = map[string][]string{}
+	}
+	key := filepath.Clean(path)
+	r.pendingMigrated[key] = addNames(r.pendingMigrated[key], oldName)
+}
+
+// addNames adds the names list lacks.
+func addNames(list []string, names ...string) []string {
+	for _, n := range names {
+		if !slices.Contains(list, n) {
+			list = append(list, n)
+		}
+	}
+	return list
+}
+
 // Missing lists the known projects whose folder no longer exists, noting
-// when each was first found gone.
+// when each was first found gone. A project on a drive or share that cannot
+// be reached is not missing: deleting its backups because a USB drive is
+// unplugged would lose them for nothing.
 func (r *Registry) Missing() []Entry {
 	r.mu.Lock()
 	var out []Entry
 	changed := false
 	for i := range r.entries {
 		if _, err := os.Stat(r.entries[i].Path); !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if !reachable(r.entries[i].Path) {
 			continue
 		}
 		if r.entries[i].MissingSince.IsZero() {
@@ -176,6 +246,24 @@ func (r *Registry) Missing() []Entry {
 		_ = r.Save()
 	}
 	return out
+}
+
+// reachable reports whether the place a project folder lives can be seen
+// at all, so its absence means it was deleted rather than that its drive is
+// not plugged in: the volume (a drive letter or network share on Windows)
+// and the folder holding the project must both exist. An unmounted drive
+// usually takes its mount point away, or leaves it empty, without the
+// project's parent folder; a share that is offline has no root to stat.
+// When in doubt the project is not "missing", and its backups are kept.
+func reachable(path string) bool {
+	if vol := filepath.VolumeName(path); vol != "" {
+		if _, err := os.Stat(vol + string(filepath.Separator)); err != nil {
+			return false
+		}
+	}
+	parent := filepath.Dir(filepath.Clean(path))
+	info, err := os.Stat(parent)
+	return err == nil && info.IsDir()
 }
 
 // SetKeep records that a missing project's backups are to be kept.

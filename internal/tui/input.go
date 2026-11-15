@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +22,80 @@ import (
 //	ctrl+a  select all: typing replaces it, backspace clears it
 //	ctrl+u  clear the field
 //	ctrl+w  delete the last word
+
+// The paste defence.
+//
+// Where the terminal supports bracketed paste, a paste arrives as one key
+// message and is typed as text. The native Windows console does not: it
+// delivers a paste as one key event per character, each newline an Enter, so
+// a multi-line paste into the instruction prompt used to send its first line
+// and run the rest as hotkeys (q quits, c cancels). Two rules stop that:
+//
+//   - keys arriving closer together than burstGap are a paste, not typing:
+//     in a text field Enter and Tab type a space instead of submitting or
+//     moving on, and destructive commands are ignored;
+//   - for textGuard after a text mode is left, the destructive single-key
+//     commands (quit, cancel, approve, reject) are ignored, in case the text
+//     ended early and what follows was meant as text.
+const (
+	// burstGap is far below the gap between two keys typed by hand (tens of
+	// milliseconds at the fastest) and well above the gap between the key
+	// events of one paste, which are handled back to back: only an Update
+	// and a View (a few milliseconds on a busy screen) separate them.
+	burstGap = 15 * time.Millisecond
+	// textGuard is about the time it takes to notice a prompt has closed.
+	textGuard = 150 * time.Millisecond
+)
+
+// clock is the time the paste defence reads.
+func (m Model) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+// noteKey stamps the key about to be handled and decides whether it is part
+// of a burst.
+func (m Model) noteKey() Model {
+	now := m.clock()
+	m.burst = !m.lastKeyAt.IsZero() && now.Sub(m.lastKeyAt) >= 0 && now.Sub(m.lastKeyAt) < burstGap
+	m.lastKeyAt, m.keyAt = now, now
+	return m
+}
+
+// guarded reports whether a destructive single-key command arriving now must
+// be ignored: it came within a paste, or just after a text field closed.
+func (m Model) guarded() bool {
+	if m.burst {
+		return true
+	}
+	return !m.leftTextAt.IsZero() && m.keyAt.Sub(m.leftTextAt) < textGuard
+}
+
+// isDestructive reports whether an action ends or decides something that
+// cannot be taken back with a key.
+func isDestructive(a Action) bool {
+	switch a {
+	case ActionQuit, ActionCancelTask, ActionApprove, ActionReject:
+		return true
+	}
+	return false
+}
+
+// pastedBreak reports whether a key that would submit or leave a text field
+// (Enter, Tab) is part of a paste, and so is text: a line break or a tab in
+// what was pasted.
+func (m Model) pastedBreak(msg tea.KeyMsg) bool {
+	if !m.burst {
+		return false
+	}
+	switch msg.String() {
+	case "enter", "tab", "shift+tab", "ctrl+j":
+		return true
+	}
+	return false
+}
 
 // keyLegend joins key hints with the separator dot (ASCII under RITAM_ASCII).
 func keyLegend(hints ...string) string {
@@ -97,24 +172,22 @@ func wrapInput(value string, width, maxRows int, focused bool) ([]string, int) {
 
 // wrapKeepingSpaces wraps s at width, preferring to break after a space, and
 // never drops or merges characters: what is shown is exactly what was typed.
+// Widths are in columns, so a row of CJK text holds half as many characters.
 func wrapKeepingSpaces(s string, width int) []string {
-	r := []rune(s)
-	if len(r) == 0 {
+	if s == "" {
 		return []string{""}
 	}
 	var rows []string
-	for len(r) > width {
-		cut := width
-		for i := width; i > width/2; i-- {
-			if r[i-1] == ' ' {
-				cut = i
-				break
-			}
+	for textWidth(s) > width {
+		head, _ := splitWidth(s, width)
+		// Break after the last space in the second half of the row, if any.
+		if i := strings.LastIndexByte(head, ' '); i >= 0 && textWidth(head[:i+1]) > width/2 {
+			head = head[:i+1]
 		}
-		rows = append(rows, string(r[:cut]))
-		r = r[cut:]
+		rows = append(rows, head)
+		s = s[len(head):]
 	}
-	return append(rows, string(r))
+	return append(rows, s)
 }
 
 // inputLines renders a text field: prefix on the first row, the wrapped value
@@ -150,7 +223,7 @@ func inputLines(prefix line, value string, width, maxRows int, focused, selected
 // inputBoxHeight is the bottom strip's height: the box around however many
 // rows the text being typed needs.
 func (m Model) inputBoxHeight() int {
-	if m.mode != modeCommand && m.mode != modePrompt {
+	if m.mode != modeCommand && m.mode != modePrompt && m.mode != modeConfirm {
 		return promptHeight
 	}
 	w, _ := m.screenSize()
@@ -177,6 +250,16 @@ func (m Model) inputBodyLines(inner int) []line {
 			head = "to " + string(m.prompt.participants[m.prompt.targetIdx])
 		}
 		return inputLines(line{caret, st(head+" ", dimStyle)}, m.prompt.input, inner, m.maxInputRows(), true, m.inputSelected)
+	case modeConfirm:
+		var out []line
+		for i, l := range wrapWords(m.confirm.label, maxInt(8, inner-2)) {
+			p := txt("  ")
+			if i == 0 {
+				p = st(g.caret+" ", warnStyle)
+			}
+			out = append(out, line{p, st(l, warnStyle)})
+		}
+		return out
 	}
 	return nil
 }

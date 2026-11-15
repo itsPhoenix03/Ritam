@@ -127,8 +127,24 @@ func busyModel() Model {
 	return m
 }
 
-// key sends one key press through Update, exactly as the program would.
+// handPaced gives m a clock that moves a second each time it is read, so
+// keys sent through Update look typed by hand rather than pasted (see the
+// paste defence in input.go). Tests of the defence install their own clock.
+func handPaced(m Model) Model {
+	if m.now == nil {
+		at := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+		m.now = func() time.Time {
+			at = at.Add(time.Second)
+			return at
+		}
+	}
+	return m
+}
+
+// key sends one key press through Update, exactly as the program would, at
+// the pace of a human typing.
 func key(m Model, k string) (Model, tea.Cmd) {
+	m = handPaced(m)
 	var msg tea.KeyMsg
 	switch k {
 	case "up":
@@ -151,6 +167,8 @@ func key(m Model, k string) (Model, tea.Cmd) {
 		msg = tea.KeyMsg{Type: tea.KeyCtrlU}
 	case "ctrl+w":
 		msg = tea.KeyMsg{Type: tea.KeyCtrlW}
+	case "ctrl+c":
+		msg = tea.KeyMsg{Type: tea.KeyCtrlC}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 	}

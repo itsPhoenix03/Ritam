@@ -19,6 +19,7 @@ import (
 
 	"ritam/internal/app"
 	"ritam/internal/brand"
+	"ritam/internal/config"
 	"ritam/internal/domain"
 	"ritam/internal/logging"
 	"ritam/internal/ports"
@@ -61,21 +62,8 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		return err
 	}
 
-	if useMock {
-		// An explicit request for mocks wins over anything in the config.
-		cfg.TUI.UseMockAgents = true
-	}
-	if useReal && useMock {
-		return fmt.Errorf("-real and -mock are mutually exclusive")
-	}
-
-	if useReal {
-		// Real CLIs are slow compared to mocks: a single investigation can
-		// take minutes, so the idle timeout must not fire mid-answer.
-		cfg.TUI.UseMockAgents = false
-		if cfg.Orchestrator.IdleTimeout < 10*time.Minute {
-			cfg.Orchestrator.IdleTimeout = 10 * time.Minute
-		}
+	if err := chooseAgents(cfg, useReal, useMock); err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.Logging.File), 0o700); err != nil {
@@ -100,6 +88,9 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		return err
 	}
 	defer sys.Close()
+	// Registered after Close, so it runs before it: every run is stopped and
+	// waited for before the exit backup is taken and the database closed.
+	defer stopRuns(sys.Service, log)
 	if info, err := sys.Service.Access(context.Background()); err == nil && info.HeldBack != "" {
 		log.Warn("access held back", "reason", info.HeldBack)
 		pl.notices = append(pl.notices, "access "+info.HeldBack)
@@ -127,6 +118,44 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		WorkspaceNotice:  sys.Workspace.Notice,
 		Notices:          pl.notices,
 	})
+}
+
+// chooseAgents applies the -real and -mock flags over the settings, then the
+// real-agent idle floor. The floor follows the agents actually used, not the
+// flag: settings that say useMockAgents: false get it too.
+func chooseAgents(cfg *config.Config, useReal, useMock bool) error {
+	if useReal && useMock {
+		return fmt.Errorf("-real and -mock are mutually exclusive")
+	}
+	switch {
+	case useMock:
+		// An explicit request for mocks wins over anything in the config.
+		cfg.TUI.UseMockAgents = true
+	case useReal:
+		cfg.TUI.UseMockAgents = false
+	}
+	cfg.ApplyRealAgentIdleFloor()
+	return nil
+}
+
+// stopRunsWait bounds how long quitting waits for the agents' runs to stop.
+// A CLI turn being ended usually returns within a second or two; past this
+// the exit goes ahead and says what was still running.
+const stopRunsWait = 15 * time.Second
+
+// stopRuns cancels the background runs and waits for them, saying so on
+// stderr: the TUI has already left the screen, and a silent pause of several
+// seconds reads as a hang.
+func stopRuns(svc *app.Service, log *logging.Logger) {
+	if len(svc.ActiveRuns()) > 0 {
+		fmt.Fprintln(os.Stderr, brand.Name+": stopping agents...")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stopRunsWait)
+	defer cancel()
+	if err := svc.Shutdown(ctx); err != nil {
+		log.Warn("shutdown", "error", err)
+		fmt.Fprintln(os.Stderr, brand.Name+":", err)
+	}
 }
 
 // runHeadlessDemo exercises the full mock orchestration flow and prints the

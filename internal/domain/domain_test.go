@@ -115,11 +115,16 @@ func TestRoleCapabilities(t *testing.T) {
 }
 
 func TestTaskCloneIsDeep(t *testing.T) {
-	task := &Task{ID: "TASK-001", Participants: []AgentID{"opus", "codex"}}
+	task := &Task{ID: "TASK-001", Participants: []AgentID{"opus", "codex"},
+		MalformedCount: map[AgentID]int{"codex": 1}}
 	cp := task.Clone()
 	cp.Participants[0] = "rogue"
 	if task.Participants[0] != "opus" {
 		t.Fatal("Clone must not share the participants slice")
+	}
+	cp.MalformedCount["codex"] = 5
+	if task.MalformedCount["codex"] != 1 {
+		t.Fatal("Clone must not share the malformed-reply counts")
 	}
 }
 

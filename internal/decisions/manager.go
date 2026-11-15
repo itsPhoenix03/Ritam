@@ -61,8 +61,10 @@ func (m *Manager) Accept(ctx context.Context, id domain.DecisionID) (*domain.Dec
 	return d.Clone(), nil
 }
 
-// Reject transitions a PROPOSED decision to REJECTED, recording why in its
-// Reasoning. Rejecting anything other than a PROPOSED decision is an illegal
+// Reject transitions a PROPOSED decision to REJECTED, recording the human's
+// note in HumanNote. The author's Reasoning is left as it was: writing the
+// note over it destroyed the record of what was rejected and why it had been
+// proposed. Rejecting anything other than a PROPOSED decision is an illegal
 // transition.
 func (m *Manager) Reject(ctx context.Context, id domain.DecisionID, reason string) (*domain.Decision, error) {
 	d, err := m.repo.Get(ctx, id)
@@ -73,7 +75,7 @@ func (m *Manager) Reject(ctx context.Context, id domain.DecisionID, reason strin
 		return nil, fmt.Errorf("decision %s: cannot reject from status %s", id, d.Status)
 	}
 	d.Status = domain.DecisionRejected
-	d.Reasoning = reason
+	d.HumanNote = reason
 	d.Timestamp = time.Now()
 	if err := m.repo.Update(ctx, d); err != nil {
 		return nil, err
@@ -139,7 +141,11 @@ func (m *Manager) Latest(ctx context.Context, taskID domain.TaskID) (*domain.Dec
 		if d.Status == domain.DecisionSuperseded {
 			continue
 		}
-		if latest == nil || d.Timestamp.After(latest.Timestamp) {
+		// A tie goes to the later-created decision (the list is in creation
+		// order): on a coarse clock a decision proposed straight after an
+		// earlier one was rejected can share its timestamp, and the rejected
+		// one was then reported as the latest.
+		if latest == nil || !d.Timestamp.Before(latest.Timestamp) {
 			latest = d
 		}
 	}

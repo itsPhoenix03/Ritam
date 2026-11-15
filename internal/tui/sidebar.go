@@ -136,7 +136,12 @@ func (m Model) agentRoster(inner int) ([]line, []int) {
 		if a.agent.State == domain.AgentStateWorking {
 			glyph = spinnerGlyph(m.spinnerFrame)
 		}
-		row := line{txt(mark), st(glyph, stateSty), txt(" ")}
+		// The number is the key that focuses this agent (1..9).
+		num := " "
+		if pos < 9 {
+			num = itoa(pos + 1)
+		}
+		row := line{txt(mark), st(num, dimStyle), txt(" "), st(glyph, stateSty), txt(" ")}
 		row = append(row, a.label()...)
 		row = row.join(st(" "+shortRole(m.roleOn(a.agent)), dimStyle))
 		if a.agent.Kind == domain.AgentKindMock {
@@ -155,7 +160,7 @@ func (m Model) agentRoster(inner int) ([]line, []int) {
 
 		switch {
 		case a.agent.State == domain.AgentStateError && a.agent.LastError != "":
-			out = append(out, line{txt("   " + g.arrow + " "),
+			out = append(out, line{txt("     " + g.arrow + " "),
 				st(collapse(a.agent.LastError), lipgloss.NewStyle().Foreground(colorRed))})
 			owners = append(owners, pos)
 		case agentIsLive(a.agent.State):
@@ -164,7 +169,7 @@ func (m Model) agentRoster(inner int) ([]line, []int) {
 				if !e.last.IsZero() {
 					age = line{txt(" "), st(shortDur(time.Since(e.last)), dimStyle)}
 				}
-				out = append(out, spread(line{txt("   " + g.arrow + " "), st(collapse(e.text), statusActivityStyle)}, age, inner))
+				out = append(out, spread(line{txt("     " + g.arrow + " "), st(collapse(e.text), statusActivityStyle)}, age, inner))
 				owners = append(owners, pos)
 			}
 		}

@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -61,5 +62,50 @@ func TestADayOverItsLimitPausesANewTask(t *testing.T) {
 	}
 	if final.CostUSD > 1.2 {
 		t.Errorf("it must pause on the first turn that crosses the day's limit: task spent $%.2f", final.CostUSD)
+	}
+}
+
+// brokenLedger cannot lock, read or write the day's record.
+type brokenLedger struct{}
+
+func (brokenLedger) Add(ports.Usage) (float64, int64, error) {
+	return 0, 0, errors.New("spend record is locked by another process")
+}
+
+// TestAnUnreadableDailyRecordPausesTheTask: a daily spend record that could
+// not be read or written used to be logged and the day treated as under its
+// limit -- no limit at all, with nothing on screen. The task pauses on the
+// first turn, saying why, and the turn's usage still counts on the task.
+func TestAnUnreadableDailyRecordPausesTheTask(t *testing.T) {
+	gw := newGateway()
+	gw.add(mockagent.New("opus", domain.AgentKindMock, mockagent.AuthorityBehavior()), domain.RoleAuthority)
+	gw.add(newUsageAgent("codex", ports.Usage{InputTokens: 100, CostUSD: 0.60}), domain.RoleImplementer)
+
+	store := storage.NewInMemory()
+	h := &harness{store: *store, gw: gw}
+	h.orch = orchestrator.New(orchestrator.Deps{
+		Storage: *store, Agents: gw, Knowledge: knowledge.New(store.Knowledge),
+		Decisions: decisions.New(store.Decisions), Logger: logging.NewDiscard(),
+		Limits: defaultLimits(), MaxConcurrentTasks: 2, IdleTimeout: time.Second,
+		Daily: brokenLedger{}, MaxDailyCostUSD: 5,
+	})
+	task := createTask(t, h, "opus", "opus", "codex")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = h.orch.RunTask(ctx, task.ID)
+
+	final, _ := h.orch.Tasks.Get(context.Background(), task.ID)
+	if final.State != domain.TaskPaused || !strings.HasPrefix(final.PauseReason, domain.PauseReasonDailyBudget) {
+		t.Fatalf("an unreadable daily record must pause the task as over the day's limit: %s (%s)",
+			final.State, final.PauseReason)
+	}
+	for _, want := range []string{"could not be read or written", "locked by another process"} {
+		if !strings.Contains(final.PauseReason, want) {
+			t.Errorf("the pause reason must say %q: %q", want, final.PauseReason)
+		}
+	}
+	if final.CostUSD != 0.60 || final.InputTokens != 100 {
+		t.Errorf("the turn's usage is still recorded on the task: $%.2f, %d tokens in", final.CostUSD, final.InputTokens)
 	}
 }

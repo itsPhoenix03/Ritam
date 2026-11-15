@@ -93,6 +93,24 @@ func TestRenderPromptCarriesRetrievedKnowledge(t *testing.T) {
 	}
 }
 
+// TestRenderPromptShowsANoticeAsTheOrchestrators: an agent starting its
+// session on a notice sees it as the orchestrator's, with the rule that it
+// needs no reply -- not as the human speaking.
+func TestRenderPromptShowsANoticeAsTheOrchestrators(t *testing.T) {
+	m := domain.Message{FromAgent: domain.OrchestratorID, ToAgent: "codex", Type: domain.MsgError,
+		Content: "Part of your last reply did not follow the protocol.", Metadata: map[string]string{domain.MetaReason: "partial-reply"}}
+	prompt := renderPrompt(testTask(), m, false)
+	for _, want := range []string{"--- NOTICE FROM orchestrator ---",
+		"A NOTICE FROM orchestrator is about the protocol or the state of the task"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "FROM human") {
+		t.Error("a notice must not be presented as the human's")
+	}
+}
+
 func TestParseOutputRoundTrip(t *testing.T) {
 	raw := headerMarker + " type=ANSWER to=opus\n" +
 		"The cookie is created with Path=/ but cleared with Path=/api.\n"

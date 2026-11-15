@@ -26,6 +26,10 @@ type Decision struct {
 	Evidence     []string
 	Participants []AgentID
 	Status       DecisionStatus
+	// HumanNote is what the human said when rejecting the decision. It is
+	// kept apart from Reasoning, the author's own case, which it used to
+	// overwrite.
+	HumanNote string
 	// Supersedes points at an earlier decision this one replaces.
 	Supersedes DecisionID
 	// SupersededBy is set on the older decision when it is replaced.
@@ -63,8 +67,12 @@ type Disagreement struct {
 	Resolved         bool
 	Resolution       string
 	ResolvedBy       AgentID
-	Timestamp        time.Time
-	ResolvedAt       *time.Time
+	// ResolvedByDecision names the final decision that settled the conflict,
+	// so that rejecting that decision can reopen it: a conflict "resolved" by
+	// a decision the human refused is not resolved.
+	ResolvedByDecision DecisionID
+	Timestamp          time.Time
+	ResolvedAt         *time.Time
 }
 
 // Clone returns a deep copy of the disagreement.

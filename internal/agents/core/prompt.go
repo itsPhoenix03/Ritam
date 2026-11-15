@@ -114,6 +114,7 @@ func RenderTurn(t *domain.Task, m domain.Message, allowWrites bool, marker strin
 	fmt.Fprintf(&b, "\nREPLY FORMAT (mandatory): begin with the header line\n  %s type=<MESSAGE_TYPE> to=<agent id>\n", marker)
 	b.WriteString("then the body; repeat header+body for several messages. No code fences around it.\n")
 	fmt.Fprintf(&b, "MESSAGE_TYPE is one of: %s\n", TypeList(authority))
+	b.WriteString(NoticeRule)
 	if !authority {
 		// One line, every turn: compaction must not be able to cost an agent
 		// the knowledge of how to consult others or how to record agreement.
@@ -146,6 +147,7 @@ func TypeList(authority bool) string {
 // something, and how to record a judgement that is not a decision.
 func WriteRoleGuide(b *strings.Builder, authority bool, marker string) {
 	b.WriteString("\nWORKING WITH THE OTHER AGENTS:\n")
+	b.WriteString("- " + NoticeRule)
 	b.WriteString("- If you can answer a question the human asked -- even one passed to you by another\n")
 	b.WriteString("  agent -- answer the human directly (to=human) and tell that agent in one line.\n")
 	b.WriteString("  If someone has already answered the human, do not repeat it.\n")

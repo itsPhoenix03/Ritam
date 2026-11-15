@@ -1,9 +1,11 @@
 package core
 
 import (
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,11 +118,67 @@ func TestReplaceKeepsTheOldIDInHistory(t *testing.T) {
 	}
 }
 
-func TestACorruptRegistryIsReportedNotSilentlyEmptied(t *testing.T) {
+// TestAnEmptyOrCorruptRegistryIsKeptAsideAndStartsEmpty: an empty file (what
+// a power cut mid-write can leave) or a corrupt one does not stop start-up.
+// It is kept for a human to read, the registry starts empty, and the warning
+// says where the file went.
+func TestAnEmptyOrCorruptRegistryIsKeptAsideAndStartsEmpty(t *testing.T) {
+	for name, content := range map[string]string{"empty": "", "corrupt": "{not json"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "sessions.json")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r, err := OpenSessionRegistry(path)
+			if err != nil {
+				t.Fatalf("an unreadable registry must not stop start-up: %v", err)
+			}
+			kept, _ := filepath.Glob(path + ".bad-*")
+			if len(kept) != 1 {
+				t.Fatalf("the unreadable file must be kept aside: %v", kept)
+			}
+			if data, _ := os.ReadFile(kept[0]); string(data) != content {
+				t.Errorf("the kept file is the unreadable one, unchanged: %q", data)
+			}
+			if w := r.Recovered(); !strings.Contains(w, kept[0]) {
+				t.Errorf("the warning names where the file was kept: %q", w)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the registry starts with no file: %v", err)
+			}
+
+			key := SessionKeyFor(task("TASK-001", time.Now()), domain.AgentID("a"))
+			if err := r.Save(NewSession(key, domain.AgentKindCodex, "x", "", "")); err != nil {
+				t.Fatal(err)
+			}
+			again, err := OpenSessionRegistry(path)
+			if err != nil || again.Recovered() != "" {
+				t.Fatalf("the new registry reads back cleanly: %v %q", err, again.Recovered())
+			}
+			if _, ok := again.Get(key); !ok {
+				t.Error("what is saved after recovery is kept")
+			}
+		})
+	}
+}
+
+// TestCheckSessionsFileWarnsOnlyAboutAnUnreadableFile: start-up's check is
+// quiet for a good file or none, and keeps a bad one aside.
+func TestCheckSessionsFileWarnsOnlyAboutAnUnreadableFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
-	_ = os.WriteFile(path, []byte("{not json"), 0o600)
-	if _, err := OpenSessionRegistry(path); err == nil {
-		t.Error("a corrupt registry must be an error: treating it as empty would orphan every session in it")
+	if msg, err := CheckSessionsFile(path); msg != "" || err != nil {
+		t.Errorf("no file, nothing to say: %q %v", msg, err)
+	}
+	_ = os.WriteFile(path, []byte("[]"), 0o600)
+	if msg, err := CheckSessionsFile(path); msg != "" || err != nil {
+		t.Errorf("a good file, nothing to say: %q %v", msg, err)
+	}
+	_ = os.WriteFile(path, nil, 0o600)
+	if msg, err := CheckSessionsFile(path); msg == "" || err != nil {
+		t.Errorf("an empty file is reported: %q %v", msg, err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("and kept aside: %v", err)
 	}
 }
 

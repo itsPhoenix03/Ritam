@@ -301,7 +301,15 @@ func (m Model) commandRows(width, height int) []string {
 		spec = boxSpec{active: true, right: keyLegend("enter run", "tab complete", "esc cancel", inputHelp())}
 		body = m.inputBodyLines(inner)
 	case modePrompt:
-		spec = boxSpec{active: true, right: keyLegend("tab recipient", "enter send", "esc cancel", inputHelp())}
+		legend := keyLegend("enter send", "esc cancel", inputHelp())
+		if m.prompt.action == ActionSendInstruction {
+			legend = keyLegend("tab recipient", legend)
+		}
+		spec = boxSpec{active: true, right: legend}
+		body = m.inputBodyLines(inner)
+	case modeConfirm:
+		accent := colorYellow
+		spec = boxSpec{active: true, accent: &accent, right: keyLegend("y/enter confirm", "esc/n keep")}
 		body = m.inputBodyLines(inner)
 	default:
 		status := m.statusLine
@@ -489,14 +497,13 @@ func fitLine(s string, width int) string {
 	if width < 1 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= width {
+	if textWidth(s) <= width {
 		return s
 	}
 	if width <= 3 {
-		return string(r[:width])
+		return cutWidth(s, width)
 	}
-	return string(r[:width-3]) + "..."
+	return cutWidth(s, width-3) + "..."
 }
 
 func maxInt(a, b int) int {

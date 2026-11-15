@@ -39,10 +39,24 @@ import (
 // a file that appears in one is taken away, the way a guarded file that did
 // not exist is. That is for .git/hooks, where a new file is a program git
 // runs.
+//
+// Some guarded files are shared (GuardShared): the app home's, which every
+// ritam on the machine writes (the project list on each start, approvals,
+// what was learned about models) and the user edits. Remembered once, they
+// went stale as soon as another ritam wrote them, and the next turn here
+// put the old version back, telling the human an agent had tampered with
+// it. So their record is taken again whenever agent activity starts in this
+// process (Begin, from no turn running to one): only a change made while a
+// turn runs is an agent's. Not while another turn runs, which would accept
+// that turn's agent's change as the way things are.
 type FileGuard struct {
 	mu    sync.Mutex
 	known map[string]*[]byte // nil: the file did not exist
-	dirs  []string
+	// shared are the guarded files read again when agent activity starts;
+	// turns counts the agent turns running.
+	shared map[string]bool
+	turns  int
+	dirs   []string
 	// keepDir is where an agent's version of a guarded file is kept.
 	keepDir string
 	// OnRestore is told of each file put back, by the turn of agent, with
@@ -53,13 +67,61 @@ type FileGuard struct {
 // NewFileGuard guards paths as they are now. keepDir is where an agent's
 // version of a file is kept when it is put back; "" keeps nothing.
 func NewFileGuard(keepDir string, paths ...string) *FileGuard {
-	g := &FileGuard{known: map[string]*[]byte{}, keepDir: keepDir}
+	g := &FileGuard{known: map[string]*[]byte{}, shared: map[string]bool{}, keepDir: keepDir}
 	for _, p := range paths {
 		if p != "" {
 			g.known[filepath.Clean(p)] = read(p)
 		}
 	}
 	return g
+}
+
+// GuardShared guards paths that others may change between this process's
+// agent turns: other ritam instances and the user. Each is remembered as it
+// is when agent activity starts (see Begin) rather than as it was here.
+func (g *FileGuard) GuardShared(paths ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		p = filepath.Clean(p)
+		g.shared[p] = true
+		g.known[p] = read(p)
+	}
+}
+
+// Begin records that agent's turn is starting, before its process runs, and
+// returns what ends it, after the process and everything it started have
+// ended: a Check, then the turn no longer counts. When no other turn is
+// running, the shared files are read again first, so what others wrote
+// since stays. A nil guard begins and ends nothing.
+func (g *FileGuard) Begin(agent domain.AgentID) (end func() []string) {
+	if g == nil {
+		return func() []string { return nil }
+	}
+	g.mu.Lock()
+	if g.turns == 0 {
+		for p := range g.shared {
+			g.known[p] = read(p)
+		}
+	}
+	g.turns++
+	g.mu.Unlock()
+
+	var once sync.Once
+	return func() (restored []string) {
+		once.Do(func() {
+			// Checked while the turn still counts: a turn beginning between
+			// the two must not read the files again before they are put back.
+			restored = g.Check(agent)
+			g.mu.Lock()
+			g.turns--
+			g.mu.Unlock()
+		})
+		return restored
+	}
 }
 
 // WatchDirs guards every file in dirs, and every file that appears in them

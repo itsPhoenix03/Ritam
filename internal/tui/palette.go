@@ -40,11 +40,11 @@ type command struct {
 // commands is the palette, in the order it is offered.
 var commands = []command{
 	{name: "instruct", usage: `instruct <agent> "..."`, help: "inject a human turn into the round", argHint: "agent"},
-	{name: "pause", usage: "pause [reason]", help: "stop issuing turns, keep the processes"},
+	{name: "pause", usage: "pause [reason]", help: "stop the task's agents mid-turn; r resumes from the current round"},
 	{name: "resume", usage: "resume", help: "continue from the current round"},
-	{name: "cancel", usage: "cancel [reason]", help: "end the task, terminate child CLIs"},
+	{name: "cancel", usage: "cancel [reason]", help: "end the task for good (asks first), terminate child CLIs"},
 	{name: "approve", usage: "approve [note]", help: "accept the pending FINAL_DECISION"},
-	{name: "reject", usage: "reject [note]", help: "refuse the pending FINAL_DECISION"},
+	{name: "reject", usage: "reject [note]", help: "refuse the pending FINAL_DECISION, saying what must change"},
 	{name: "task", usage: `task new "..."`, help: "create and start another task"},
 	{name: "filter", usage: "filter <agent|all>", help: "restrict the stream to one agent"},
 	{name: "follow", usage: "follow <on|off>", help: "pin the stream to its newest line"},
@@ -62,7 +62,7 @@ var commands = []command{
 	{name: "disallow", usage: "disallow <command>", help: "take a command off the list"},
 	{name: "export", usage: "export jsonl [path]", help: "dump the event log seen by this UI"},
 	{name: "help", usage: "help", help: "show the key and command reference"},
-	{name: "quit", usage: "quit", help: "leave the TUI (agents keep running)"},
+	{name: "quit", usage: "quit", help: "leave ritam: running tasks are stopped (asks first) and resume next time"},
 }
 
 // matchCommands returns the palette entries matching what has been typed so
@@ -213,26 +213,17 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		m.setStatus("resuming %s...", t.ID)
 		return m, resumeCmd(m.ctx, m.svc, t.ID)
 
+	// The typed forms of the keys follow the same rules: cancel asks first,
+	// approve and reject act only on a pending decision, and a rejection
+	// without a note asks for one.
 	case "cancel":
-		if !needTask() {
-			return m, nil
-		}
-		m.setStatus("cancelling %s...", t.ID)
-		return m, cancelCmd(m.ctx, m.svc, t.ID, unquote(rest))
+		return m.requestCancel(unquote(rest))
 
 	case "approve":
-		if !needTask() {
-			return m, nil
-		}
-		m.setStatus("approving %s...", t.ID)
-		return m, approveCmd(m.ctx, m.svc, t.ID, unquote(rest))
+		return m.requestVerdict(ActionApprove, unquote(rest), true)
 
 	case "reject":
-		if !needTask() {
-			return m, nil
-		}
-		m.setStatus("rejecting %s...", t.ID)
-		return m, rejectCmd(m.ctx, m.svc, t.ID, unquote(rest))
+		return m.requestVerdict(ActionReject, unquote(rest), true)
 
 	case "task":
 		sub, title := splitVerb(rest)
@@ -255,9 +246,10 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 			participants = append(participants, a.ID)
 		}
 		m.setStatus("creating task...")
+		m, seq := m.beginCreate()
 		return m, createTaskCmd(m.ctx, m.svc, ports.CreateTaskInput{
 			Title: unquote(title), Authority: authority, Participants: participants,
-		})
+		}, seq)
 
 	case "filter":
 		arg := strings.TrimSpace(rest)
@@ -415,8 +407,7 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		return m, nil
 
 	case "quit":
-		m.quitting = true
-		return m, tea.Quit
+		return m.requestQuit()
 	}
 
 	m.setStatus("unknown command: %s", verb)

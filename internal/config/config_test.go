@@ -1,8 +1,10 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,6 +100,19 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			c.Proxy.Enabled = true
 			c.Proxy.Port = 70000
 		},
+		"negative agent timeout": func(c *Config) {
+			a := c.Agents["opus"]
+			a.ResponseTimeout = -time.Second
+			c.Agents["opus"] = a
+		},
+		"cost that is not a number": func(c *Config) {
+			c.Orchestrator.MaxTaskCostUSD = math.NaN()
+		},
+		"unknown log level":  func(c *Config) { c.Logging.Level = "loud" },
+		"unknown log format": func(c *Config) { c.Logging.Format = "xml" },
+		"unknown deleted-project rule": func(c *Config) {
+			c.Backups.WhenProjectDeleted = "forget"
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -191,5 +206,135 @@ func TestProjectSettingsOverrideTheGlobalOnes(t *testing.T) {
 	}
 	if !cfg.Backups.Enabled || cfg.Backups.WhenProjectDeleted != "ask" {
 		t.Errorf("unset backup settings keep their defaults: %+v", cfg.Backups)
+	}
+}
+
+// TestAnAgentEntryReplacesTheWholeAgentAcrossLayers: what ritam.example.yaml
+// promises about layering. Providers merge field by field (tested above), an
+// agent entry replaces the whole agent, other agents are kept, and a list is
+// replaced rather than added to.
+func TestAnAgentEntryReplacesTheWholeAgentAcrossLayers(t *testing.T) {
+	dir := t.TempDir()
+	global, project := filepath.Join(dir, "global.yaml"), filepath.Join(dir, "project.yaml")
+	if err := os.WriteFile(global, []byte("agents:\n"+
+		"  lead: {type: claude-code, role: AUTHORITY, executable: C:/tools/claude.exe, model: opus}\n"+
+		"  helper: {type: codex, role: REVIEWER}\n"+
+		"access: {commands: [go test, go vet]}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(project, []byte("agents:\n  lead: {type: claude-code, role: AUTHORITY, model: sonnet}\n"+
+		"access: {commands: [cmake]}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayers(global, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lead := cfg.Agents["lead"]; lead.Model != "sonnet" || lead.Executable != "" {
+		t.Errorf("the project's entry replaces the whole agent, executable included: %+v", lead)
+	}
+	if _, ok := cfg.Agents["helper"]; !ok {
+		t.Error("an agent the project does not list is kept")
+	}
+	if got := cfg.Access.Commands; len(got) != 1 || got[0] != "cmake" {
+		t.Errorf("a list is replaced, not added to: %v", got)
+	}
+}
+
+// TestNegativeLimitsKeepAndIntervalAreRefused: a negative value loaded
+// without complaint used to switch a limit off or, for backups.keep, crash
+// `ritam backups now`. Every problem is named with its key and value.
+func TestNegativeLimitsKeepAndIntervalAreRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ritam.yaml")
+	body := "orchestrator:\n  maxMessages: -1\n  maxTaskCostUSD: -5\n  maxDailyTokens: -10\n  idleTimeout: -1m\n" +
+		"providers:\n  codex: {responseTimeout: -5m}\n" +
+		"backups:\n  keep: -1\n  interval: -10m\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("negative limits must not load")
+	}
+	for _, want := range []string{
+		"orchestrator.maxMessages must not be negative, got -1",
+		"orchestrator.maxTaskCostUSD must not be negative, got -5",
+		"orchestrator.maxDailyTokens must not be negative, got -10",
+		"orchestrator.idleTimeout must not be negative, got -1m0s",
+		"providers.codex.responseTimeout must not be negative, got -5m0s",
+		"backups.keep must be at least 1, got -1",
+		"backups.interval must be at least 1m0s, or 0 to take no periodic snapshots, got -10m0s",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must say %q:\n%v", want, err)
+		}
+	}
+}
+
+// TestBackupSettingsThatWouldLoseBackupsAreRefused: keep 0 would delete the
+// snapshot just taken; deleteAfterDays 0 would delete a "missing" project's
+// backups the first time its drive is not mounted.
+func TestBackupSettingsThatWouldLoseBackupsAreRefused(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(*BackupConfig)
+		want   string
+	}{
+		"keep none":          {func(b *BackupConfig) { b.Keep = 0 }, "backups.keep must be at least 1, got 0"},
+		"interval too short": {func(b *BackupConfig) { b.Interval = time.Second }, "got 1s"},
+		"delete at once": {func(b *BackupConfig) { b.WhenProjectDeleted, b.DeleteAfterDays = "delete", 0 },
+			"backups.deleteAfterDays must be at least 1 with whenProjectDeleted: delete, got 0"},
+		"negative days": {func(b *BackupConfig) { b.DeleteAfterDays = -3 }, "backups.deleteAfterDays must not be negative, got -3"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			tc.mutate(&cfg.Backups)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("want an error saying %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestZeroIsTheWayToTurnALimitOrPeriodicBackupsOff: zero is documented as
+// "off" and stays valid; only a negative value is a mistake.
+func TestZeroIsTheWayToTurnALimitOrPeriodicBackupsOff(t *testing.T) {
+	cfg := Default()
+	cfg.Orchestrator.MaxTaskCostUSD = 0
+	cfg.Orchestrator.MaxDailyTokens = 0
+	cfg.Orchestrator.MaxTaskDuration = 0
+	cfg.Backups.Interval = 0
+	cfg.Backups.WhenProjectDeleted, cfg.Backups.DeleteAfterDays = "delete", 1
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("zero limits, no periodic backups and a one-day wait are all valid: %v", err)
+	}
+}
+
+// TestRealAgentsGetTheIdleFloorHoweverTheyAreChosen: the floor used to be
+// applied only by the -real flag, so useMockAgents: false in a settings file
+// kept the 60-second default and paused tasks mid-answer.
+func TestRealAgentsGetTheIdleFloorHoweverTheyAreChosen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ritam.yaml")
+	if err := os.WriteFile(path, []byte("tui:\n  useMockAgents: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ApplyRealAgentIdleFloor() || cfg.Orchestrator.IdleTimeout != RealAgentIdleFloor {
+		t.Errorf("real agents from the settings get the floor: %v", cfg.Orchestrator.IdleTimeout)
+	}
+
+	mocks := Default()
+	if mocks.ApplyRealAgentIdleFloor() || mocks.Orchestrator.IdleTimeout != 60*time.Second {
+		t.Errorf("the mocks keep the default: %v", mocks.Orchestrator.IdleTimeout)
+	}
+
+	longer := Default()
+	longer.TUI.UseMockAgents = false
+	longer.Orchestrator.IdleTimeout = 30 * time.Minute
+	if longer.ApplyRealAgentIdleFloor() || longer.Orchestrator.IdleTimeout != 30*time.Minute {
+		t.Errorf("a longer timeout that was set is kept: %v", longer.Orchestrator.IdleTimeout)
 	}
 }

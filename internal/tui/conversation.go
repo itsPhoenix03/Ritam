@@ -162,9 +162,14 @@ const maxYouLines = 4
 
 // humanAuthored reports whether msg is something the human wrote, as opposed
 // to an orchestrator notice sent in the human's name (a checkpoint, a
-// reminder, a malformed-reply note).
+// reminder, a malformed-reply note, the notice that rejects an agent's
+// message for breaking a rule, which carries only "violation").
+//
+// The orchestrator now signs its notes itself; the ones recorded before it
+// did are told apart by the rule the ledger uses (domain.FromOrchestrator),
+// so the conversation and the ledger never disagree about who spoke.
 func humanAuthored(msg *domain.Message) bool {
-	return msg.FromAgent == domain.HumanAgentID && msg.Metadata["orchestrator"] == "" && msg.Metadata["reason"] == ""
+	return msg.FromAgent == domain.HumanAgentID && !domain.FromOrchestrator(msg)
 }
 
 // toYou reports whether msg is an agent (or ritam) speaking to the human.

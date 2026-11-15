@@ -183,7 +183,7 @@ func (m Model) teamLines(inner int) ([]line, []int) {
 		if model == "" {
 			model = "(cli default)"
 		}
-		add(line{txt("  "), agentCell(idents, a.ID), st(strings.Repeat(" ", maxInt(1, 12-len([]rune(string(a.ID))))), dimStyle),
+		add(line{txt("  "), agentCell(idents, a.ID), st(strings.Repeat(" ", maxInt(1, 12-textWidth(string(a.ID)))), dimStyle),
 			st(fitWidth(string(a.Kind), 13), dimStyle), st(fitWidth(model, 24), bodyStyle),
 			st(shortRole(m.roleOn(a)), dimStyle)}, -1)
 	}

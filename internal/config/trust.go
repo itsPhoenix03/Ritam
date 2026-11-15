@@ -19,6 +19,9 @@ import (
 // They may tighten anything. They may not:
 //   - choose the programs ritam runs (a provider's or an agent's
 //     executable) or add arguments to them;
+//   - let an agent write, or switch the scripted agents off for the real
+//     CLIs: together they made a cloned folder with an agent entry of its
+//     own a write-enabled real agent on a plain start;
 //   - add commands the global settings do not list;
 //   - point the workspace, the log, the database or the sessions outside
 //     the project folder, turn read confinement off, or allow a global
@@ -76,6 +79,12 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		if !slices.Equal(a.Args, g.Args) {
 			hold("agents." + name + ".args")
 			a.Args = g.Args
+		}
+		// Only providers.*.allowWrites was held back once, so an agent entry
+		// a clone brought could still give itself write access.
+		if a.AllowWrites && !g.AllowWrites {
+			hold("agents." + name + ".allowWrites")
+			a.AllowWrites = false
 		}
 		a.AllowedCommands = commands("agents."+name+".allowedCommands", a.AllowedCommands, g.AllowedCommands)
 		if ceiling := orDuration(g.ResponseTimeout, defaultResponseTimeout); a.ResponseTimeout > ceiling {
@@ -153,6 +162,13 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		hold("access.allowUnsandboxed")
 		c.Access.AllowUnsandboxed = false
 	}
+	// The scripted agents are what keeps a fresh start off the real CLIs; a
+	// project may ask for them, never switch them off. The -real flag is the
+	// human saying so on this machine.
+	if global.TUI.UseMockAgents && !c.TUI.UseMockAgents {
+		hold("tui.useMockAgents")
+		c.TUI.UseMockAgents = true
+	}
 	if c.Backups != global.Backups {
 		hold("backups")
 		c.Backups = global.Backups
@@ -171,7 +187,8 @@ func HeldNotice(held []string, globalPath string) string {
 	}
 	return fmt.Sprintf("this project's settings files ask for things only your own settings may decide, "+
 		"so these were ignored: %v. A cloned or copied project cannot choose the programs ritam runs, "+
-		"their arguments, places outside the project, or looser limits; set them in %s if you mean them",
+		"their arguments, write access, real agents instead of the scripted ones, places outside the project, "+
+		"or looser limits; set them in %s if you mean them",
 		held, globalPath)
 }
 

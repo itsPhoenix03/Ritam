@@ -172,6 +172,12 @@ type Task struct {
 	StallCount int
 	// LastCheckpoint is the AgentRounds value at the last checkpoint.
 	LastCheckpoint int
+	// MalformedCount is, per agent, the run of consecutive replies that could
+	// not be read. Each one used to be answered with a fresh paid turn,
+	// unseen by every limit; a run of them now drops the agent from the task,
+	// or pauses it when the agent is the authority. A readable message from
+	// the agent clears its count.
+	MalformedCount map[AgentID]int
 
 	// FollowUp marks a completed task reopened to answer a human follow-up.
 	// It completes again once the follow-up has been answered.
@@ -181,6 +187,12 @@ type Task struct {
 	// the requests are answered; like the original task it ends with a
 	// FINAL_DECISION.
 	FollowUpWork bool
+	// Closing marks a task whose final decision is accepted but which waits
+	// for the agents to answer the human's open questions before it
+	// completes. It is stored with the task: kept in memory, it was lost by
+	// a pause and resume (or a restart), and the task then never completed
+	// and could not be approved.
+	Closing bool
 
 	// Usage reported by the agent CLIs, summed over the task's life.
 	CostUSD      float64
@@ -227,6 +239,12 @@ func (t *Task) Clone() *Task {
 		cp.AgentUsage = make(map[AgentID]AgentUsage, len(t.AgentUsage))
 		for k, v := range t.AgentUsage {
 			cp.AgentUsage[k] = v
+		}
+	}
+	if t.MalformedCount != nil {
+		cp.MalformedCount = make(map[AgentID]int, len(t.MalformedCount))
+		for k, v := range t.MalformedCount {
+			cp.MalformedCount[k] = v
 		}
 	}
 	if t.CompletedAt != nil {

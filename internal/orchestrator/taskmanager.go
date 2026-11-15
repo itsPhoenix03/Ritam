@@ -57,6 +57,13 @@ func (tm *TaskManager) Create(ctx context.Context, in ports.CreateTaskInput) (*d
 	if dup := firstDuplicate(participants); dup != "" {
 		return nil, fmt.Errorf("create task: agent %q listed twice as a participant", dup)
 	}
+	for _, p := range participants {
+		// An agent under one of these ids would be taken for the human or
+		// the orchestrator, whose messages pass checks an agent's do not.
+		if domain.IsReservedAgentID(p) {
+			return nil, fmt.Errorf("create task: %q is reserved and cannot be an agent's id", p)
+		}
+	}
 
 	seq, err := tm.repo.NextSequence(ctx)
 	if err != nil {
@@ -131,6 +138,7 @@ func (tm *TaskManager) Reopen(ctx context.Context, id domain.TaskID, by domain.A
 	t.UpdatedAt = time.Now()
 	t.FollowUp = true
 	t.FollowUpWork = false
+	t.Closing = false
 	resetAllowance(t)
 	if err := tm.repo.Update(ctx, t); err != nil {
 		return nil, err
@@ -160,6 +168,10 @@ func (tm *TaskManager) Transition(ctx context.Context, id domain.TaskID, to doma
 	}
 	t.State = to
 	t.UpdatedAt = time.Now()
+	if to.IsTerminal() {
+		// Nothing is left to wait for once the task has ended.
+		t.Closing = false
+	}
 
 	switch to {
 	case domain.TaskCompleted:
@@ -265,6 +277,8 @@ func (tm *TaskManager) NoteMessage(ctx context.Context, id domain.TaskID, m *dom
 		return nil, err
 	}
 	t.MessageCount++
+	// A readable message ends the sender's run of unreadable ones.
+	delete(t.MalformedCount, m.FromAgent)
 	if m.ToAgent != domain.HumanAgentID {
 		t.AgentMessages++
 		if m.FromAgent == t.AuthorityAgent {
@@ -285,6 +299,20 @@ func (tm *TaskManager) NoteMessage(ctx context.Context, id domain.TaskID, m *dom
 		return nil, err
 	}
 	return t.Clone(), nil
+}
+
+// NoteMalformed records a reply from agent that could not be read. It extends
+// the agent's run of unreadable replies and, since nothing moved, the stall:
+// without this an agent that never produced a readable reply was re-prompted
+// for ever with every counter still at zero.
+func (tm *TaskManager) NoteMalformed(ctx context.Context, id domain.TaskID, agent domain.AgentID) (*domain.Task, error) {
+	return tm.update(ctx, id, func(t *domain.Task) {
+		if t.MalformedCount == nil {
+			t.MalformedCount = map[domain.AgentID]int{}
+		}
+		t.MalformedCount[agent]++
+		t.StallCount++
+	})
 }
 
 // NoteHumanInput starts a fresh allowance: the human has spoken, so whatever
@@ -321,6 +349,12 @@ func (tm *TaskManager) AddUsage(ctx context.Context, id domain.TaskID, agent dom
 // SetAuthority hands task authority to another participant.
 func (tm *TaskManager) SetAuthority(ctx context.Context, id domain.TaskID, to domain.AgentID) (*domain.Task, error) {
 	return tm.update(ctx, id, func(t *domain.Task) { t.AuthorityAgent = to })
+}
+
+// SetClosing records whether the task's decision is accepted and it waits
+// only for the human's open questions to be answered (see domain.Task).
+func (tm *TaskManager) SetClosing(ctx context.Context, id domain.TaskID, closing bool) (*domain.Task, error) {
+	return tm.update(ctx, id, func(t *domain.Task) { t.Closing = closing })
 }
 
 // MarkFollowUpWork records that the authority handed out new work during a
@@ -374,6 +408,29 @@ func LimitExceeded(t *domain.Task) (string, bool) {
 	}
 	if l.MaxMessages > 0 && t.AgentMessages >= l.MaxMessages {
 		return domain.PauseReasonMaxMessages, true
+	}
+	start := t.SegmentStart
+	if start.IsZero() {
+		start = t.CreatedAt
+	}
+	if l.MaxDuration > 0 && time.Since(start) >= l.MaxDuration {
+		return domain.PauseReasonMaxDuration, true
+	}
+	return "", false
+}
+
+// timeOrBudgetExceeded reports whether the task has run past its duration or
+// spending limit. Unlike the message limits, these do not depend on anything
+// being routed, so they are checked on every outbound: a task whose agents
+// only ever sent unreadable or refused replies used to run past MaxDuration
+// unchecked.
+func timeOrBudgetExceeded(t *domain.Task) (string, bool) {
+	l := t.Limits
+	if l.MaxCostUSD > 0 && t.CostUSD >= l.MaxCostUSD {
+		return fmt.Sprintf("%s ($%.2f of $%.2f)", domain.PauseReasonBudget, t.CostUSD, l.MaxCostUSD), true
+	}
+	if l.MaxTokens > 0 && t.InputTokens+t.OutputTokens >= l.MaxTokens {
+		return fmt.Sprintf("%s (%d of %d tokens)", domain.PauseReasonBudget, t.InputTokens+t.OutputTokens, l.MaxTokens), true
 	}
 	start := t.SegmentStart
 	if start.IsZero() {

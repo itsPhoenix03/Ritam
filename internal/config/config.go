@@ -3,9 +3,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -114,8 +117,10 @@ type OrchestratorConfig struct {
 	IdleTimeout time.Duration `yaml:"idleTimeout"`
 }
 
-// KnowledgeConfig is kept so existing config files still load. Shared
-// knowledge is stored with everything else, in the backend Storage selects.
+// KnowledgeConfig is kept so existing config files still load: settings are
+// read strictly, and a file with a knowledge section would otherwise be
+// refused. Nothing reads it. Shared knowledge is stored with everything else,
+// in the backend Storage selects.
 type KnowledgeConfig struct {
 	Backend string `yaml:"backend"`
 	Path    string `yaml:"path"`
@@ -137,17 +142,21 @@ type StorageConfig struct {
 type BackupConfig struct {
 	// Enabled turns backups on (the default).
 	Enabled bool `yaml:"enabled"`
-	// Keep is how many snapshots are kept per project.
+	// Keep is how many snapshots are kept per project, at least one.
 	Keep int `yaml:"keep"`
 	// Interval is how often a snapshot is taken while work is going on.
-	// Nothing is written while the project is idle.
+	// Nothing is written while the project is idle. 0 turns the periodic
+	// snapshots off (the others, when a task finishes and at exit, are still
+	// taken); it must be written as 0, and a negative interval is an error,
+	// so periodic backups never stop by accident.
 	Interval time.Duration `yaml:"interval"`
 	// WhenProjectDeleted is what happens to a deleted project's backups:
 	// "ask" (the default: say so, and keep them until told), "keep", or
 	// "delete" (after DeleteAfterDays).
 	WhenProjectDeleted string `yaml:"whenProjectDeleted"`
 	// DeleteAfterDays is how long a deleted project's backups are kept
-	// under "delete".
+	// under "delete": at least one, so a project that only looks deleted
+	// (on a drive not mounted yet) keeps its backups at first sight.
 	DeleteAfterDays int `yaml:"deleteAfterDays"`
 }
 
@@ -312,7 +321,10 @@ func Load(path string) (*Config, error) {
 // before it: the defaults, then the global settings in the app home, then
 // the project's. A file that does not exist is skipped. Only what a file
 // sets is overridden; a provider entry overrides field by field, so a
-// project can change one setting of a provider and keep the rest.
+// project can change one setting of a provider and keep the rest. An agent
+// entry, by contrast, replaces the whole agent, and a list replaces the
+// whole list (ritam.example.yaml says so). A key no setting has is an error,
+// never ignored.
 func LoadLayers(paths ...string) (*Config, error) {
 	cfg := Default()
 	for _, path := range paths {
@@ -343,11 +355,12 @@ func (c *Config) overlay(path string) error {
 		before[k] = v
 	}
 	// Decoding into the existing values keeps whatever the file leaves out.
-	if err := yaml.Unmarshal(data, c); err != nil {
-		return fmt.Errorf("parse config %s: %w", path, err)
+	if err := decodeStrict(path, data, c); err != nil {
+		return err
 	}
 	// A map entry is decoded whole, so a provider the file mentions would
-	// lose the fields it leaves out; merge those back.
+	// lose the fields it leaves out; merge those back. The file's keys were
+	// checked above; this pass reads only its providers.
 	var layer struct {
 		Providers map[string]ProviderConfig `yaml:"providers"`
 	}
@@ -379,58 +392,149 @@ func (c *Config) overlay(path string) error {
 	return nil
 }
 
-// Validate checks internal consistency. It intentionally does not check that
-// agent executables exist: the scaffold must start without Claude or Codex
-// installed.
+// RealAgentIdleFloor is the shortest idle timeout used with the real CLIs.
+// They are slow next to the mocks: one investigation can take minutes, and
+// the 60-second default would pause a task in the middle of an answer.
+const RealAgentIdleFloor = 10 * time.Minute
+
+// ApplyRealAgentIdleFloor raises the idle timeout to RealAgentIdleFloor when
+// the real CLIs are in use, however they were chosen (the -real flag or
+// tui.useMockAgents: false), and reports whether it did. With the mocks it
+// changes nothing. A longer timeout that was set is kept.
+func (c *Config) ApplyRealAgentIdleFloor() bool {
+	if c.TUI.UseMockAgents || c.Orchestrator.IdleTimeout >= RealAgentIdleFloor {
+		return false
+	}
+	c.Orchestrator.IdleTimeout = RealAgentIdleFloor
+	return true
+}
+
+// MinBackupInterval is the shortest periodic backup interval. Only the newest
+// few snapshots are kept, so a shorter one would push the older ones out
+// within minutes of steady work.
+const MinBackupInterval = time.Minute
+
+// Validate checks internal consistency and ranges. Every problem is
+// reported, each naming its key and the value found, so one run shows all
+// that needs fixing. It intentionally does not check that agent executables
+// exist: the scaffold must start without Claude or Codex installed.
+//
+// Zero means "no limit" (or "the built-in default") for the limits and
+// timeouts, so they need only be non-negative; a negative one is a typo
+// that would otherwise switch a limit off.
 func (c *Config) Validate() error {
+	var errs []error
+	bad := func(format string, args ...any) {
+		errs = append(errs, fmt.Errorf("config: "+format, args...))
+	}
+	nonNegInt := func(key string, v int64) {
+		if v < 0 {
+			bad("%s must not be negative, got %d", key, v)
+		}
+	}
+	nonNegDuration := func(key string, d time.Duration) {
+		if d < 0 {
+			bad("%s must not be negative, got %s", key, d)
+		}
+	}
+	nonNegCost := func(key string, v float64) {
+		if !(v >= 0) { // NaN too
+			bad("%s must not be negative, got %v", key, v)
+		}
+	}
+
 	switch c.Storage.Backend {
 	case "sqlite", "memory": // an empty sqlite path means the project's database
 	default:
-		return fmt.Errorf("storage.backend must be sqlite or memory, got %q", c.Storage.Backend)
+		bad("storage.backend must be sqlite or memory, got %q", c.Storage.Backend)
 	}
 	if !domain.AccessLevel(c.Access.Level).Valid() {
-		return fmt.Errorf("access.level must be 0 to 3, got %d", c.Access.Level)
+		bad("access.level must be 0 to 3, got %d", c.Access.Level)
 	}
-	switch c.Backups.WhenProjectDeleted {
-	case "", "ask", "keep", "delete":
-	default:
-		return fmt.Errorf("backups.whenProjectDeleted must be ask, keep or delete, got %q", c.Backups.WhenProjectDeleted)
+
+	o := c.Orchestrator
+	nonNegInt("orchestrator.maxConcurrentTasks", int64(o.MaxConcurrentTasks))
+	if o.MaxDeliberationRounds <= 0 {
+		bad("orchestrator.maxDeliberationRounds must be positive, got %d", o.MaxDeliberationRounds)
 	}
-	for name, a := range c.Agents {
+	nonNegInt("orchestrator.maxMessages", int64(o.MaxMessages))
+	nonNegInt("orchestrator.stallMessages", int64(o.StallMessages))
+	nonNegInt("orchestrator.maxTotalMessages", int64(o.MaxTotalMessages))
+	nonNegDuration("orchestrator.maxTaskDuration", o.MaxTaskDuration)
+	nonNegDuration("orchestrator.idleTimeout", o.IdleTimeout)
+	nonNegCost("orchestrator.maxTaskCostUSD", o.MaxTaskCostUSD)
+	nonNegInt("orchestrator.maxTaskTokens", o.MaxTaskTokens)
+	nonNegCost("orchestrator.maxDailyCostUSD", o.MaxDailyCostUSD)
+	nonNegInt("orchestrator.maxDailyTokens", o.MaxDailyTokens)
+	// The authority is ticked in the new-task form; a default naming an
+	// agent this file does not define may be a recruit, so only a default
+	// that contradicts the agents listed here is an error.
+	if o.DefaultAuthority != "" && len(c.Agents) > 0 {
+		if _, ok := c.Agents[o.DefaultAuthority]; !ok {
+			bad("orchestrator.defaultAuthority %q is not a configured agent", o.DefaultAuthority)
+		}
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(c.Providers)) {
+		switch name {
+		case "claude-code", "codex":
+		default:
+			bad("unknown provider %q (claude-code or codex)", name)
+		}
+		p := c.Providers[name]
+		nonNegDuration("providers."+name+".startupTimeout", p.StartupTimeout)
+		nonNegDuration("providers."+name+".responseTimeout", p.ResponseTimeout)
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
+		a := c.Agents[name]
 		switch a.Type {
 		case "claude-code", "codex", "mock":
 		default:
-			return fmt.Errorf("config: agent %q has unknown type %q", name, a.Type)
+			bad("agents.%s.type must be claude-code, codex or mock, got %q", name, a.Type)
 		}
 		switch strings.ToUpper(a.Role) {
 		case "AUTHORITY", "IMPLEMENTER", "REVIEWER", "OBSERVER":
 		default:
-			return fmt.Errorf("config: agent %q has unknown role %q", name, a.Role)
+			bad("agents.%s.role must be AUTHORITY, IMPLEMENTER, REVIEWER or OBSERVER, got %q", name, a.Role)
 		}
+		nonNegDuration("agents."+name+".startupTimeout", a.StartupTimeout)
+		nonNegDuration("agents."+name+".responseTimeout", a.ResponseTimeout)
 	}
-	for name := range c.Providers {
-		switch name {
-		case "claude-code", "codex":
-		default:
-			return fmt.Errorf("config: unknown provider %q (claude-code or codex)", name)
-		}
+
+	b := c.Backups
+	if b.Keep < 1 {
+		bad("backups.keep must be at least 1, got %d", b.Keep)
 	}
-	// The authority is ticked in the new-task form; a default naming an
-	// agent this file does not define may be a recruit, so only a default
-	// that contradicts the agents listed here is an error.
-	if c.Orchestrator.DefaultAuthority != "" && len(c.Agents) > 0 {
-		if _, ok := c.Agents[c.Orchestrator.DefaultAuthority]; !ok {
-			return fmt.Errorf("config: defaultAuthority %q is not a configured agent",
-				c.Orchestrator.DefaultAuthority)
-		}
+	if b.Interval != 0 && b.Interval < MinBackupInterval {
+		bad("backups.interval must be at least %s, or 0 to take no periodic snapshots, got %s",
+			MinBackupInterval, b.Interval)
 	}
-	if c.Orchestrator.MaxDeliberationRounds <= 0 {
-		return fmt.Errorf("config: maxDeliberationRounds must be positive")
+	switch b.WhenProjectDeleted {
+	case "", "ask", "keep", "delete":
+	default:
+		bad("backups.whenProjectDeleted must be ask, keep or delete, got %q", b.WhenProjectDeleted)
+	}
+	switch {
+	case b.WhenProjectDeleted == "delete" && b.DeleteAfterDays < 1:
+		bad("backups.deleteAfterDays must be at least 1 with whenProjectDeleted: delete, got %d", b.DeleteAfterDays)
+	case b.DeleteAfterDays < 0:
+		bad("backups.deleteAfterDays must not be negative, got %d", b.DeleteAfterDays)
+	}
+
+	switch strings.ToLower(c.Logging.Level) {
+	case "", "debug", "info", "warn", "warning", "error":
+	default:
+		bad("logging.level must be debug, info, warn or error, got %q", c.Logging.Level)
+	}
+	switch strings.ToLower(c.Logging.Format) {
+	case "", "text", "json":
+	default:
+		bad("logging.format must be text or json, got %q", c.Logging.Format)
 	}
 	if c.Proxy.Enabled && (c.Proxy.Port <= 0 || c.Proxy.Port > 65535) {
-		return fmt.Errorf("config: proxy port %d out of range", c.Proxy.Port)
+		bad("proxy.port must be 1 to 65535, got %d", c.Proxy.Port)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // ResolvePath makes a configured relative path absolute against the directory

@@ -50,10 +50,10 @@ func (r Request) Age(now time.Time) time.Duration {
 //
 // Broadcasts are left out: "everyone, please look" has no single party whose
 // silence is a stall. So is the opening TASK_ASSIGNMENT, which the authority
-// answers by working rather than by replying to the human, and the
-// orchestrator's own ERROR notices.
+// answers by working rather than by replying to the human, and every note of
+// the orchestrator's (BuildLedger skips those before asking).
 func opensRequest(m *Message) bool {
-	if m.ToAgent == BroadcastAgentID || m.ToAgent == "" || m.FromAgent == m.ToAgent {
+	if m.ToAgent == BroadcastAgentID || m.ToAgent == "" || m.ToAgent == OrchestratorID || m.FromAgent == m.ToAgent {
 		return false
 	}
 	switch m.Type {
@@ -66,13 +66,49 @@ func opensRequest(m *Message) bool {
 	return m.RequiresResponse || m.Type.ExpectsResponse()
 }
 
+// answers reports whether m, a message from r's addressee that reaches r's
+// asker, is the reply r was waiting for. Most messages are: agents do not
+// pick their reply's type reliably, so a strict table of which type closes
+// which request would leave requests open for ever. Two are not:
+//
+//   - A QUESTION back asks about the request; it does not answer it. Codex
+//     asking opus to clarify a DELEGATE closed the DELEGATE, so nothing
+//     reminded codex of it, a resume did not ask for it again, and the
+//     follow-up it belonged to could complete with the work undone.
+//   - A STATUS_UPDATE ("working on it") does not finish work an agent asked
+//     for (DELEGATE, IMPLEMENT, REQUEST_CHANGE). It still answers a QUESTION,
+//     and still answers the human, to whom agents commonly report "done: ..."
+//     as a status update; leaving that open would bring back reminders the
+//     human did not need.
+func answers(r *Request, m *Message) bool {
+	switch m.Type {
+	case MsgQuestion:
+		return false
+	case MsgStatusUpdate:
+		if r.Message.FromAgent == HumanAgentID {
+			return true
+		}
+		switch r.Message.Type {
+		case MsgDelegate, MsgImplement, MsgRequestChange:
+			return false
+		}
+	}
+	return true
+}
+
 // BuildLedger reads the requests out of a task's message history, oldest
 // first.
 //
 // A reply from A to B closes every request B has open with A -- agents
 // routinely answer several questions in one message -- unless it names the
 // exact request it answers through InReplyTo. A broadcast from A counts as a
-// reply to everyone, the asker included.
+// reply to everyone, the asker included. A QUESTION back, and a status
+// update on work, are not replies (see answers).
+//
+// The orchestrator's notes are not part of the conversation: they neither
+// answer a request nor open one. Only the human answers a question put to
+// the human; a checkpoint arriving first used to count as the answer, and a
+// decision that should have waited for the human's reply went through.
 func BuildLedger(history []*Message) []Request {
 	var reqs []Request
 	index := map[MessageID]int{}
@@ -104,6 +140,9 @@ func BuildLedger(history []*Message) []Request {
 			}
 			continue
 		}
+		if FromOrchestrator(m) {
+			continue
+		}
 		// First: does m answer something?
 		// InReplyTo pins the answer to one request -- but only when it names a
 		// request at all. Pointing at an ordinary message (an answer, a
@@ -117,7 +156,7 @@ func BuildLedger(history []*Message) []Request {
 		i, pinned := index[m.InReplyTo]
 		if m.InReplyTo != "" && pinned {
 			if reqs[i].Open() && reqs[i].Message.ToAgent == m.FromAgent &&
-				(m.ToAgent == reqs[i].Message.FromAgent || m.ToAgent == BroadcastAgentID) {
+				(m.ToAgent == reqs[i].Message.FromAgent || m.ToAgent == BroadcastAgentID) && answers(&reqs[i], m) {
 				reqs[i].Answer = m
 			}
 		}
@@ -127,7 +166,7 @@ func BuildLedger(history []*Message) []Request {
 				if !r.Open() || r.Message.ToAgent != m.FromAgent {
 					continue
 				}
-				if m.ToAgent == r.Message.FromAgent || m.ToAgent == BroadcastAgentID {
+				if (m.ToAgent == r.Message.FromAgent || m.ToAgent == BroadcastAgentID) && answers(r, m) {
 					r.Answer = m
 				}
 			}
@@ -146,9 +185,11 @@ func BuildLedger(history []*Message) []Request {
 					continue
 				}
 				if path, ok := chainTo(reqs, children, i, m.FromAgent); ok {
-					r.Answer = m
+					if answers(r, m) {
+						r.Answer = m
+					}
 					for _, j := range path {
-						if reqs[j].Open() {
+						if reqs[j].Open() && answers(&reqs[j], m) {
 							reqs[j].Answer = m
 						}
 					}
