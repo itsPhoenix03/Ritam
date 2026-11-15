@@ -2,7 +2,6 @@ package orchestrator_test
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,7 +45,7 @@ func TestAReplyWithNoRecipientIsReprompted(t *testing.T) {
 	go func() { done <- h.orch.RunTask(ctx, task.ID) }()
 
 	waitFor(t, func() bool { return len(codex.deliveries()) == 1 })
-	codex.out <- ports.Outbound{AgentID: "codex", Err: errors.New(noRecipientErr)}
+	codex.out <- ports.Outbound{AgentID: "codex", Err: malformed(noRecipientErr)}
 	codex.finish()
 	waitFor(t, func() bool { return len(codex.deliveries()) == 2 })
 
@@ -93,7 +92,7 @@ const noHeaderErr = "claude-code adapter: agent opus replied without an @@ORCH h
 // with MessageCount still 0 and no limit noticing. It now pauses within three
 // turns, saying why and what the agent sent.
 func TestAnAuthorityThatNeverRepliesReadablyPausesTheTask(t *testing.T) {
-	opus := &errAgent{promptAgent: newPromptAgent("opus"), err: errors.New(noHeaderErr)}
+	opus := &errAgent{promptAgent: newPromptAgent("opus"), err: malformed(noHeaderErr)}
 	gw := newGateway()
 	gw.add(opus, domain.RoleAuthority)
 	gw.add(newPromptAgent("codex"), domain.RoleImplementer)
@@ -142,7 +141,7 @@ func TestASupportingAgentThatNeverRepliesReadablyIsDropped(t *testing.T) {
 		return nil
 	}
 	codex := &errAgent{promptAgent: newPromptAgent("codex"),
-		err: errors.New("codex adapter: agent codex replied without a ##CODEX header")}
+		err: malformed("codex adapter: agent codex replied without a ##CODEX header")}
 	gw := newGateway()
 	gw.add(mockagent.New("opus", domain.AgentKindMock, authority), domain.RoleAuthority)
 	gw.add(codex, domain.RoleImplementer)
@@ -188,12 +187,12 @@ func TestAReadableReplyClearsTheMalformedCount(t *testing.T) {
 	}
 
 	waitFor(t, func() bool { return len(codex.deliveries()) == 1 })
-	codex.out <- ports.Outbound{AgentID: "codex", Err: errors.New(noRecipientErr)}
+	codex.out <- ports.Outbound{AgentID: "codex", Err: malformed(noRecipientErr)}
 	waitFor(t, func() bool { return count() == 1 })
 	codex.out <- ports.Outbound{AgentID: "codex", Message: domain.Message{
 		ToAgent: "opus", Type: domain.MsgAnswer, Content: "The cookie is never cleared on logout."}}
 	waitFor(t, func() bool { return count() == 0 })
-	codex.out <- ports.Outbound{AgentID: "codex", Err: errors.New(noRecipientErr)}
+	codex.out <- ports.Outbound{AgentID: "codex", Err: malformed(noRecipientErr)}
 	waitFor(t, func() bool { return count() == 1 })
 	codex.finish()
 	waitFor(t, func() bool {
@@ -235,7 +234,7 @@ func TestMaxDurationTripsWhenAgentsOnlySendUnreadableReplies(t *testing.T) {
 
 	waitFor(t, func() bool { return len(codex.deliveries()) == 1 })
 	time.Sleep(300 * time.Millisecond)
-	codex.out <- ports.Outbound{AgentID: "codex", Err: errors.New(noRecipientErr)}
+	codex.out <- ports.Outbound{AgentID: "codex", Err: malformed(noRecipientErr)}
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -245,4 +244,9 @@ func TestMaxDurationTripsWhenAgentsOnlySendUnreadableReplies(t *testing.T) {
 	if got.State != domain.TaskPaused || got.PauseReason != domain.PauseReasonMaxDuration {
 		t.Errorf("state = %s (%s), want PAUSED for MaxDuration", got.State, got.PauseReason)
 	}
+}
+
+// malformed is what an adapter reports for a reply it could not read.
+func malformed(detail string) error {
+	return domain.NewFailure(domain.FailureMalformed, detail, nil)
 }

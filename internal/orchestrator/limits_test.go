@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"ritam/internal/agents/fake"
 	mockagent "ritam/internal/agents/mock"
 	"ritam/internal/domain"
 	"ritam/internal/orchestrator"
@@ -256,16 +257,32 @@ func TestAWorkingAgentIsNotIdle(t *testing.T) {
 	}
 }
 
+// TestASilentAgentStillTimesOut: the control for the test above. An agent
+// that stays WORKING with nothing to show is no longer paused by the idle
+// timer -- a build can run quietly for minutes -- but it is still caught: its
+// response timeout ends the turn, and the Timeout policy follows. It is tried
+// once more, told it was cut off; timing out again, it is dropped, the
+// authority is told, and only then, with nobody working, does idle pause the
+// task. It used to be paused by the idle timer in the middle of its turn.
 func TestASilentAgentStillTimesOut(t *testing.T) {
-	// The control for the test above: the same long turn with no activity is
-	// a genuinely silent agent, and must still be caught.
-	final := runWithSlowImplementer(t, false)
-	if final.State != domain.TaskPaused {
-		t.Fatalf("a silent agent must still be paused by the idle timeout: %s (%s)", final.State, final.PauseReason)
+	codex := fake.New("codex", func(int, *domain.Task, domain.Message) fake.Turn {
+		return fake.Failing(domain.FailureTimeout)
+	})
+	codex.TurnLimit = 500 * time.Millisecond // longer than the idle timeout
+	h, final := runFake(t, codex, 200*time.Millisecond)
+
+	if n := codex.Turns(); n != 2 {
+		t.Fatalf("codex took %d turns, want 2: the first, and one retry after its timeout", n)
 	}
-	// And the pause names the reply it is waiting for, not just "TIMEOUT".
-	if !strings.Contains(final.PauseReason, "waiting on codex to answer opus") {
-		t.Errorf("the pause should name the missing reply, got %q", final.PauseReason)
+	if got := codex.Received(); !strings.Contains(got[1].Content, "cut off at its time limit") {
+		t.Errorf("the retry must say the turn was cut off: %q", got[1].Content)
+	}
+	if !h.hasEvent(domain.EvtAgentRetried) || !h.hasEvent(domain.EvtAgentDropped) {
+		t.Error("the retry and the drop must be recorded")
+	}
+	if final.State != domain.TaskPaused || !final.IsDropped("codex") {
+		t.Errorf("with codex dropped and nobody working, idle pauses the task: %s (%s), dropped %v",
+			final.State, final.PauseReason, final.Dropped)
 	}
 }
 

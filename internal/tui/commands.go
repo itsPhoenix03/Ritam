@@ -24,8 +24,11 @@ const (
 	ActionRecruit      Action = "recruit"
 	// ActionSetAccess is the confirmation prompt for raising the access
 	// level. It is never bound to a key.
-	ActionSetAccess        Action = "set_access"
-	ActionResumeTask       Action = "resume_task"
+	ActionSetAccess  Action = "set_access"
+	ActionResumeTask Action = "resume_task"
+	// ActionRetryTask brings a FAILED task back. Its key is shown only for
+	// a failed task.
+	ActionRetryTask        Action = "retry_task"
 	ActionCancelTask       Action = "cancel_task"
 	ActionApprove          Action = "approve"
 	ActionReject           Action = "reject"
@@ -110,6 +113,7 @@ var keymap = []keyBinding{
 	{Key: "n", Action: ActionCreateTask, Help: "new task"},
 	{Key: "p", Action: ActionPauseTask, Help: "pause"},
 	{Key: "r", Action: ActionResumeTask, Help: "resume"},
+	{Key: "R", Action: ActionRetryTask, Help: "retry a failed task: same agents, their sessions kept"},
 	{Key: "c", Action: ActionCancelTask, Help: "cancel"},
 	{Key: "a", Action: ActionApprove, Help: "approve"},
 	{Key: "x", Action: ActionReject, Help: "reject"},
@@ -395,5 +399,12 @@ func sendInstructionCmd(ctx context.Context, svc ports.Service, id domain.TaskID
 	return func() tea.Msg {
 		err := svc.SendInstruction(ctx, id, to, content)
 		return actionResultMsg{action: ActionSendInstruction, taskID: id, err: err}
+	}
+}
+
+func retryCmd(ctx context.Context, svc ports.Service, id domain.TaskID) tea.Cmd {
+	return func() tea.Msg {
+		err := svc.Retry(ctx, id)
+		return actionResultMsg{action: ActionRetryTask, taskID: id, err: err}
 	}
 }

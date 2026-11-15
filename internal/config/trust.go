@@ -67,6 +67,10 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 			hold("providers." + name + ".responseTimeout")
 			p.ResponseTimeout = ceiling
 		}
+		if ceiling := orDuration(g.WriteResponseTimeout, defaultWriteResponseTimeout); p.WriteResponseTimeout > ceiling {
+			hold("providers." + name + ".writeResponseTimeout")
+			p.WriteResponseTimeout = ceiling
+		}
 		c.Providers[name] = p
 	}
 
@@ -90,6 +94,10 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		if ceiling := orDuration(g.ResponseTimeout, defaultResponseTimeout); a.ResponseTimeout > ceiling {
 			hold("agents." + name + ".responseTimeout")
 			a.ResponseTimeout = ceiling
+		}
+		if ceiling := orDuration(g.WriteResponseTimeout, defaultWriteResponseTimeout); a.WriteResponseTimeout > ceiling {
+			hold("agents." + name + ".writeResponseTimeout")
+			a.WriteResponseTimeout = ceiling
 		}
 		c.Agents[name] = a
 	}
@@ -193,7 +201,11 @@ func HeldNotice(held []string, globalPath string) string {
 }
 
 // defaultResponseTimeout is what a CLI call may take when nothing says.
-const defaultResponseTimeout = 5 * time.Minute
+const defaultResponseTimeout = DefaultResponseTimeout
+
+// defaultWriteResponseTimeout is what a CLI call of an agent that may write
+// files or run commands may take when nothing says.
+const defaultWriteResponseTimeout = DefaultWriteResponseTimeout
 
 // executableOr is an executable, or the provider's usual CLI when unset.
 func executableOr(exe, provider string) string {

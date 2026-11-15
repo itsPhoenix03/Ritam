@@ -129,7 +129,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		}
 	}()
 	know := knowledge.New(store.Knowledge)
-	dec := decisions.New(store.Decisions)
+	dec := decisions.NewInStorage(store)
 
 	registry := core.NewRegistry()
 	agentMgr := core.NewManager(registry, log)
@@ -226,6 +226,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		Daily:                dailyLedger(cfg),
 		MaxDailyCostUSD:      cfg.Orchestrator.MaxDailyCostUSD,
 		MaxDailyTokens:       cfg.Orchestrator.MaxDailyTokens,
+		RateLimitWait:        cfg.Orchestrator.MaxRateLimitWait,
 	})
 
 	// The agent manager reports runtime state changes as events so the TUI can
@@ -396,6 +397,11 @@ func applyWorkspace(ac config.AgentConfig, ws config.Workspace, cfg *config.Conf
 		return ac, err
 	}
 	ac.WorkingDir = dir
+	if ac.WriteResponseTimeout <= 0 && cfg != nil {
+		// The turn limit of an agent that may write or run commands comes
+		// from its provider, as the read-only one does (templateFor).
+		ac.WriteResponseTimeout = cfg.Providers[ac.Type].WriteResponseTimeout
+	}
 	ac.ScratchDir = scratchDir(cfg, ws)
 	ac.WorkspaceRoot = ws.Root
 	ac.ConfineReads = ws.ConfineReads

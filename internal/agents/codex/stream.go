@@ -66,7 +66,16 @@ func consumeStreamLine(line string, act *core.ActivityEmitter) {
 	case "turn.completed":
 		act.Emit(ports.ActivityStatus, "turn completed")
 	case "turn.failed":
-		act.Emit(ports.ActivityStatus, "turn failed")
+		// The message says why; "turn failed" alone left the human guessing.
+		status := "turn failed"
+		if msg := eventMessage([]byte(trimmed)); msg != "" {
+			status += ": " + msg
+		}
+		act.Emit(ports.ActivityStatus, status)
+	case "error":
+		if msg := eventMessage([]byte(trimmed)); msg != "" {
+			act.Emit(ports.ActivityStatus, "error: "+msg)
+		}
 	case "item.started", "item.updated", "item.completed":
 		switch ev.Item.Type {
 		case "reasoning":

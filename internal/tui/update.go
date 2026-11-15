@@ -227,6 +227,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case domain.EvtAccessLevel:
 			cmds = append(cmds, loadAccessCmd(m.ctx, m.svc))
+		case domain.EvtRunQueued:
+			m = m.markQueued(ev.TaskID, true)
+			if ev.TaskID == m.currentTaskID {
+				m.setStatus("%s is queued: it starts when a running task ends (p pauses it)", ev.TaskID)
+			}
+		case domain.EvtRunStarted, domain.EvtRunUnqueued:
+			m = m.markQueued(ev.TaskID, false)
 		}
 		if len(cmds) == 0 {
 			return m, nil
@@ -331,6 +338,22 @@ func (m Model) requestQuit() (Model, tea.Cmd) {
 	}
 	m.quitting = true
 	return m, tea.Quit
+}
+
+// retry brings the selected task back if it FAILED. FAILED used to be
+// terminal, with nothing on screen to do about it.
+func (m Model) retry() (Model, tea.Cmd) {
+	t := m.currentTask()
+	switch {
+	case t == nil:
+		m.setStatus("no task selected")
+		return m, nil
+	case t.State != domain.TaskFailed:
+		m.setStatus("%s is %s: only a failed task can be retried", t.ID, t.State)
+		return m, nil
+	}
+	m.setStatus("retrying %s...", t.ID)
+	return m, retryCmd(m.ctx, m.svc, t.ID)
 }
 
 // requestCancel asks before cancelling the selected task: a cancelled task
@@ -764,6 +787,9 @@ func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 		}
 		m.setStatus("resuming %s...", t.ID)
 		return m, resumeCmd(m.ctx, m.svc, t.ID)
+
+	case ActionRetryTask:
+		return m.retry()
 
 	case ActionCancelTask:
 		return m.requestCancel("")

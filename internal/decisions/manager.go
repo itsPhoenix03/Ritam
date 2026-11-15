@@ -17,18 +17,51 @@ import (
 // ports.DecisionRepository.
 type Manager struct {
 	repo ports.DecisionRepository
+	// inTx runs fn with a decision repository acting inside one storage
+	// transaction. It is nil for a Manager built by New, which has only a
+	// repository and so writes step by step.
+	inTx func(ctx context.Context, fn func(ports.DecisionRepository) error) error
 }
 
-// New constructs a Manager over the given repository.
+// New constructs a Manager over the given repository. Its Supersede is two
+// separate writes; NewInStorage makes it one.
 func New(repo ports.DecisionRepository) *Manager {
 	return &Manager{repo: repo}
+}
+
+// NewInStorage constructs a Manager over store's decisions whose Supersede
+// runs in one transaction: a crash between proposing the new decision and
+// marking the old one superseded used to leave two live decisions.
+func NewInStorage(store *ports.Storage) *Manager {
+	return newInStorage(store, nil)
+}
+
+// newInStorage is NewInStorage with wrap applied to the repository inside
+// each transaction, so a test can make a write in it fail.
+func newInStorage(store *ports.Storage, wrap func(ports.DecisionRepository) ports.DecisionRepository) *Manager {
+	return &Manager{
+		repo: store.Decisions,
+		inTx: func(ctx context.Context, fn func(ports.DecisionRepository) error) error {
+			return store.WithTx(ctx, func(tx *ports.Storage) error {
+				repo := tx.Decisions
+				if wrap != nil {
+					repo = wrap(repo)
+				}
+				return fn(repo)
+			})
+		},
+	}
 }
 
 // Propose records a new decision in PROPOSED status, assigning it a
 // sequential "D-00N" id. Any status, id or timestamp the caller set on d is
 // overwritten: proposing is the sole entry point for new decision ids.
 func (m *Manager) Propose(ctx context.Context, d *domain.Decision) (*domain.Decision, error) {
-	n, err := m.repo.NextSequence(ctx)
+	return propose(ctx, m.repo, d)
+}
+
+func propose(ctx context.Context, repo ports.DecisionRepository, d *domain.Decision) (*domain.Decision, error) {
+	n, err := repo.NextSequence(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("propose decision: %w", err)
 	}
@@ -37,7 +70,7 @@ func (m *Manager) Propose(ctx context.Context, d *domain.Decision) (*domain.Deci
 	cp.Status = domain.DecisionProposed
 	cp.SupersededBy = ""
 	cp.Timestamp = time.Now()
-	if err := m.repo.Create(ctx, cp); err != nil {
+	if err := repo.Create(ctx, cp); err != nil {
 		return nil, err
 	}
 	return cp.Clone(), nil
@@ -91,27 +124,38 @@ func (m *Manager) Reject(ctx context.Context, id domain.DecisionID, reason strin
 // Superseding a decision that is already SUPERSEDED is rejected: chains must
 // be built from the current head, not an arbitrary past link, so history
 // stays a clean, single-threaded chain per lineage.
+//
+// On a Manager from NewInStorage both writes are one transaction: if marking
+// the old decision fails, the new one is not kept either.
 func (m *Manager) Supersede(ctx context.Context, oldID domain.DecisionID, newDecision *domain.Decision) (*domain.Decision, error) {
-	old, err := m.repo.Get(ctx, oldID)
-	if err != nil {
-		return nil, err
+	run := m.inTx
+	if run == nil {
+		run = func(ctx context.Context, fn func(ports.DecisionRepository) error) error { return fn(m.repo) }
 	}
-	if old.Status == domain.DecisionSuperseded {
-		return nil, fmt.Errorf("decision %s: already superseded by %s", oldID, old.SupersededBy)
-	}
+	var created *domain.Decision
+	err := run(ctx, func(repo ports.DecisionRepository) error {
+		old, err := repo.Get(ctx, oldID)
+		if err != nil {
+			return err
+		}
+		if old.Status == domain.DecisionSuperseded {
+			return fmt.Errorf("decision %s: already superseded by %s", oldID, old.SupersededBy)
+		}
 
-	cp := newDecision.Clone()
-	cp.TaskID = old.TaskID
-	cp.Supersedes = oldID
-	created, err := m.Propose(ctx, cp)
-	if err != nil {
-		return nil, err
-	}
+		cp := newDecision.Clone()
+		cp.TaskID = old.TaskID
+		cp.Supersedes = oldID
+		created, err = propose(ctx, repo, cp)
+		if err != nil {
+			return err
+		}
 
-	old.Status = domain.DecisionSuperseded
-	old.SupersededBy = created.ID
-	old.Timestamp = time.Now()
-	if err := m.repo.Update(ctx, old); err != nil {
+		old.Status = domain.DecisionSuperseded
+		old.SupersededBy = created.ID
+		old.Timestamp = time.Now()
+		return repo.Update(ctx, old)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return created, nil

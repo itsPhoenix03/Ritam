@@ -1,6 +1,10 @@
 package domain
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+)
 
 func TestCLIFailuresAreRecognised(t *testing.T) {
 	cases := map[string]FailureKind{
@@ -23,5 +27,48 @@ func TestCLIFailuresAreRecognised(t *testing.T) {
 	}
 	if !FailureCredits.MarksModelUnavailable() || FailureLimit.MarksModelUnavailable() || FailureAuth.MarksModelUnavailable() {
 		t.Error("only credits, plan and model failures make a model unavailable; limits and logins pass")
+	}
+}
+
+// TestATransientServerErrorIsNotALimit: "overloaded" and "try again later"
+// were read as a usage limit, so one busy moment at the provider announced a
+// supporting agent as unusable for the rest of the task.
+func TestATransientServerErrorIsNotALimit(t *testing.T) {
+	for _, text := range []string{
+		`API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`,
+		"stream disconnected before completion: 503 Service Unavailable",
+		"Something went wrong, please try again later",
+	} {
+		if got := ClassifyAgentFailure(text); got != FailureOverloaded {
+			t.Errorf("%q: got %q, want overloaded", text, got)
+		}
+	}
+	if !FailureOverloaded.Retryable() || FailureBilling.Retryable() || FailureBudgetStop.Retryable() {
+		t.Error("an overloaded server is worth retrying; billing and a budget stop are not")
+	}
+}
+
+// TestAFailureIsFoundThroughWrapping: adapters may wrap the failure they
+// report; the orchestrator still finds its kind, with errors.As or errors.Is.
+func TestAFailureIsFoundThroughWrapping(t *testing.T) {
+	cause := errors.New("exit status 1")
+	f := NewFailure(FailureTimeout, "agent CLI timed out after 5m0s", cause)
+	wrapped := fmt.Errorf("claude-code adapter: %w", f)
+
+	var got *AgentFailure
+	if !errors.As(wrapped, &got) || got != f {
+		t.Fatal("errors.As must find the failure")
+	}
+	if !errors.Is(wrapped, FailureTimeout) || errors.Is(wrapped, FailureCrash) {
+		t.Error("errors.Is must match the failure's own kind, and only it")
+	}
+	if !errors.Is(wrapped, cause) {
+		t.Error("the underlying error must stay reachable")
+	}
+	if FailureOf(nil) != nil {
+		t.Error("no error is no failure")
+	}
+	if k := FailureOf(errors.New("a missing 'to' that says nothing")).Kind; k != FailureCrash {
+		t.Errorf("an error with no kind is a crash, whatever it says; got %q", k)
 	}
 }

@@ -368,8 +368,10 @@ func TestEmptyStderrFallsBackToStdoutThenToNoOutput(t *testing.T) {
 		t.Errorf("want explicit 'no output', got: %v", err)
 	}
 	_, err = r.Run(context.Background(), []string{"fail"}, "")
-	if err == nil || !strings.HasSuffix(err.Error(), "deliberate failure") {
-		t.Errorf("stderr must still win, got: %v", err)
+	// All of stderr, not its first line: a warning printed before the real
+	// cause used to hide it.
+	if err == nil || !strings.HasSuffix(err.Error(), "deliberate failure second line") {
+		t.Errorf("stderr must still win, all of it, got: %v", err)
 	}
 }
 

@@ -27,6 +27,10 @@ type testGateway struct {
 	states   map[domain.AgentID]domain.AgentState
 	// onSend, when set, sees every delivery exactly as the adapter gets it.
 	onSend func(m domain.Message)
+
+	// mu guards starts: two tasks' runs start their agents at once.
+	mu     sync.Mutex
+	starts map[domain.AgentID]int
 }
 
 func newGateway() *testGateway {
@@ -34,6 +38,7 @@ func newGateway() *testGateway {
 		adapters: map[domain.AgentID]ports.AgentAdapter{},
 		roles:    map[domain.AgentID]domain.AgentRole{},
 		states:   map[domain.AgentID]domain.AgentState{},
+		starts:   map[domain.AgentID]int{},
 	}
 }
 
@@ -43,7 +48,17 @@ func (g *testGateway) add(ad ports.AgentAdapter, role domain.AgentRole) {
 }
 
 func (g *testGateway) StartFor(ctx context.Context, _ domain.TaskID, id domain.AgentID) error {
+	g.mu.Lock()
+	g.starts[id]++
+	g.mu.Unlock()
 	return g.adapters[id].Start(ctx)
+}
+
+// started reports how many times agent id was started.
+func (g *testGateway) started(id domain.AgentID) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.starts[id]
 }
 
 func (g *testGateway) StopFor(ctx context.Context, _ domain.TaskID, id domain.AgentID) error {
@@ -99,6 +114,9 @@ type harness struct {
 	store  ports.Storage
 	gw     *testGateway
 	events []domain.Event
+	// mu guards events: they are published from the run loop and from
+	// the goroutines streaming each agent's activity.
+	mu sync.Mutex
 }
 
 func newHarness(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *testGateway) *harness {
@@ -107,6 +125,28 @@ func newHarness(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *
 }
 
 func newHarnessApproval(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *testGateway, requireApproval bool) *harness {
+	t.Helper()
+	// Retries of a crashed or overloaded turn wait 10s, 30s and 90s in
+	// earnest; the tests keep the count and shorten the wait.
+	return newHarnessFull(t, limits, idle, gw, requireApproval,
+		[]time.Duration{20 * time.Millisecond, 20 * time.Millisecond, 20 * time.Millisecond})
+}
+
+// newHarnessWith is newHarness with the retry delays given: as many retries
+// as delays.
+func newHarnessWith(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *testGateway, backoff []time.Duration) *harness {
+	t.Helper()
+	return newHarnessFull(t, limits, idle, gw, false, backoff)
+}
+
+func newHarnessFull(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *testGateway, requireApproval bool, backoff []time.Duration) *harness {
+	t.Helper()
+	return newHarnessSlots(t, limits, idle, gw, requireApproval, backoff, 2)
+}
+
+// newHarnessSlots is newHarnessFull with the number of tasks that may run at
+// once given.
+func newHarnessSlots(t *testing.T, limits domain.TaskLimits, idle time.Duration, gw *testGateway, requireApproval bool, backoff []time.Duration, slots int) *harness {
 	t.Helper()
 	store := storage.NewInMemory()
 	h := &harness{store: *store, gw: gw}
@@ -117,17 +157,29 @@ func newHarnessApproval(t *testing.T, limits domain.TaskLimits, idle time.Durati
 		Decisions:          decisions.New(store.Decisions),
 		Logger:             logging.NewDiscard(),
 		Limits:             limits,
-		MaxConcurrentTasks: 2,
+		MaxConcurrentTasks: slots,
 		IdleTimeout:        idle,
+		RetryBackoff:       backoff,
 
 		RequireHumanApproval: requireApproval,
 	})
-	h.orch.Events.Subscribe(func(e domain.Event) { h.events = append(h.events, e) })
+	h.orch.Events.Subscribe(func(e domain.Event) {
+		h.mu.Lock()
+		h.events = append(h.events, e)
+		h.mu.Unlock()
+	})
 	return h
 }
 
+// snapshot copies the events recorded so far.
+func (h *harness) snapshot() []domain.Event {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]domain.Event(nil), h.events...)
+}
+
 func (h *harness) hasEvent(tp domain.EventType) bool {
-	for _, e := range h.events {
+	for _, e := range h.snapshot() {
 		if e.Type == tp {
 			return true
 		}
@@ -135,8 +187,19 @@ func (h *harness) hasEvent(tp domain.EventType) bool {
 	return false
 }
 
+// eventsFor returns the events of type tp recorded for task id.
+func (h *harness) eventsFor(tp domain.EventType, id domain.TaskID) []domain.Event {
+	var out []domain.Event
+	for _, e := range h.snapshot() {
+		if e.Type == tp && e.TaskID == id {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func (h *harness) eventSummary(tp domain.EventType) string {
-	for _, e := range h.events {
+	for _, e := range h.snapshot() {
 		if e.Type == tp {
 			return e.Summary
 		}
@@ -463,9 +526,11 @@ func TestAgentsCannotActOnAStoppedTask(t *testing.T) {
 	}
 }
 
-// TestAgentFailureFailsTaskExplicitly proves a crashed agent produces an
-// explicit failure rather than a silently vanished task.
-func TestAgentFailureFailsTaskExplicitly(t *testing.T) {
+// TestACrashedAgentIsReportedAndNeverFailsTheTask: a crashed agent is an
+// explicit, recorded failure rather than a silently vanished task -- but one
+// agent crashing no longer sends the task to FAILED, which nothing could
+// undo. It is retried, then dropped, and the task waits for the human.
+func TestACrashedAgentIsReportedAndNeverFailsTheTask(t *testing.T) {
 	gw := newGateway()
 	gw.add(mockagent.New("opus", domain.AgentKindMock, mockagent.AuthorityBehavior()), domain.RoleAuthority)
 	gw.add(mockagent.NewCrashing("codex"), domain.RoleImplementer)
@@ -479,14 +544,11 @@ func TestAgentFailureFailsTaskExplicitly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if final.State != domain.TaskFailed {
-		t.Fatalf("task state = %s, want FAILED", final.State)
+	if final.State == domain.TaskFailed {
+		t.Fatalf("one agent crashing must not fail the task: %s", final.FailureReason)
 	}
-	if !strings.Contains(final.FailureReason, "AGENT_ERROR") {
-		t.Errorf("failure reason = %q, want it to name AGENT_ERROR", final.FailureReason)
-	}
-	if !h.hasEvent(domain.EvtAgentFailed) {
-		t.Error("expected an AgentFailed event")
+	if !h.hasEvent(domain.EvtAgentFailed) || !h.hasEvent(domain.EvtAgentRetried) || !h.hasEvent(domain.EvtAgentDropped) {
+		t.Error("the crash, its retries and the drop must all be recorded")
 	}
 }
 
@@ -933,7 +995,7 @@ func TestAutoAcceptedFinalDecisionDoesNotInvokeRecipients(t *testing.T) {
 		t.Error("the FINAL_DECISION must remain in message history")
 	}
 	announced := false
-	for _, e := range h.events {
+	for _, e := range h.snapshot() {
 		announced = announced || (e.Type == domain.EvtAgentMessageReceived &&
 			strings.Contains(e.Summary, "codex received FINAL_DECISION"))
 	}

@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"ritam/internal/domain"
@@ -10,7 +12,7 @@ import (
 )
 
 // nextSequence atomically increments and returns a named counter.
-func nextSequence(ctx context.Context, db *sql.DB, name string) (int, error) {
+func nextSequence(ctx context.Context, db dbtx, name string) (int, error) {
 	var n int
 	err := db.QueryRowContext(ctx,
 		`INSERT INTO sequences(name, n) VALUES (?, 1)
@@ -26,7 +28,7 @@ func nextSequence(ctx context.Context, db *sql.DB, name string) (int, error) {
 // tasks
 // ---------------------------------------------------------------------------
 
-type sqlTasks struct{ db *sql.DB }
+type sqlTasks struct{ db dbtx }
 
 var _ ports.TaskRepository = (*sqlTasks)(nil)
 
@@ -35,27 +37,92 @@ func (r *sqlTasks) Create(ctx context.Context, t *domain.Task) error {
 	if err != nil {
 		return err
 	}
-	return insert(ctx, r.db, "task", string(t.ID),
-		`INSERT INTO tasks(id, state, created_at, updated_at, data) VALUES (?, ?, ?, ?, ?)`,
-		string(t.ID), string(t.State), formatTime(t.CreatedAt), formatTime(t.UpdatedAt), data)
+	if err := insert(ctx, r.db, "task", string(t.ID),
+		`INSERT INTO tasks(id, state, created_at, updated_at, data, version) VALUES (?, ?, ?, ?, ?, 1)`,
+		string(t.ID), string(t.State), formatTime(t.CreatedAt), formatTime(t.UpdatedAt), data); err != nil {
+		return err
+	}
+	t.Version = 1
+	return nil
 }
 
+// Update is a compare-and-swap on the version t was read at (see
+// ports.TaskRepository).
 func (r *sqlTasks) Update(ctx context.Context, t *domain.Task) error {
 	data, err := encode(t)
 	if err != nil {
 		return err
 	}
-	return update(ctx, r.db, "task", string(t.ID),
-		`UPDATE tasks SET state = ?, updated_at = ?, data = ? WHERE id = ?`,
-		string(t.State), formatTime(t.UpdatedAt), data, string(t.ID))
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE tasks SET state = ?, updated_at = ?, data = ?, version = version + 1 WHERE id = ? AND version = ?`,
+		string(t.State), formatTime(t.UpdatedAt), data, string(t.ID), t.Version)
+	if err != nil {
+		return fmt.Errorf("sqlite: update task %s: %w", t.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite: update task %s: %w", t.ID, err)
+	}
+	if n == 0 {
+		var stored int64
+		err := r.db.QueryRowContext(ctx, `SELECT version FROM tasks WHERE id = ?`, string(t.ID)).Scan(&stored)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: task %s", ports.ErrNotFound, t.ID)
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: update task %s: %w", t.ID, err)
+		}
+		return fmt.Errorf("%w: task %s is at version %d, the copy written was read at %d",
+			ports.ErrConflict, t.ID, stored, t.Version)
+	}
+	t.Version++
+	return nil
+}
+
+// scanTask decodes a task row's document and attaches its version, which
+// is kept beside the document rather than in it.
+func scanTask(sc interface{ Scan(...any) error }) (*domain.Task, error) {
+	var (
+		data    string
+		version int64
+	)
+	if err := sc.Scan(&data, &version); err != nil {
+		return nil, err
+	}
+	t := new(domain.Task)
+	if err := json.Unmarshal([]byte(data), t); err != nil {
+		return nil, fmt.Errorf("sqlite: decode task: %w", err)
+	}
+	t.Version = version
+	return t, nil
 }
 
 func (r *sqlTasks) Get(ctx context.Context, id domain.TaskID) (*domain.Task, error) {
-	return getJSON[domain.Task](ctx, r.db, "task", string(id), `SELECT data FROM tasks WHERE id = ?`, string(id))
+	t, err := scanTask(r.db.QueryRowContext(ctx, `SELECT data, version FROM tasks WHERE id = ?`, string(id)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: task %s", ports.ErrNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get task %s: %w", id, err)
+	}
+	return t, nil
 }
 
 func (r *sqlTasks) List(ctx context.Context) ([]*domain.Task, error) {
-	return listJSON[domain.Task](ctx, r.db, "tasks", `SELECT data FROM tasks ORDER BY seq`)
+	rows, err := r.db.QueryContext(ctx, `SELECT data, version FROM tasks ORDER BY seq`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list tasks: %w", err)
+	}
+	defer rows.Close()
+	out := []*domain.Task{}
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 func (r *sqlTasks) NextSequence(ctx context.Context) (int, error) {
@@ -66,7 +133,7 @@ func (r *sqlTasks) NextSequence(ctx context.Context) (int, error) {
 // messages
 // ---------------------------------------------------------------------------
 
-type sqlMessages struct{ db *sql.DB }
+type sqlMessages struct{ db dbtx }
 
 var _ ports.MessageRepository = (*sqlMessages)(nil)
 
@@ -141,7 +208,7 @@ func (r *sqlMessages) CountByTask(ctx context.Context, id domain.TaskID) (int, e
 // events
 // ---------------------------------------------------------------------------
 
-type sqlEvents struct{ db *sql.DB }
+type sqlEvents struct{ db dbtx }
 
 var _ ports.EventRepository = (*sqlEvents)(nil)
 
@@ -198,7 +265,7 @@ func (r *sqlEvents) ListAll(ctx context.Context) ([]domain.Event, error) {
 // decisions
 // ---------------------------------------------------------------------------
 
-type sqlDecisions struct{ db *sql.DB }
+type sqlDecisions struct{ db dbtx }
 
 var _ ports.DecisionRepository = (*sqlDecisions)(nil)
 
@@ -238,7 +305,7 @@ func (r *sqlDecisions) NextSequence(ctx context.Context) (int, error) {
 // disagreements
 // ---------------------------------------------------------------------------
 
-type sqlDisagreements struct{ db *sql.DB }
+type sqlDisagreements struct{ db dbtx }
 
 var _ ports.DisagreementRepository = (*sqlDisagreements)(nil)
 
@@ -280,7 +347,7 @@ func (r *sqlDisagreements) ListOpen(ctx context.Context, id domain.TaskID) ([]*d
 // knowledge
 // ---------------------------------------------------------------------------
 
-type sqlKnowledge struct{ db *sql.DB }
+type sqlKnowledge struct{ db dbtx }
 
 var _ ports.KnowledgeRepository = (*sqlKnowledge)(nil)
 
@@ -343,7 +410,7 @@ func (r *sqlKnowledge) Search(ctx context.Context, q domain.KnowledgeQuery) ([]d
 // artifacts
 // ---------------------------------------------------------------------------
 
-type sqlArtifacts struct{ db *sql.DB }
+type sqlArtifacts struct{ db dbtx }
 
 var _ ports.ArtifactRepository = (*sqlArtifacts)(nil)
 

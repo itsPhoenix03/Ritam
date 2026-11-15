@@ -23,6 +23,9 @@ var (
 	ErrNotSupported  = errors.New("not supported")
 	// ErrNotImplemented marks a scaffolded seam that a later phase will fill in.
 	ErrNotImplemented = errors.New("not implemented in this phase")
+	// ErrConflict is an update refused because the record changed after the
+	// copy being written was read. Read it again and redo the change.
+	ErrConflict = errors.New("changed since it was read")
 )
 
 // ---------------------------------------------------------------------------
@@ -32,7 +35,12 @@ var (
 // TaskRepository persists tasks. The in-memory implementation is authoritative
 // for the scaffold; a SQLite implementation can be added behind this interface.
 type TaskRepository interface {
+	// Create stores a new task at Version 1 and sets t.Version to it.
 	Create(ctx context.Context, t *domain.Task) error
+	// Update writes t only if the stored task is still at t.Version, the
+	// revision t was read at, and then sets t.Version to the new one. A
+	// stored task that moved on is ErrConflict: writing the whole task
+	// back would undo whatever changed it.
 	Update(ctx context.Context, t *domain.Task) error
 	Get(ctx context.Context, id domain.TaskID) (*domain.Task, error)
 	List(ctx context.Context) ([]*domain.Task, error)
@@ -103,6 +111,36 @@ type Storage struct {
 	Disagreements DisagreementRepository
 	Knowledge     KnowledgeRepository
 	Artifacts     ArtifactRepository
+
+	// Tx runs a group of writes as one; the backend sets it. Callers use
+	// WithTx rather than this field.
+	Tx Transactor
+}
+
+// Transactor runs fn against a Storage whose repositories all act inside
+// one transaction: everything fn wrote is kept when it returns nil, and
+// nothing of it when it returns an error or panics.
+type Transactor interface {
+	WithTx(ctx context.Context, fn func(tx *Storage) error) error
+}
+
+// ErrNoTransactions is returned by WithTx on a Storage built without a
+// Transactor: running the writes one by one instead would quietly give up
+// the all-or-nothing the caller asked for.
+var ErrNoTransactions = errors.New("storage: this store does not support transactions")
+
+// WithTx runs fn inside one transaction (see Transactor).
+//
+// fn must use only the Storage it is given. The store lets nothing else in
+// while a transaction is open, so a call through the outer Storage from
+// inside fn waits for fn to finish -- for ever. Calling WithTx on the
+// Storage fn was given nests: an error inside rolls back only the inner
+// function's writes.
+func (s *Storage) WithTx(ctx context.Context, fn func(tx *Storage) error) error {
+	if s == nil || s.Tx == nil {
+		return ErrNoTransactions
+	}
+	return s.Tx.WithTx(ctx, fn)
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +180,10 @@ type RuntimeOutput struct {
 type Outbound struct {
 	AgentID domain.AgentID
 	Message domain.Message
-	Err     error
+	// Err reports a failed turn. Adapters set a *domain.AgentFailure, which
+	// says what kind of failure it was; the orchestrator acts on that kind
+	// and never on the error's text (an error without one is a crash).
+	Err error
 	// Usage, when set, reports what one CLI turn cost. An adapter sends it as
 	// its own Outbound -- no Message, no Err -- after every turn, including a
 	// failed one, so spending is counted whether or not the turn produced
@@ -472,6 +513,9 @@ type Service interface {
 	// Human override surface. The human is always able to intervene.
 	Pause(ctx context.Context, id domain.TaskID, reason string) error
 	Resume(ctx context.Context, id domain.TaskID) error
+	// Retry brings a FAILED task back with the same participants, their
+	// sessions kept, and runs it; the authority is told why it had failed.
+	Retry(ctx context.Context, id domain.TaskID) error
 	Cancel(ctx context.Context, id domain.TaskID, reason string) error
 	Approve(ctx context.Context, id domain.TaskID, note string) error
 	Reject(ctx context.Context, id domain.TaskID, note string) error

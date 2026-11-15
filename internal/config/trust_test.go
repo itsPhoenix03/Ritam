@@ -205,3 +205,33 @@ func TestAProjectCannotSwitchTheScriptedAgentsOff(t *testing.T) {
 		t.Errorf("a project may switch them on: mocks %v, held %v", cfg.TUI.UseMockAgents, held)
 	}
 }
+
+// TestAProjectCannotRaiseTheWriteTurnLimit: the turn limit of agents that
+// may build and test is a timeout like the read-only one, and a copied
+// project may only tighten it.
+func TestAProjectCannotRaiseTheWriteTurnLimit(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "project")
+	_ = os.MkdirAll(root, 0o700)
+	globalFile := filepath.Join(dir, "global.yaml")
+	_ = os.WriteFile(globalFile, []byte("providers:\n  claude-code: {writeResponseTimeout: 30m}\n"), 0o600)
+	projFile := filepath.Join(root, "ritam.yaml")
+	_ = os.WriteFile(projFile, []byte("providers:\n  claude-code: {writeResponseTimeout: 3h}\n"+
+		"  codex: {writeResponseTimeout: 10m}\n"), 0o600)
+	global, err := LoadLayers(globalFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayers(globalFile, projFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := strings.Join(cfg.RestrictProject(global, root), "|")
+	if got := cfg.Providers["claude-code"].WriteResponseTimeout; got != 30*time.Minute ||
+		!strings.Contains(held, "providers.claude-code.writeResponseTimeout") {
+		t.Errorf("raising it is held back to the global value: %v (held %s)", got, held)
+	}
+	if got := cfg.Providers["codex"].WriteResponseTimeout; got != 10*time.Minute {
+		t.Errorf("lowering it is the project's choice: %v", got)
+	}
+}

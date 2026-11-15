@@ -168,7 +168,9 @@ func CrashingBehavior() Behavior {
 // agent-failure/crash-detection handling in the manager and orchestrator.
 func NewCrashing(id domain.AgentID) *Adapter {
 	a := New(id, domain.AgentKindMock, CrashingBehavior())
-	a.crashOnDeliver = ErrRuntimeCrashed
+	// Reported as a crash, the kind a real adapter gives a CLI that exits
+	// non-zero for no reason it can name.
+	a.crashOnDeliver = domain.NewFailure(domain.FailureCrash, ErrRuntimeCrashed.Error(), ErrRuntimeCrashed)
 	return a
 }
 

@@ -10,17 +10,10 @@ import (
 )
 
 // NewInMemory builds a fully populated ports.Storage backed by the
-// implementations in this package. This is the scaffold default.
+// implementations in this package, with transactions (see memory_tx.go).
 func NewInMemory() *ports.Storage {
-	return &ports.Storage{
-		Tasks:         NewMemTaskRepository(),
-		Messages:      NewMemMessageRepository(),
-		Events:        NewMemEventRepository(),
-		Decisions:     NewMemDecisionRepository(),
-		Disagreements: NewMemDisagreementRepository(),
-		Knowledge:     NewMemKnowledgeRepository(),
-		Artifacts:     NewMemArtifactRepository(),
-	}
+	s := newMemStore()
+	return s.storage(s.outerDoor, &memTransactor{s})
 }
 
 // MemTaskRepository is an in-memory, goroutine-safe ports.TaskRepository.
@@ -44,19 +37,31 @@ func (r *MemTaskRepository) Create(_ context.Context, t *domain.Task) error {
 	if _, ok := r.tasks[t.ID]; ok {
 		return fmt.Errorf("%w: task %s", ports.ErrAlreadyExists, t.ID)
 	}
-	r.tasks[t.ID] = t.Clone()
+	cp := t.Clone()
+	cp.Version = 1
+	r.tasks[t.ID] = cp
 	r.order = append(r.order, t.ID)
+	t.Version = 1
 	return nil
 }
 
-// Update overwrites an existing task. It fails if the task does not exist.
+// Update overwrites an existing task if it is still at the version t was
+// read at (see ports.TaskRepository). It fails if the task does not exist.
 func (r *MemTaskRepository) Update(_ context.Context, t *domain.Task) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.tasks[t.ID]; !ok {
+	stored, ok := r.tasks[t.ID]
+	if !ok {
 		return fmt.Errorf("%w: task %s", ports.ErrNotFound, t.ID)
 	}
-	r.tasks[t.ID] = t.Clone()
+	if stored.Version != t.Version {
+		return fmt.Errorf("%w: task %s is at version %d, the copy written was read at %d",
+			ports.ErrConflict, t.ID, stored.Version, t.Version)
+	}
+	cp := t.Clone()
+	cp.Version = t.Version + 1
+	r.tasks[t.ID] = cp
+	t.Version = cp.Version
 	return nil
 }
 

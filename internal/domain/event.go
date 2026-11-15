@@ -21,7 +21,16 @@ const (
 	// EvtTaskReopened records a human reopening a completed task to follow it
 	// up. It is the only way out of a terminal state, and only a human can
 	// take it.
-	EvtTaskReopened         EventType = "TaskReopened"
+	EvtTaskReopened EventType = "TaskReopened"
+	// EvtRunQueued records a run that has to wait for a free slot (only so
+	// many tasks run at once). Until EvtRunStarted it can be paused or
+	// cancelled like a running one; nothing has started. EvtRunUnqueued
+	// records a queued run that ended without starting: withdrawn, or its
+	// task was paused or finished while it waited.
+	EvtRunQueued   EventType = "RunQueued"
+	EvtRunStarted  EventType = "RunStarted"
+	EvtRunUnqueued EventType = "RunUnqueued"
+
 	EvtAgentRegistered      EventType = "AgentRegistered"
 	EvtAgentStarted         EventType = "AgentStarted"
 	EvtAgentStopped         EventType = "AgentStopped"
@@ -61,6 +70,13 @@ const (
 	// owing the reply stayed silent after a reminder.
 	EvtRequestAbandoned EventType = "RequestAbandoned"
 	EvtHumanOverride    EventType = "HumanOverride"
+	// EvtAgentRetried records an agent's failed turn being tried again (a
+	// timeout, an overloaded server, a crash, a limit that resets soon).
+	// Details: kind, attempt, delay.
+	EvtAgentRetried EventType = "AgentRetried"
+	// EvtAgentDropped records an agent taken off a task: it receives nothing
+	// more on it until the human resumes the task. Details: kind.
+	EvtAgentDropped EventType = "AgentDropped"
 	// EvtAccessLevel records the workspace's access level on a task: when
 	// the task starts, and on every change the human makes. Details: level,
 	// from (on a change), commands.

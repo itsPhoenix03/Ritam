@@ -65,7 +65,60 @@ func runFakeCLI(mode string) {
 				_ = os.WriteFile(os.Args[i+1], []byte("  \n"), 0o600)
 			}
 		}
+	case "turnfailed":
+		// How Codex reports a failed turn in --json: an error event, then
+		// turn.failed with the message, then a non-zero exit.
+		_ = readAll(os.Stdin)
+		_, _ = os.Stdout.WriteString(`{"type":"thread.started","thread_id":"thread-failed"}` + "\n")
+		_, _ = os.Stdout.WriteString(`{"type":"turn.started"}` + "\n")
+		_, _ = os.Stdout.WriteString(`{"type":"error","message":"stream disconnected before completion: 503 Service Unavailable"}` + "\n")
+		_, _ = os.Stdout.WriteString(`{"type":"turn.failed","error":{"message":"stream disconnected before completion: 503 Service Unavailable"}}` + "\n")
+		os.Exit(1)
 	}
+}
+
+// TestTurnFailedsMessageIsSurfaced: the stream reader turned turn.failed
+// into the bare activity line "turn failed" and dropped its message, so the
+// orchestrator saw only an exit code. The message is now the failure's
+// detail, and decides its kind.
+func TestTurnFailedsMessageIsSurfaced(t *testing.T) {
+	a, _, _ := fakeAdapter(t, "turnfailed")
+	if err := a.SendMessage(context.Background(), testTask(), msg("Go on.")); err != nil {
+		t.Fatal(err)
+	}
+	var sawStatus bool
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case act := <-a.Activity():
+			if strings.Contains(act.Text, "turn failed: stream disconnected") {
+				sawStatus = true
+			}
+			continue
+		case o := <-a.Outbound():
+			if o.Usage != nil {
+				continue
+			}
+			f := domain.FailureOf(o.Err)
+			if f == nil || f.Kind != domain.FailureOverloaded {
+				t.Fatalf("want an overloaded failure, got %+v", f)
+			}
+			if !strings.Contains(f.Detail, "503 Service Unavailable") {
+				t.Errorf("the detail should carry turn.failed's message, got %q", f.Detail)
+			}
+		case <-deadline:
+			t.Fatal("no outbound")
+		}
+		break
+	}
+	waitFor(t, "the activity to drain", func() bool {
+		select {
+		case act := <-a.Activity():
+			sawStatus = sawStatus || strings.Contains(act.Text, "turn failed: stream disconnected")
+		default:
+		}
+		return sawStatus
+	})
 }
 
 // TestSayingNothingIsNotAFailure: told that no reply is needed, an agent may

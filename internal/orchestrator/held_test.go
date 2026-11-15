@@ -247,7 +247,7 @@ func TestRejectingWithNoDecisionPendingChangesNothing(t *testing.T) {
 	go func() { done <- h.orch.RunTask(ctx, task.ID) }()
 	waitFor(t, func() bool { return len(codex.deliveries()) == 1 })
 	before, _ := h.orch.Tasks.Get(ctx, task.ID)
-	events := len(h.events)
+	events := len(h.snapshot())
 
 	if err := h.orch.Reject(ctx, task.ID, "no"); err == nil {
 		t.Fatal("rejecting with no decision pending must be refused")
@@ -259,8 +259,8 @@ func TestRejectingWithNoDecisionPendingChangesNothing(t *testing.T) {
 	if after.State != before.State || !after.SegmentStart.Equal(before.SegmentStart) {
 		t.Errorf("the task changed: %s -> %s", before.State, after.State)
 	}
-	if len(h.events) != events {
-		t.Errorf("a refused reject must emit nothing: %+v", h.events[events:])
+	if got := h.snapshot(); len(got) != events {
+		t.Errorf("a refused reject must emit nothing: %+v", got[events:])
 	}
 	cancel()
 	<-done

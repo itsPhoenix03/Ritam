@@ -43,6 +43,13 @@ type Deps struct {
 	Daily           ports.SpendLedger
 	MaxDailyCostUSD float64
 	MaxDailyTokens  int64
+	// RetryBackoff is how long to wait before each retry of a turn that
+	// failed on an overloaded server, a server error or a crash; there are
+	// as many retries as delays. Empty means 10s, 30s, 90s.
+	RetryBackoff []time.Duration
+	// RateLimitWait is the longest rate-limit reset waited out before the
+	// turn is retried; a later reset pauses the task. Zero means 2 minutes.
+	RateLimitWait time.Duration
 }
 
 // Orchestrator coordinates tasks, agents, messages, knowledge and decisions.
@@ -67,8 +74,13 @@ type Orchestrator struct {
 	requireHumanApproval bool
 	sem                  chan struct{}
 
-	mu      sync.Mutex
-	running map[domain.TaskID]context.CancelFunc
+	mu sync.Mutex
+	// running holds every RunTask holding a task, from before it waits for
+	// a slot until it returns. A run used to be entered here only once it
+	// had a slot: a queued run could not be paused or cancelled, started
+	// on a task paused while it waited, and a second resume queued a
+	// second run.
+	running map[domain.TaskID]*taskRun
 	// queued holds the human's messages for a task with no run loop: a
 	// reopened task's follow-up, an answer or instruction sent while a
 	// decision waits for the human, a rejection. They are delivered by the
@@ -80,6 +92,15 @@ type Orchestrator struct {
 	resumed map[domain.TaskID]string
 	// inboxes holds each running task's undelivered messages (inbox.go).
 	inboxes map[domain.TaskID]*taskInbox
+
+	// The failure policy (failures.go): each agent's run of failed turns by
+	// kind, the last delivery each agent was handed (what a retry sends
+	// again), and the retries waiting to be sent.
+	retryBackoff  []time.Duration
+	rateLimitWait time.Duration
+	failing       map[domain.TaskID]map[domain.AgentID]map[domain.FailureKind]int
+	lastTurn      map[domain.TaskID]map[domain.AgentID]*domain.Message
+	retrying      map[domain.TaskID]map[domain.AgentID]int
 }
 
 // New wires an Orchestrator from its dependencies.
@@ -114,10 +135,21 @@ func New(d Deps) *Orchestrator {
 		idleTimeout:          d.IdleTimeout,
 		requireHumanApproval: d.RequireHumanApproval,
 		sem:                  make(chan struct{}, d.MaxConcurrentTasks),
-		running:              map[domain.TaskID]context.CancelFunc{},
+		running:              map[domain.TaskID]*taskRun{},
 		queued:               map[domain.TaskID][]*domain.Message{},
 		resumed:              map[domain.TaskID]string{},
 		inboxes:              map[domain.TaskID]*taskInbox{},
+		retryBackoff:         d.RetryBackoff,
+		rateLimitWait:        d.RateLimitWait,
+		failing:              map[domain.TaskID]map[domain.AgentID]map[domain.FailureKind]int{},
+		lastTurn:             map[domain.TaskID]map[domain.AgentID]*domain.Message{},
+		retrying:             map[domain.TaskID]map[domain.AgentID]int{},
+	}
+	if len(o.retryBackoff) == 0 {
+		o.retryBackoff = defaultRetryBackoff
+	}
+	if o.rateLimitWait <= 0 {
+		o.rateLimitWait = defaultRateLimitWait
 	}
 	o.Bus.Enrich = func(ctx context.Context, t *domain.Task, m *domain.Message) {
 		o.attachKnowledge(ctx, t, m)
@@ -411,38 +443,65 @@ func (o *Orchestrator) CreateTask(ctx context.Context, in ports.CreateTaskInput)
 // evidence exists; the configured limits only ever pause the task and ask for
 // a human, they never declare a winner.
 func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
-	select {
-	case o.sem <- struct{}{}:
-		defer func() { <-o.sem }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
 	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// The run is entered before it waits for a slot, so a pause or a cancel
+	// finds it and a second start sees it.
+	r := &taskRun{cancel: cancel}
 	o.mu.Lock()
 	if _, already := o.running[id]; already {
 		// A human action starts a run when it finds none; two in quick
 		// succession can both start one. A second loop on the same task
-		// would deliver everything twice, so the later one stands down.
+		// would deliver everything twice, so the later one stands down,
+		// whether the first is running or still queued.
 		o.mu.Unlock()
-		cancel()
 		return nil
 	}
-	o.running[id] = cancel
+	o.running[id] = r
 	o.mu.Unlock()
 	defer func() {
-		cancel()
 		o.mu.Lock()
-		delete(o.running, id)
+		if o.running[id] == r {
+			delete(o.running, id)
+		}
 		o.mu.Unlock()
 	}()
 
+	waited, err := o.acquireSlot(runCtx, id)
+	if err != nil {
+		return err
+	}
+	defer func() { <-o.sem }()
+	started := false
+	if waited {
+		defer func() {
+			if !started {
+				o.Events.emit(context.WithoutCancel(runCtx), domain.EvtRunUnqueued, id, "",
+					"the queued run ended without starting", nil)
+			}
+		}()
+	}
+	if err := runCtx.Err(); err != nil {
+		// Paused or cancelled at the moment the slot came free.
+		return err
+	}
+
+	// The task is read again now that the run has its slot: while it was
+	// queued the human may have paused it, or it may have ended. A queued run
+	// used to start on a paused task anyway, and the authority took a paid
+	// turn whose reply was refused because the task was PAUSED.
 	t, err := o.Tasks.Get(runCtx, id)
 	if err != nil {
 		return err
 	}
 	if t.State.IsTerminal() {
+		if waited {
+			return nil
+		}
 		return fmt.Errorf("run %s: task is already %s", id, t.State)
+	}
+	if t.State == domain.TaskPaused {
+		return nil
 	}
 	if o.waitsOnlyOnTheHuman(runCtx, t) {
 		return nil
@@ -453,13 +512,21 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 		return o.completeAfterDecision(runCtx, id, t.AuthorityAgent)
 	}
 
+	started = true
+	o.Events.emit(runCtx, domain.EvtRunStarted, id, "", "run started", nil)
 	if err := o.startParticipants(runCtx, t); err != nil {
-		if _, ferr := o.Tasks.Fail(runCtx, id, domain.HumanAgentID, err.Error()); ferr != nil {
-			o.log.Error("fail task", "taskId", string(id), "error", ferr)
+		// One agent that cannot start (its CLI is not installed, say) is
+		// something the human can fix; it used to send the task to FAILED,
+		// which nothing could undo.
+		reason := fmt.Sprintf("could not start the task's agents (%v); fix that, then resume", err)
+		o.Events.emit(runCtx, domain.EvtLimitReached, id, "", reason, nil)
+		if _, perr := o.Tasks.Pause(runCtx, id, domain.HumanAgentID, reason); perr != nil {
+			o.log.Error("pause task", "taskId", string(id), "error", perr)
 		}
 		return err
 	}
 	defer o.stopParticipants(context.WithoutCancel(runCtx), t)
+	defer o.forgetRun(id)
 
 	o.openInbox(id)
 	defer o.closeInbox(id)
@@ -531,6 +598,15 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 			}
 
 		case <-idle.C:
+			// Idle means nobody is working and no retry is waiting. A turn
+			// that runs long with nothing streamed -- a build, a test run --
+			// is bounded by the agent's response timeout, whose failure has
+			// its own policy; the idle timer used to pause such a task
+			// mid-turn as "no agent activity".
+			if cur, err := o.Tasks.Get(runCtx, id); err == nil && o.busy(id, cur) {
+				resetIdle()
+				continue
+			}
 			// An agent hung or produced nothing usable. Pause and ask for a
 			// human rather than letting the task disappear -- and if what is
 			// missing is an answer to the human's own question, say that.
@@ -580,35 +656,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		return o.recordUsage(ctx, id, out)
 	}
 	if out.Err != nil {
-		o.Agents.ReportOutboundFor(id, out.AgentID, out)
-		o.Events.emit(ctx, domain.EvtAgentFailed, id, out.AgentID,
-			fmt.Sprintf("agent %s failed: %v", out.AgentID, out.Err),
-			map[string]string{"state": string(domain.AgentStateError)})
-
-		// An account that cannot run the model (credits, plan, login, a
-		// limit) is not a misbehaving agent: asking it to reply again only
-		// fails again.
-		if kind := domain.ClassifyAgentFailure(out.Err.Error()); kind != "" {
-			return o.cannotRun(ctx, id, out.AgentID, kind, out.Err)
-		}
-
-		// A malformed reply is not a dead agent. Real CLIs answer in prose,
-		// wrap a header in a code fence, or ramble past the format from time
-		// to time; killing the task over one unparseable turn throws away
-		// every round that came before it. Tell the agent what was wrong and
-		// ask again -- but only so often: none of the message limits see a
-		// reply that was never routed, and the idle timer is not reset by
-		// one, so malformedReply counts them and stops asking (see there).
-		if isRecoverable(out.Err) {
-			return o.malformedReply(ctx, id, out)
-		}
-
-		// TODO(phase-next): recovery policy for hard failures. Restart the
-		// runtime with backoff, re-send the last un-answered message, and only
-		// fail the task after the retry budget is exhausted.
-		_, err := o.Tasks.Fail(ctx, id, out.AgentID,
-			fmt.Sprintf("AGENT_ERROR: %s: %v", out.AgentID, out.Err))
-		return true, err
+		return o.handleFailure(ctx, id, out)
 	}
 
 	t, err := o.Tasks.Get(ctx, id)
@@ -648,6 +696,15 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 			return o.pauseIfOverTimeOrBudget(ctx, t, out.AgentID)
 		}
 		return true, err
+	}
+
+	// A readable message ends the sender's run of failed turns -- unless it
+	// is the agent reporting an ERROR itself, which is no sign it works.
+	if m.Type != domain.MsgError {
+		o.clearFailures(id, m.FromAgent)
+	}
+	if t.IsDropped(m.ToAgent) && t.HasParticipant(m.FromAgent) {
+		o.refuseForDropped(ctx, t, m)
 	}
 
 	if t, err = o.Tasks.NoteMessage(ctx, id, m, o.isProgress(ctx, t, m)); err != nil {
@@ -1185,37 +1242,6 @@ func (o *Orchestrator) proposeDecision(ctx context.Context, t *domain.Task, m *d
 	return d, nil
 }
 
-// recoverableErrors are adapter failures that mean "this one turn was not
-// usable", as opposed to "this agent is gone". They are matched on the
-// adapters' own wording, which is why both adapters phrase these consistently.
-var recoverableErrors = []string{
-	"replied without a",    // no protocol header in an otherwise fine reply
-	"unknown message type", // invented a type outside the protocol
-	"missing 'to'",         // header without a recipient
-	"missing TO",           //   "        "     "  "
-	// The adapters' current wording for the same thing, when every block of
-	// the reply lacked a recipient. Matching only the older phrasing above
-	// sent such a reply to FAILED -- terminal -- over one bad turn.
-	"had no recipient (to=)",
-	"produced no final message",
-	"not the expected JSON envelope",
-	"envelope carried no result text",
-}
-
-// isRecoverable reports whether an agent error is worth continuing past.
-func isRecoverable(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	for _, frag := range recoverableErrors {
-		if strings.Contains(msg, frag) {
-			return true
-		}
-	}
-	return false
-}
-
 // maxMalformedReplies is how many unreadable replies in a row an agent may
 // send before the orchestrator stops asking it again. A probe with every limit
 // set ran 1,799 re-prompted turns in three seconds against an agent that never
@@ -1227,12 +1253,16 @@ const maxMalformedReplies = 2
 const malformedExcerptChars = 300
 
 // malformedText is the best available account of what an agent sent: its raw
-// text when the adapter passed it on, otherwise the adapter's error.
-func malformedText(out ports.Outbound) string {
+// text when the adapter passed it on, otherwise the adapter's account of the
+// failure.
+func malformedText(out ports.Outbound, f *domain.AgentFailure) string {
+	if s := strings.TrimSpace(f.Raw); s != "" {
+		return s
+	}
 	if s := strings.TrimSpace(out.Message.Content); s != "" {
 		return s
 	}
-	return out.Err.Error()
+	return f.Detail
 }
 
 // malformedReply handles a reply that could not be read. It is counted
@@ -1241,7 +1271,7 @@ func malformedText(out ports.Outbound) string {
 // the work -- its open requests are closed and whoever asked is told -- and an
 // authority, without which nothing can be decided, pauses the task showing
 // what it last sent.
-func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out ports.Outbound, f *domain.AgentFailure) (bool, error) {
 	t, err := o.Tasks.Get(ctx, id)
 	if err != nil {
 		return true, err
@@ -1254,7 +1284,7 @@ func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out
 		return true, err
 	}
 	n := t.MalformedCount[agent]
-	what := excerpt(malformedText(out), malformedExcerptChars)
+	what := excerpt(malformedText(out, f), malformedExcerptChars)
 
 	if n >= maxMalformedReplies && agent == t.AuthorityAgent {
 		reason := fmt.Sprintf("the authority's replies could not be read: %s sent %d unreadable replies in a row; the last: %q",
@@ -1278,59 +1308,15 @@ func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out
 	return false, nil
 }
 
-// giveUpOn stops waiting for a supporting agent whose replies cannot be read.
-// Each request it owes is closed, with a note to whoever asked (the authority
-// when it was the human), and the authority is told in any case, so the work
-// is reassigned rather than waited on until the idle timeout.
+// giveUpOn stops waiting for a supporting agent whose replies cannot be read:
+// it is dropped from the task (dropAgent), so the work is reassigned rather
+// than waited on until the idle timeout, and it is sent nothing more.
 func (o *Orchestrator) giveUpOn(ctx context.Context, t *domain.Task, agent domain.AgentID, n int, what string) {
 	o.Events.emit(ctx, domain.EvtValidationRejected, t.ID, agent,
 		fmt.Sprintf("%s sent %d unreadable replies in a row; it is no longer asked to reply again", agent, n),
 		map[string]string{"kind": "MALFORMED_REPLIES", "count": fmt.Sprint(n)})
 	why := fmt.Sprintf("%s could not produce a valid reply (%d unreadable replies in a row; the last: %q)", agent, n, what)
-	toldAuthority := false
-	ledger, err := o.ledger(ctx, t.ID)
-	if err != nil {
-		o.log.Warn("give up on agent", "taskId", string(t.ID), "agentId", string(agent), "error", err)
-	}
-	for _, r := range domain.OpenRequests(ledger) {
-		q := r.Message
-		if q.ToAgent != agent {
-			continue
-		}
-		to := q.FromAgent
-		content := why + fmt.Sprintf("; the orchestrator has closed your %s to it (%q) as unanswered. "+
-			"Carry on without it.", q.Type, excerpt(q.Content, 120))
-		if !t.HasParticipant(to) || to == agent {
-			to = t.AuthorityAgent
-			content = why + fmt.Sprintf("; the human's %s to it (%q) is closed as unanswered. "+
-				"Answer the human yourself (to=human) or reassign it.", q.Type, excerpt(q.Content, 120))
-		}
-		toldAuthority = toldAuthority || to == t.AuthorityAgent
-		o.Events.emit(ctx, domain.EvtRequestAbandoned, t.ID, agent,
-			fmt.Sprintf("%s's replies could not be read: %s's %s closed as unanswered", agent, q.FromAgent, q.Type),
-			map[string]string{"request": string(q.ID)})
-		if err := o.Bus.Route(ctx, t, &domain.Message{
-			FromAgent: domain.OrchestratorID,
-			ToAgent:   to,
-			Type:      domain.MsgInformation,
-			Content:   content,
-			Metadata:  map[string]string{domain.MetaOrchestrator: "closed-notify", domain.MetaCloses: string(q.ID)},
-		}); err != nil {
-			o.log.Warn("close request to unreadable agent", "taskId", string(t.ID), "error", err)
-		}
-	}
-	if toldAuthority || n > maxMalformedReplies {
-		return
-	}
-	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.OrchestratorID,
-		ToAgent:   t.AuthorityAgent,
-		Type:      domain.MsgInformation,
-		Content:   why + ". Carry on without it, and do not send it more work unless nobody else can do it.",
-		Metadata:  map[string]string{domain.MetaOrchestrator: "unreadable"},
-	}); err != nil {
-		o.log.Warn("announce unreadable agent", "taskId", string(t.ID), "agentId", string(agent), "error", err)
-	}
+	o.dropAgent(ctx, t, agent, domain.FailureMalformed, why, "unreadable")
 }
 
 // notifyMalformed tells an agent that its last reply could not be understood,
@@ -1443,7 +1429,8 @@ func (o *Orchestrator) pauseIfOverTimeOrBudget(ctx context.Context, t *domain.Ta
 // unavailability is recorded so the team view can show it. A supporting
 // agent drops out of the task and the authority is told to carry on without
 // it; an authority that cannot run pauses the task, saying why and what to do.
-func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent domain.AgentID, kind domain.FailureKind, cause error) (bool, error) {
+func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent domain.AgentID, f *domain.AgentFailure) (bool, error) {
+	kind := f.Kind
 	t, err := o.Tasks.Get(ctx, id)
 	if err != nil {
 		return true, err
@@ -1459,7 +1446,7 @@ func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent do
 		what = "its default model"
 	}
 	summary := fmt.Sprintf("%s cannot run %s: %s", agent, what, kind.Advice())
-	detail := cause.Error()
+	detail := f.Detail
 	if r := []rune(detail); len(r) > 300 {
 		detail = string(r[:300])
 	}
@@ -1467,20 +1454,12 @@ func (o *Orchestrator) cannotRun(ctx context.Context, id domain.TaskID, agent do
 		"provider": provider, "model": model, "kind": string(kind), "error": detail,
 	})
 
-	if agent == t.AuthorityAgent || t.State.IsTerminal() {
+	if agent == t.AuthorityAgent {
 		_, err := o.Tasks.Pause(ctx, id, domain.HumanAgentID, summary)
 		return true, err
 	}
-	if err := o.Bus.Route(ctx, t, &domain.Message{
-		FromAgent: domain.OrchestratorID,
-		ToAgent:   t.AuthorityAgent,
-		Type:      domain.MsgInformation,
-		Content: fmt.Sprintf("%s cannot work on this task: its CLI could not run %s (%s). "+
-			"Carry on without it and do not send it more work; reassign anything it owed.", agent, what, kind.Advice()),
-		Metadata: map[string]string{domain.MetaOrchestrator: "unavailable"},
-	}); err != nil {
-		o.log.Warn("announce unavailable agent", "taskId", string(id), "agentId", string(agent), "error", err)
-	}
+	o.dropAgent(ctx, t, agent, kind,
+		fmt.Sprintf("%s cannot work on this task: its CLI could not run %s (%s)", agent, what, kind.Advice()), "unavailable")
 	return false, nil
 }
 
@@ -1907,6 +1886,9 @@ func (o *Orchestrator) kickoff(ctx context.Context, t *domain.Task) error {
 		return err
 	}
 	o.mu.Lock()
+	if r := o.running[t.ID]; r != nil {
+		r.live = true
+	}
 	queued := o.queued[t.ID]
 	delete(o.queued, t.ID)
 	pausedFor, resumed := o.resumed[t.ID]
@@ -1973,13 +1955,82 @@ func (o *Orchestrator) queue(id domain.TaskID, msgs ...*domain.Message) {
 	o.mu.Unlock()
 }
 
-// Running reports whether a run loop is alive for the task, so that a caller
-// that has just queued something for it knows whether to start one.
+// taskRun is one RunTask holding a task: queued for a slot, then live.
+type taskRun struct {
+	cancel context.CancelFunc
+	// live is set once the run's agents are up and it delivers messages
+	// itself. Until then what the human sends is queued for its kickoff
+	// (deliverOrQueue): routed straight away, it would reach agents that
+	// are not started.
+	live bool
+}
+
+// acquireSlot waits for one of the slots that bound how many tasks run at
+// once, and reports whether the run had to wait. A run that waits is
+// announced, so the human can see it is queued rather than stuck.
+func (o *Orchestrator) acquireSlot(ctx context.Context, id domain.TaskID) (waited bool, err error) {
+	select {
+	case o.sem <- struct{}{}:
+		return false, nil
+	default:
+	}
+	o.Events.emit(ctx, domain.EvtRunQueued, id, "",
+		fmt.Sprintf("queued: %d task(s) already running, the most allowed at once; it starts when one ends", cap(o.sem)),
+		nil)
+	select {
+	case o.sem <- struct{}{}:
+		return true, nil
+	case <-ctx.Done():
+		o.Events.emit(context.WithoutCancel(ctx), domain.EvtRunUnqueued, id, "",
+			"the queued run was withdrawn before it started", nil)
+		return true, ctx.Err()
+	}
+}
+
+// Running reports whether a run is alive or queued for the task, so that a
+// caller that has just queued something for it knows whether to start one.
 func (o *Orchestrator) Running(id domain.TaskID) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	_, ok := o.running[id]
 	return ok
+}
+
+// Queued reports whether the task's run is waiting for a slot.
+func (o *Orchestrator) Queued(id domain.TaskID) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	r, ok := o.running[id]
+	return ok && !r.live
+}
+
+// live reports whether the task's run has its agents up and is delivering.
+func (o *Orchestrator) live(id domain.TaskID) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	r, ok := o.running[id]
+	return ok && r.live
+}
+
+// deliverOrQueue routes msgs on a task whose run is live, and otherwise
+// queues them for the next run's kickoff. Deciding and queueing are one step
+// under o.mu, as is the kickoff marking its run live and taking the queue:
+// a message queued a moment before the run went live is still delivered by
+// it, never left for a run that may not come.
+func (o *Orchestrator) deliverOrQueue(ctx context.Context, t *domain.Task, msgs ...*domain.Message) error {
+	o.mu.Lock()
+	if r, ok := o.running[t.ID]; !ok || !r.live {
+		o.queued[t.ID] = append(o.queued[t.ID], msgs...)
+		o.mu.Unlock()
+		return nil
+	}
+	o.mu.Unlock()
+	for _, m := range msgs {
+		if err := o.Bus.Route(ctx, t, m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // heldDecision returns the task's decision still waiting for the human, or
@@ -2234,8 +2285,49 @@ func (o *Orchestrator) Resume(ctx context.Context, id domain.TaskID) error {
 	if _, err := o.Tasks.Resume(ctx, id, domain.HumanAgentID); err != nil {
 		return err
 	}
+	// The human resuming the task gives every agent a fresh chance: those
+	// dropped for failing are back, with no failures counted against them.
+	if len(before.Dropped) > 0 {
+		if _, err := o.Tasks.ClearDropped(ctx, id); err != nil {
+			return err
+		}
+	}
+	o.clearFailures(id, "")
 	o.mu.Lock()
 	o.resumed[id] = before.PauseReason
+	o.mu.Unlock()
+	return nil
+}
+
+// resumedAfterFailure marks, in resumed, a task the human retried after it
+// failed rather than resumed after a pause.
+const resumedAfterFailure = "\x00failed: "
+
+// Retry brings a FAILED task back, at the human's request: the same
+// participants, their sessions kept, and the authority told it was retried
+// and why it had failed. The caller starts RunTask.
+//
+// FAILED was terminal -- no resume, reopen or retry -- so a task failed by
+// one agent's timeout, by an older version of ritam, could only be abandoned
+// with all its work.
+func (o *Orchestrator) Retry(ctx context.Context, id domain.TaskID) error {
+	before, err := o.Tasks.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if before.State != domain.TaskFailed {
+		return fmt.Errorf("retry %s: the task is %s; only a failed task can be retried", id, before.State)
+	}
+	if err := o.checkTeam(before); err != nil {
+		return err
+	}
+	o.Events.emit(ctx, domain.EvtHumanOverride, id, domain.HumanAgentID, "RETRY", nil)
+	if _, err := o.Tasks.Retry(ctx, id, domain.HumanAgentID); err != nil {
+		return err
+	}
+	o.clearFailures(id, "")
+	o.mu.Lock()
+	o.resumed[id] = resumedAfterFailure + before.FailureReason
 	o.mu.Unlock()
 	return nil
 }
@@ -2291,8 +2383,10 @@ func (o *Orchestrator) resumeAfterPause(ctx context.Context, t *domain.Task, pau
 		owe[q.ToAgent] = append(owe[q.ToAgent],
 			fmt.Sprintf("%s's %s: %q", q.FromAgent, q.Type, excerpt(q.Content, threadExcerptChars)))
 	}
-	if len(order) == 0 {
-		order = []domain.AgentID{t.AuthorityAgent}
+	failedFor, retried := strings.CutPrefix(pausedFor, resumedAfterFailure)
+	if len(order) == 0 || (retried && !slices.Contains(order, t.AuthorityAgent)) {
+		// The authority is always told of a retry: it decides what next.
+		order = append(order, t.AuthorityAgent)
 	}
 
 	why := "The task was paused and the human has resumed it"
@@ -2300,9 +2394,13 @@ func (o *Orchestrator) resumeAfterPause(ctx context.Context, t *domain.Task, pau
 		why = fmt.Sprintf("The task was paused (%s) and the human has resumed it", pausedFor)
 	}
 	summary := "resumed: agents asked to carry on"
-	if pausedFor == domain.PauseReasonInterrupted {
+	switch {
+	case pausedFor == domain.PauseReasonInterrupted:
 		why = "The orchestrator was restarted while this task was running"
 		summary = "resumed after an interruption: lost turns are being re-requested"
+	case retried:
+		why = fmt.Sprintf("The task had failed (%s) and the human has retried it", excerpt(failedFor, 300))
+		summary = "retried after failing: agents asked to carry on"
 	}
 	o.Events.emit(ctx, domain.EvtHumanOverride, t.ID, domain.HumanAgentID, summary, nil)
 	for _, agent := range order {
@@ -2351,10 +2449,8 @@ func (o *Orchestrator) SetAuthority(ctx context.Context, id domain.TaskID, to do
 	o.Events.emit(ctx, domain.EvtHumanOverride, id, domain.HumanAgentID,
 		fmt.Sprintf("AUTHORITY %s -> %s", from, to), map[string]string{"from": string(from), "to": string(to)})
 
-	o.mu.Lock()
-	_, running := o.running[id]
-	o.mu.Unlock()
-	if !running {
+	if !o.live(id) {
+		// A queued run's agents learn it from their next turn's brief.
 		return nil
 	}
 	for _, p := range t.Participants {
@@ -2535,11 +2631,7 @@ func (o *Orchestrator) Reject(ctx context.Context, id domain.TaskID, note string
 		RequiresResponse: true,
 		Metadata:         map[string]string{"decisionId": string(d.ID)},
 	}
-	if !running {
-		o.queue(id, m)
-		return nil
-	}
-	return o.Bus.Route(ctx, t, m)
+	return o.deliverOrQueue(ctx, t, m)
 }
 
 // SendInstruction lets the human inject a message into a task.
@@ -2552,6 +2644,11 @@ func (o *Orchestrator) SendInstruction(ctx context.Context, id domain.TaskID, to
 	t, err := o.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	if t.IsDropped(to) {
+		// It would be recorded and never delivered.
+		return fmt.Errorf("%s was dropped from %s (%s): pause and resume the task to give it a fresh chance",
+			to, id, excerpt(t.Dropped[to], 160))
 	}
 	m := &domain.Message{
 		ID:               domain.NewMessageID(),
@@ -2591,22 +2688,14 @@ func (o *Orchestrator) SendInstruction(ctx context.Context, id domain.TaskID, to
 			msgs = append(msgs, decisionPendingNote(t, d, m))
 		}
 	}
-	if !running {
-		o.queue(id, msgs...)
-		return nil
-	}
-	for _, msg := range msgs {
-		if err := o.Bus.Route(ctx, t, msg); err != nil {
-			return err
-		}
-	}
-	return nil
+	return o.deliverOrQueue(ctx, t, msgs...)
 }
 
 func (o *Orchestrator) cancelRun(id domain.TaskID) {
 	o.mu.Lock()
-	if cancel, ok := o.running[id]; ok {
-		cancel()
+	// A queued run is cancelled the same way: it never starts.
+	if r, ok := o.running[id]; ok {
+		r.cancel()
 	}
 	o.mu.Unlock()
 }

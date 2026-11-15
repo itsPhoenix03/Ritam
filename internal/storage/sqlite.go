@@ -110,15 +110,7 @@ func (s *SQLite) Changes(ctx context.Context) (int64, error) {
 
 // Storage returns the repositories backed by this database.
 func (s *SQLite) Storage() *ports.Storage {
-	return &ports.Storage{
-		Tasks:         &sqlTasks{s.db},
-		Messages:      &sqlMessages{s.db},
-		Events:        &sqlEvents{s.db},
-		Decisions:     &sqlDecisions{s.db},
-		Disagreements: &sqlDisagreements{s.db},
-		Knowledge:     &sqlKnowledge{s.db},
-		Artifacts:     &sqlArtifacts{s.db},
-	}
+	return storageOn(s.db, &sqliteTransactor{db: s.db})
 }
 
 // Path is the database file.
@@ -219,6 +211,13 @@ var migrations = []string{
 	);
 	CREATE INDEX artifacts_task ON artifacts(task_id, seq);
 	`,
+
+	// 2: a revision number on each task, so an update written from a copy
+	// read before someone else's change is refused rather than undoing it.
+	// Existing tasks start at revision 1, like new ones.
+	`
+	ALTER TABLE tasks ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+	`,
 }
 
 func (s *SQLite) migrate(ctx context.Context) error {
@@ -266,7 +265,7 @@ func isUnique(err error) bool {
 }
 
 // insert runs an INSERT, mapping a duplicate id to ports.ErrAlreadyExists.
-func insert(ctx context.Context, db *sql.DB, what, id, query string, args ...any) error {
+func insert(ctx context.Context, db dbtx, what, id, query string, args ...any) error {
 	if _, err := db.ExecContext(ctx, query, args...); err != nil {
 		if isUnique(err) {
 			return fmt.Errorf("%w: %s %s", ports.ErrAlreadyExists, what, id)
@@ -277,7 +276,7 @@ func insert(ctx context.Context, db *sql.DB, what, id, query string, args ...any
 }
 
 // update runs an UPDATE, mapping "no such row" to ports.ErrNotFound.
-func update(ctx context.Context, db *sql.DB, what, id, query string, args ...any) error {
+func update(ctx context.Context, db dbtx, what, id, query string, args ...any) error {
 	res, err := db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("sqlite: update %s %s: %w", what, id, err)
@@ -289,7 +288,7 @@ func update(ctx context.Context, db *sql.DB, what, id, query string, args ...any
 }
 
 // getJSON loads one JSON document.
-func getJSON[T any](ctx context.Context, db *sql.DB, what, id, query string, args ...any) (*T, error) {
+func getJSON[T any](ctx context.Context, db dbtx, what, id, query string, args ...any) (*T, error) {
 	var data string
 	if err := db.QueryRowContext(ctx, query, args...).Scan(&data); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -305,7 +304,7 @@ func getJSON[T any](ctx context.Context, db *sql.DB, what, id, query string, arg
 }
 
 // listJSON loads every JSON document a query returns, in its order.
-func listJSON[T any](ctx context.Context, db *sql.DB, what, query string, args ...any) ([]*T, error) {
+func listJSON[T any](ctx context.Context, db dbtx, what, query string, args ...any) ([]*T, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list %s: %w", what, err)

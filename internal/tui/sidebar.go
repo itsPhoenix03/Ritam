@@ -45,8 +45,11 @@ func (m Model) taskLines(inner int) []line {
 		if t.ID == m.currentTaskID {
 			mark = gl().caret
 		}
-		row := line{txt(mark), st(taskMarker(t.State), sty), txt(" "), st(shortTaskID(t.ID), dimStyle),
-			txt(" "), st(t.Title, bodyStyle)}
+		row := line{txt(mark), st(taskMarker(t.State), sty), txt(" "), st(shortTaskID(t.ID), dimStyle), txt(" ")}
+		if m.queuedRuns[t.ID] {
+			row = append(row, st("queued ", warnStyle))
+		}
+		row = append(row, st(t.Title, bodyStyle))
 		if t.ID == m.currentTaskID {
 			out = append(out, line{st(fitEllipsis(row.plain(), inner), reverseStyle)})
 			continue
@@ -54,6 +57,19 @@ func (m Model) taskLines(inner int) []line {
 		out = append(out, row)
 	}
 	return out
+}
+
+// markQueued records whether task id's run is waiting for a slot.
+func (m Model) markQueued(id domain.TaskID, queued bool) Model {
+	if !queued {
+		delete(m.queuedRuns, id)
+		return m
+	}
+	if m.queuedRuns == nil {
+		m.queuedRuns = map[domain.TaskID]bool{}
+	}
+	m.queuedRuns[id] = true
+	return m
 }
 
 // shortTaskID drops the "TASK-" prefix in the narrow task column; the

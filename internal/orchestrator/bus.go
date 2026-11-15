@@ -141,6 +141,14 @@ func (b *MessageBus) deliver(ctx context.Context, t *domain.Task, m *domain.Mess
 		if to == domain.HumanAgentID {
 			continue
 		}
+		if t.IsDropped(to) {
+			// Taken off the task (see domain.Task.Dropped): the message is in
+			// the history, but the agent is not handed it.
+			b.events.emit(ctx, domain.EvtAgentMessageReceived, t.ID, to,
+				fmt.Sprintf("%s was dropped from the task: %s from %s recorded, not delivered", to, m.Type, m.FromAgent),
+				map[string]string{"messageId": string(m.ID), "invoked": "false"})
+			continue
+		}
 		if recordOnly {
 			// The message is already in history; only the invocation is
 			// skipped. The event is kept so the timeline still shows who was

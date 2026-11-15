@@ -43,8 +43,14 @@ type AgentConfig struct {
 	WorkingDir string `yaml:"workingDir"`
 	// StartupTimeout bounds how long the runtime may take to become ready.
 	StartupTimeout time.Duration `yaml:"startupTimeout"`
-	// ResponseTimeout bounds how long a single request to the agent may take.
+	// ResponseTimeout bounds how long a single request to a read-only agent
+	// may take.
 	ResponseTimeout time.Duration `yaml:"responseTimeout"`
+	// WriteResponseTimeout bounds a single request to an agent that may
+	// write files or run commands (allowWrites): a build or a test run takes
+	// longer than reading does, and one that outran the 5-minute limit used
+	// to fail the whole task. Zero means the provider's, or 20 minutes.
+	WriteResponseTimeout time.Duration `yaml:"writeResponseTimeout"`
 	// Model optionally overrides the model the CLI would pick itself.
 	Model string `yaml:"model"`
 	// AllowWrites lets the agent edit files and run commands. The field is
@@ -113,8 +119,13 @@ type OrchestratorConfig struct {
 	// approves or rejects the authority agent's FINAL_DECISION.
 	RequireHumanApproval bool `yaml:"requireHumanApproval"`
 	// IdleTimeout pauses a task when no agent speaks for this long, so a hung
-	// agent cannot leave a task silently stuck.
+	// agent cannot leave a task silently stuck. It does not run while an
+	// agent is working: a working agent is bounded by its response timeout.
 	IdleTimeout time.Duration `yaml:"idleTimeout"`
+	// MaxRateLimitWait is the longest usage-limit reset waited out before
+	// an agent's turn is tried again; a limit that resets later pauses the
+	// task, saying when. Zero means 2 minutes.
+	MaxRateLimitWait time.Duration `yaml:"maxRateLimitWait"`
 }
 
 // KnowledgeConfig is kept so existing config files still load: settings are
@@ -228,9 +239,13 @@ type TUIConfig struct {
 // every agent of a provider is started the way its entry here says.
 type ProviderConfig struct {
 	// Executable is the CLI command: "claude" or "codex" when unset.
-	Executable      string        `yaml:"executable"`
-	StartupTimeout  time.Duration `yaml:"startupTimeout"`
-	ResponseTimeout time.Duration `yaml:"responseTimeout"`
+	Executable     string        `yaml:"executable"`
+	StartupTimeout time.Duration `yaml:"startupTimeout"`
+	// ResponseTimeout bounds one turn of a read-only agent (5 minutes by
+	// default); WriteResponseTimeout one of an agent that may write files
+	// or run commands (20 minutes by default).
+	ResponseTimeout      time.Duration `yaml:"responseTimeout"`
+	WriteResponseTimeout time.Duration `yaml:"writeResponseTimeout"`
 	// AllowWrites lets this provider's agents edit files, only ever inside
 	// the workspace. Unset means yes; false makes them read-only.
 	AllowWrites *bool `yaml:"allowWrites"`
@@ -282,8 +297,10 @@ type SessionsConfig struct {
 func Default() *Config {
 	return &Config{
 		Providers: map[string]ProviderConfig{
-			"claude-code": {Executable: "claude", StartupTimeout: 30 * time.Second, ResponseTimeout: 5 * time.Minute},
-			"codex":       {Executable: "codex", StartupTimeout: 30 * time.Second, ResponseTimeout: 5 * time.Minute},
+			"claude-code": {Executable: "claude", StartupTimeout: 30 * time.Second,
+				ResponseTimeout: DefaultResponseTimeout, WriteResponseTimeout: DefaultWriteResponseTimeout},
+			"codex": {Executable: "codex", StartupTimeout: 30 * time.Second,
+				ResponseTimeout: DefaultResponseTimeout, WriteResponseTimeout: DefaultWriteResponseTimeout},
 		},
 		Orchestrator: OrchestratorConfig{
 			MaxConcurrentTasks:    1,
@@ -297,6 +314,7 @@ func Default() *Config {
 			MaxDailyCostUSD:       50,
 			MaxDailyTokens:        25_000_000,
 			IdleTimeout:           60 * time.Second,
+			MaxRateLimitWait:      2 * time.Minute,
 		},
 		Knowledge: KnowledgeConfig{Backend: "memory"},
 		Proxy:     ProxyConfig{Enabled: false, Host: "127.0.0.1", Port: 8787},
@@ -381,6 +399,9 @@ func (c *Config) overlay(path string) error {
 		if set.ResponseTimeout != 0 {
 			merged.ResponseTimeout = set.ResponseTimeout
 		}
+		if set.WriteResponseTimeout != 0 {
+			merged.WriteResponseTimeout = set.WriteResponseTimeout
+		}
 		if set.AllowWrites != nil {
 			merged.AllowWrites = set.AllowWrites
 		}
@@ -390,6 +411,28 @@ func (c *Config) overlay(path string) error {
 		c.Providers[name] = merged
 	}
 	return nil
+}
+
+// The turn limits used when nothing sets one: 5 minutes for an agent that
+// only reads, 20 for one that may write files or run commands.
+const (
+	DefaultResponseTimeout      = 5 * time.Minute
+	DefaultWriteResponseTimeout = 20 * time.Minute
+)
+
+// TurnTimeout is how long one turn of the agent may take: its write timeout
+// when it may write files or run commands, its read-only one otherwise.
+func (a AgentConfig) TurnTimeout() time.Duration {
+	if a.AllowWrites {
+		if a.WriteResponseTimeout > 0 {
+			return a.WriteResponseTimeout
+		}
+		return DefaultWriteResponseTimeout
+	}
+	if a.ResponseTimeout > 0 {
+		return a.ResponseTimeout
+	}
+	return DefaultResponseTimeout
 }
 
 // RealAgentIdleFloor is the shortest idle timeout used with the real CLIs.
@@ -462,6 +505,7 @@ func (c *Config) Validate() error {
 	nonNegInt("orchestrator.maxTotalMessages", int64(o.MaxTotalMessages))
 	nonNegDuration("orchestrator.maxTaskDuration", o.MaxTaskDuration)
 	nonNegDuration("orchestrator.idleTimeout", o.IdleTimeout)
+	nonNegDuration("orchestrator.maxRateLimitWait", o.MaxRateLimitWait)
 	nonNegCost("orchestrator.maxTaskCostUSD", o.MaxTaskCostUSD)
 	nonNegInt("orchestrator.maxTaskTokens", o.MaxTaskTokens)
 	nonNegCost("orchestrator.maxDailyCostUSD", o.MaxDailyCostUSD)
@@ -484,6 +528,7 @@ func (c *Config) Validate() error {
 		p := c.Providers[name]
 		nonNegDuration("providers."+name+".startupTimeout", p.StartupTimeout)
 		nonNegDuration("providers."+name+".responseTimeout", p.ResponseTimeout)
+		nonNegDuration("providers."+name+".writeResponseTimeout", p.WriteResponseTimeout)
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
 		a := c.Agents[name]
@@ -499,6 +544,7 @@ func (c *Config) Validate() error {
 		}
 		nonNegDuration("agents."+name+".startupTimeout", a.StartupTimeout)
 		nonNegDuration("agents."+name+".responseTimeout", a.ResponseTimeout)
+		nonNegDuration("agents."+name+".writeResponseTimeout", a.WriteResponseTimeout)
 	}
 
 	b := c.Backups

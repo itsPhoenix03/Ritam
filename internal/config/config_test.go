@@ -338,3 +338,25 @@ func TestRealAgentsGetTheIdleFloorHoweverTheyAreChosen(t *testing.T) {
 		t.Errorf("a longer timeout that was set is kept: %v", longer.Orchestrator.IdleTimeout)
 	}
 }
+
+// TestATurnThatMayBuildGetsLongerThanOneThatOnlyReads: a build or test run
+// outlasted the single 5-minute turn limit, and the timeout failed the task.
+// Agents that may write or run commands now get 20 minutes by default;
+// read-only ones keep 5.
+func TestATurnThatMayBuildGetsLongerThanOneThatOnlyReads(t *testing.T) {
+	cfg := Default()
+	p := cfg.Providers["claude-code"]
+	if p.ResponseTimeout != 5*time.Minute || p.WriteResponseTimeout != 20*time.Minute {
+		t.Fatalf("defaults: read %v, write %v", p.ResponseTimeout, p.WriteResponseTimeout)
+	}
+	reader := AgentConfig{ResponseTimeout: p.ResponseTimeout, WriteResponseTimeout: p.WriteResponseTimeout}
+	writer := reader
+	writer.AllowWrites = true
+	if reader.TurnTimeout() != 5*time.Minute || writer.TurnTimeout() != 20*time.Minute {
+		t.Errorf("read-only %v, writing %v", reader.TurnTimeout(), writer.TurnTimeout())
+	}
+	if (AgentConfig{AllowWrites: true}).TurnTimeout() != DefaultWriteResponseTimeout ||
+		(AgentConfig{}).TurnTimeout() != DefaultResponseTimeout {
+		t.Error("an unset limit falls back to the defaults")
+	}
+}
