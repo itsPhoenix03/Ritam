@@ -523,8 +523,14 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 				_, err := o.Tasks.Pause(runCtx, id, domain.HumanAgentID, "all agents stopped")
 				return err
 			}
-			resetIdle()
-			lastActivity = time.Now()
+			// Only a message is activity. An error -- and the usage report
+			// that comes with every turn, failed or not -- used to reset the
+			// idle timer too, so an agent failing every turn kept the task
+			// "active" for ever.
+			if out.Err == nil && !out.IsUsageOnly() {
+				resetIdle()
+				lastActivity = time.Now()
+			}
 
 			done, err := o.handleOutbound(runCtx, id, out)
 			if err != nil {
@@ -563,13 +569,11 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		// wrap a header in a code fence, or ramble past the format from time
 		// to time; killing the task over one unparseable turn throws away
 		// every round that came before it. Tell the agent what was wrong and
-		// let the authority carry on — the idle timeout and the round limits
-		// still bound the task if it never recovers.
+		// ask again -- but only so often: none of the message limits see a
+		// reply that was never routed, and the idle timer is not reset by
+		// one, so malformedReply counts them and stops asking (see there).
 		if isRecoverable(out.Err) {
-			if t, err := o.Tasks.Get(ctx, id); err == nil {
-				o.notifyMalformed(ctx, t, out.AgentID, out.Err)
-			}
-			return false, nil
+			return o.malformedReply(ctx, id, out)
 		}
 
 		// TODO(phase-next): recovery policy for hard failures. Restart the
@@ -595,7 +599,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		o.Events.emit(ctx, domain.EvtValidationRejected, id, out.AgentID,
 			fmt.Sprintf("%s: agent %s claimed to be %s", ViolationIdentity, out.AgentID, m.FromAgent),
 			map[string]string{"kind": string(ViolationIdentity)})
-		return false, nil
+		return o.pauseIfOverTimeOrBudget(ctx, t, out.AgentID)
 	}
 
 	if err := o.Bus.Route(ctx, t, m); err != nil {
@@ -606,7 +610,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 			o.log.Warn("rejected agent action", "taskId", string(id),
 				"agentId", string(out.AgentID), "kind", string(v.Kind), "reason", v.Reason)
 			o.notifyRejection(ctx, t, m, v)
-			return false, nil
+			return o.pauseIfOverTimeOrBudget(ctx, t, out.AgentID)
 		}
 		return true, err
 	}
@@ -1161,17 +1165,143 @@ func isRecoverable(err error) bool {
 	return false
 }
 
+// maxMalformedReplies is how many unreadable replies in a row an agent may
+// send before the orchestrator stops asking it again. A probe with every limit
+// set ran 1,799 re-prompted turns in three seconds against an agent that never
+// produced a header; with this, a broken agent costs at most one extra turn.
+const maxMalformedReplies = 2
+
+// malformedExcerptChars bounds how much of an unreadable reply (or of the
+// adapter's error about it) is quoted back to the agent and to the human.
+const malformedExcerptChars = 300
+
+// malformedText is the best available account of what an agent sent: its raw
+// text when the adapter passed it on, otherwise the adapter's error.
+func malformedText(out ports.Outbound) string {
+	if s := strings.TrimSpace(out.Message.Content); s != "" {
+		return s
+	}
+	return out.Err.Error()
+}
+
+// malformedReply handles a reply that could not be read. It is counted
+// against the agent and the stall, and the agent is asked again until it has
+// sent maxMalformedReplies in a row. Then a supporting agent is dropped from
+// the work -- its open requests are closed and whoever asked is told -- and an
+// authority, without which nothing can be decided, pauses the task showing
+// what it last sent.
+func (o *Orchestrator) malformedReply(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+	t, err := o.Tasks.Get(ctx, id)
+	if err != nil {
+		return true, err
+	}
+	agent := out.AgentID
+	if !t.HasParticipant(agent) || t.State.IsTerminal() || t.State == domain.TaskPaused {
+		return false, nil
+	}
+	if t, err = o.Tasks.NoteMalformed(ctx, id, agent); err != nil {
+		return true, err
+	}
+	n := t.MalformedCount[agent]
+	what := excerpt(malformedText(out), malformedExcerptChars)
+
+	if n >= maxMalformedReplies && agent == t.AuthorityAgent {
+		reason := fmt.Sprintf("the authority's replies could not be read: %s sent %d unreadable replies in a row; the last: %q",
+			agent, n, what)
+		o.Events.emit(ctx, domain.EvtLimitReached, id, agent, reason,
+			map[string]string{"kind": "MALFORMED_REPLIES", "count": fmt.Sprint(n)})
+		_, err := o.Tasks.Pause(ctx, id, domain.HumanAgentID, reason)
+		return true, err
+	}
+	if reason, over := LimitExceeded(t); over {
+		o.Events.emit(ctx, domain.EvtLimitReached, id, agent, reason,
+			map[string]string{"stalled": fmt.Sprint(t.StallCount)})
+		_, err := o.Tasks.Pause(ctx, id, domain.HumanAgentID, reason)
+		return true, err
+	}
+	if n >= maxMalformedReplies {
+		o.giveUpOn(ctx, t, agent, n, what)
+		return false, nil
+	}
+	o.notifyMalformed(ctx, t, agent, what)
+	return false, nil
+}
+
+// giveUpOn stops waiting for a supporting agent whose replies cannot be read.
+// Each request it owes is closed, with a note to whoever asked (the authority
+// when it was the human), and the authority is told in any case, so the work
+// is reassigned rather than waited on until the idle timeout.
+func (o *Orchestrator) giveUpOn(ctx context.Context, t *domain.Task, agent domain.AgentID, n int, what string) {
+	o.Events.emit(ctx, domain.EvtValidationRejected, t.ID, agent,
+		fmt.Sprintf("%s sent %d unreadable replies in a row; it is no longer asked to reply again", agent, n),
+		map[string]string{"kind": "MALFORMED_REPLIES", "count": fmt.Sprint(n)})
+	why := fmt.Sprintf("%s could not produce a valid reply (%d unreadable replies in a row; the last: %q)", agent, n, what)
+	toldAuthority := false
+	ledger, err := o.ledger(ctx, t.ID)
+	if err != nil {
+		o.log.Warn("give up on agent", "taskId", string(t.ID), "agentId", string(agent), "error", err)
+	}
+	for _, r := range domain.OpenRequests(ledger) {
+		q := r.Message
+		if q.ToAgent != agent {
+			continue
+		}
+		to := q.FromAgent
+		content := why + fmt.Sprintf("; the orchestrator has closed your %s to it (%q) as unanswered. "+
+			"Carry on without it.", q.Type, excerpt(q.Content, 120))
+		if !t.HasParticipant(to) || to == agent {
+			to = t.AuthorityAgent
+			content = why + fmt.Sprintf("; the human's %s to it (%q) is closed as unanswered. "+
+				"Answer the human yourself (to=human) or reassign it.", q.Type, excerpt(q.Content, 120))
+		}
+		toldAuthority = toldAuthority || to == t.AuthorityAgent
+		o.Events.emit(ctx, domain.EvtRequestAbandoned, t.ID, agent,
+			fmt.Sprintf("%s's replies could not be read: %s's %s closed as unanswered", agent, q.FromAgent, q.Type),
+			map[string]string{"request": string(q.ID)})
+		if err := o.Bus.Route(ctx, t, &domain.Message{
+			FromAgent: domain.HumanAgentID,
+			ToAgent:   to,
+			Type:      domain.MsgInformation,
+			Content:   content,
+			Metadata:  map[string]string{"orchestrator": "closed-notify", domain.MetaCloses: string(q.ID)},
+		}); err != nil {
+			o.log.Warn("close request to unreadable agent", "taskId", string(t.ID), "error", err)
+		}
+	}
+	if toldAuthority || n > maxMalformedReplies {
+		return
+	}
+	if err := o.Bus.Route(ctx, t, &domain.Message{
+		FromAgent: domain.HumanAgentID,
+		ToAgent:   t.AuthorityAgent,
+		Type:      domain.MsgInformation,
+		Content:   why + ". Carry on without it, and do not send it more work unless nobody else can do it.",
+		Metadata:  map[string]string{"orchestrator": "unreadable"},
+	}); err != nil {
+		o.log.Warn("announce unreadable agent", "taskId", string(t.ID), "agentId", string(agent), "error", err)
+	}
+}
+
 // notifyMalformed tells an agent that its last reply could not be understood,
 // so it can try again in the protocol instead of the task stalling on silence.
-func (o *Orchestrator) notifyMalformed(ctx context.Context, t *domain.Task, agent domain.AgentID, cause error) {
+// It shows the exact header to write, with this task's real ids: "as
+// specified in your brief" alone did not get a model that had drifted out of
+// the format back into it.
+func (o *Orchestrator) notifyMalformed(ctx context.Context, t *domain.Task, agent domain.AgentID, what string) {
 	if t == nil || !t.HasParticipant(agent) || t.State.IsTerminal() || t.State == domain.TaskPaused {
 		return
 	}
+	next := "If your next reply cannot be read either, your open requests are closed and the authority " +
+		"carries on without you."
+	if agent == t.AuthorityAgent {
+		next = "If your next reply cannot be read either, the task is paused for the human."
+	}
 	content := fmt.Sprintf(
-		"Your last reply could not be understood by the orchestrator: %v\n\n"+
-			"It was discarded. Reply again, beginning with the protocol header line exactly as "+
-			"specified in your brief, with no prose, code fence or blank line before it.",
-		cause)
+		"Your last reply could not be read by the orchestrator and was discarded. What it got: %q\n\n"+
+			"Reply again. The first line of your reply must be the header, with no prose, code fence or "+
+			"blank line before it, for example:\n\n  %s\n\n"+
+			"Valid recipients (to=) on this task: %s. %s",
+		what, o.headerExample(t, agent), recipientList(t, agent), next)
 
 	if err := o.Bus.Route(ctx, t, &domain.Message{
 		FromAgent: domain.HumanAgentID,
@@ -1183,6 +1313,79 @@ func (o *Orchestrator) notifyMalformed(ctx context.Context, t *domain.Task, agen
 		o.log.Warn("notify malformed reply", "taskId", string(t.ID),
 			"agentId", string(agent), "error", err)
 	}
+}
+
+// headerExample is the header line agent should have written for the reply
+// most likely expected of it: an answer to the oldest request it owes, or
+// else (for the authority) a delegation, or (for anyone else) an answer to
+// the authority. The marker and key spelling follow each adapter's brief
+// (renderPrompt in internal/agents/claude and internal/agents/codex); the
+// orchestrator does not import the adapters, so it goes by the agent's kind,
+// and an agent of any other kind is told to use the marker from its brief.
+func (o *Orchestrator) headerExample(t *domain.Task, agent domain.AgentID) string {
+	typ, to := domain.MsgAnswer, t.AuthorityAgent
+	if agent == t.AuthorityAgent {
+		typ, to = domain.MsgDelegate, domain.BroadcastAgentID
+		for _, p := range t.Participants {
+			if p != agent {
+				to = p
+				break
+			}
+		}
+	}
+	if ledger, err := o.ledger(context.Background(), t.ID); err == nil {
+		for _, r := range domain.OpenRequests(ledger) {
+			if r.Message.ToAgent == agent {
+				typ, to = domain.MsgAnswer, r.Message.FromAgent
+				break
+			}
+		}
+	}
+	var kind domain.AgentKind
+	for _, a := range o.Agents.Statuses() {
+		if a.ID == agent {
+			kind = a.Kind
+		}
+	}
+	switch kind {
+	case domain.AgentKindClaudeCode:
+		return fmt.Sprintf("@@ORCH type=%s to=%s", typ, to)
+	case domain.AgentKindCodex:
+		return fmt.Sprintf("##CODEX TYPE=%s TO=%s", typ, to)
+	}
+	return fmt.Sprintf("<the header marker from your brief> type=%s to=%s", typ, to)
+}
+
+// recipientList names everyone agent may address on t.
+func recipientList(t *domain.Task, agent domain.AgentID) string {
+	var ids []string
+	for _, p := range t.Participants {
+		switch {
+		case p == agent:
+		case p == t.AuthorityAgent:
+			ids = append(ids, string(p)+" (the authority)")
+		default:
+			ids = append(ids, string(p))
+		}
+	}
+	ids = append(ids, string(domain.HumanAgentID), string(domain.BroadcastAgentID)+" (everyone)")
+	return strings.Join(ids, ", ")
+}
+
+// pauseIfOverTimeOrBudget pauses t when it has run past its duration or
+// spending limit. It is called on the outbounds that are never routed -- a
+// refused action, a forged sender -- which the message limits do not see.
+func (o *Orchestrator) pauseIfOverTimeOrBudget(ctx context.Context, t *domain.Task, agent domain.AgentID) (bool, error) {
+	if t.State.IsTerminal() || t.State == domain.TaskPaused {
+		return false, nil
+	}
+	reason, over := timeOrBudgetExceeded(t)
+	if !over {
+		return false, nil
+	}
+	o.Events.emit(ctx, domain.EvtLimitReached, t.ID, agent, reason, nil)
+	_, err := o.Tasks.Pause(ctx, t.ID, domain.HumanAgentID, reason)
+	return true, err
 }
 
 // cannotRun handles an agent whose CLI could not run its model. The model's

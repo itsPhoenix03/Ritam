@@ -265,6 +265,8 @@ func (tm *TaskManager) NoteMessage(ctx context.Context, id domain.TaskID, m *dom
 		return nil, err
 	}
 	t.MessageCount++
+	// A readable message ends the sender's run of unreadable ones.
+	delete(t.MalformedCount, m.FromAgent)
 	if m.ToAgent != domain.HumanAgentID {
 		t.AgentMessages++
 		if m.FromAgent == t.AuthorityAgent {
@@ -285,6 +287,20 @@ func (tm *TaskManager) NoteMessage(ctx context.Context, id domain.TaskID, m *dom
 		return nil, err
 	}
 	return t.Clone(), nil
+}
+
+// NoteMalformed records a reply from agent that could not be read. It extends
+// the agent's run of unreadable replies and, since nothing moved, the stall:
+// without this an agent that never produced a readable reply was re-prompted
+// for ever with every counter still at zero.
+func (tm *TaskManager) NoteMalformed(ctx context.Context, id domain.TaskID, agent domain.AgentID) (*domain.Task, error) {
+	return tm.update(ctx, id, func(t *domain.Task) {
+		if t.MalformedCount == nil {
+			t.MalformedCount = map[domain.AgentID]int{}
+		}
+		t.MalformedCount[agent]++
+		t.StallCount++
+	})
 }
 
 // NoteHumanInput starts a fresh allowance: the human has spoken, so whatever
@@ -374,6 +390,29 @@ func LimitExceeded(t *domain.Task) (string, bool) {
 	}
 	if l.MaxMessages > 0 && t.AgentMessages >= l.MaxMessages {
 		return domain.PauseReasonMaxMessages, true
+	}
+	start := t.SegmentStart
+	if start.IsZero() {
+		start = t.CreatedAt
+	}
+	if l.MaxDuration > 0 && time.Since(start) >= l.MaxDuration {
+		return domain.PauseReasonMaxDuration, true
+	}
+	return "", false
+}
+
+// timeOrBudgetExceeded reports whether the task has run past its duration or
+// spending limit. Unlike the message limits, these do not depend on anything
+// being routed, so they are checked on every outbound: a task whose agents
+// only ever sent unreadable or refused replies used to run past MaxDuration
+// unchecked.
+func timeOrBudgetExceeded(t *domain.Task) (string, bool) {
+	l := t.Limits
+	if l.MaxCostUSD > 0 && t.CostUSD >= l.MaxCostUSD {
+		return fmt.Sprintf("%s ($%.2f of $%.2f)", domain.PauseReasonBudget, t.CostUSD, l.MaxCostUSD), true
+	}
+	if l.MaxTokens > 0 && t.InputTokens+t.OutputTokens >= l.MaxTokens {
+		return fmt.Sprintf("%s (%d of %d tokens)", domain.PauseReasonBudget, t.InputTokens+t.OutputTokens, l.MaxTokens), true
 	}
 	start := t.SegmentStart
 	if start.IsZero() {
