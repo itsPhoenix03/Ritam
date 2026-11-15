@@ -371,18 +371,12 @@ func TestTheClosingStateSurvivesAPauseAndARestart(t *testing.T) {
 		task := createTask(t, h, "opus", "opus", "codex")
 		ctx := context.Background()
 		done := runInBackground(h, task.ID)
-		waitFor(t, func() bool { return len(codex.deliveries()) == 1 })
-		if err := h.orch.SendInstruction(ctx, task.ID, "codex", "How is your progress?"); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.orch.SendInstruction(ctx, task.ID, "opus", "Decide now."); err != nil {
-			t.Fatal(err)
-		}
-		waitFor(t, func() bool { return h.hasEvent(domain.EvtDecisionAccepted) })
+		decideWhileCodexOwesTheHuman(t, h, task, codex)
 		if err := h.orch.Pause(ctx, task.ID, ""); err != nil {
 			t.Fatal(err)
 		}
 		<-done
+		asked := len(codex.deliveries())
 
 		if restart {
 			h = restarted(h)
@@ -391,7 +385,7 @@ func TestTheClosingStateSurvivesAPauseAndARestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		done = runInBackground(h, task.ID)
-		waitFor(t, func() bool { return len(codex.deliveries()) >= 2 })
+		waitFor(t, func() bool { return len(codex.deliveries()) > asked }) // asked again for its answer
 		codex.out <- ports.Outbound{AgentID: "codex", Message: domain.Message{
 			ToAgent: domain.HumanAgentID, Type: domain.MsgAnswer, Content: "Rev 7 is posted."}}
 		codex.finish()
@@ -426,10 +420,7 @@ func TestApprovingAClosingTaskCompletesIt(t *testing.T) {
 	task := createTask(t, h, "opus", "opus", "codex")
 	ctx := context.Background()
 	done := runInBackground(h, task.ID)
-	waitFor(t, func() bool { return len(codex.deliveries()) == 1 })
-	_ = h.orch.SendInstruction(ctx, task.ID, "codex", "How is your progress?")
-	_ = h.orch.SendInstruction(ctx, task.ID, "opus", "Decide now.")
-	waitFor(t, func() bool { return h.hasEvent(domain.EvtDecisionAccepted) })
+	decideWhileCodexOwesTheHuman(t, h, task, codex)
 
 	if err := h.orch.Approve(ctx, task.ID, "good enough"); err != nil {
 		t.Fatal(err)

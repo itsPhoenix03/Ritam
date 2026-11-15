@@ -99,6 +99,31 @@ func TestAPartlyUnderstoodReplyIsDeliveredAndTheAgentTold(t *testing.T) {
 	}
 }
 
+// decideWhileCodexOwesTheHuman brings a running task of opus (deciding when
+// the human says "Decide now.") and a prompt-driven codex to an accepted
+// decision with the human's question to codex still open: codex, busy with
+// opus's DELEGATE, is asked by the human for its progress, is handed the
+// question, reports to opus instead of the human and ends its turn; then the
+// human tells opus to decide. codex ends its turn first because a decision
+// taken while another agent is mid-turn is no longer taken up at all.
+func decideWhileCodexOwesTheHuman(t *testing.T, h *harness, task *domain.Task, codex *promptAgent) {
+	t.Helper()
+	ctx := context.Background()
+	waitFor(t, func() bool { return len(codex.deliveries()) == 1 }) // codex is busy with the DELEGATE
+	if err := h.orch.SendInstruction(ctx, task.ID, "codex", "How is your progress?"); err != nil {
+		t.Fatal(err)
+	}
+	codex.finish()
+	waitFor(t, func() bool { return len(codex.deliveries()) == 2 })
+	codex.out <- ports.Outbound{AgentID: "codex", Message: domain.Message{
+		ToAgent: "opus", Type: domain.MsgStatusUpdate, Content: "Rev 7 is posted; tests are next."}}
+	codex.finish()
+	if err := h.orch.SendInstruction(ctx, task.ID, "opus", "Decide now."); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return h.hasEvent(domain.EvtDecisionAccepted) })
+}
+
 // TestADecisionDoesNotDropTheHumansOpenQuestion: in a real run the human
 // asked codex for its progress while codex was busy. The authority's final
 // decision then completed the task and the question was never answered. Now
@@ -127,23 +152,13 @@ func TestADecisionDoesNotDropTheHumansOpenQuestion(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- h.orch.RunTask(ctx, task.ID) }()
-	waitFor(t, func() bool { return len(codex.deliveries()) == 1 }) // codex is busy with the DELEGATE
-
-	if err := h.orch.SendInstruction(ctx, task.ID, "codex", "How is your progress?"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.orch.SendInstruction(ctx, task.ID, "opus", "Decide now."); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, func() bool { return h.hasEvent(domain.EvtDecisionAccepted) })
+	decideWhileCodexOwesTheHuman(t, h, task, codex)
 	time.Sleep(200 * time.Millisecond)
 	if got, _ := h.orch.Tasks.Get(ctx, task.ID); got.State == domain.TaskCompleted {
 		t.Fatal("the task completed with the human's question to codex unanswered")
 	}
 
-	// codex finishes its turn, gets the human's question, and answers it.
-	codex.finish()
-	waitFor(t, func() bool { return len(codex.deliveries()) == 2 })
+	// codex takes another turn and answers the human.
 	codex.out <- ports.Outbound{AgentID: "codex", Message: domain.Message{
 		ToAgent: domain.HumanAgentID, Type: domain.MsgAnswer, Content: "Rev 7 is posted; tests are next."}}
 	codex.finish()

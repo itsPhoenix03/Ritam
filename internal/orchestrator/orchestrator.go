@@ -161,7 +161,8 @@ func New(d Deps) *Orchestrator {
 		// A closing note that needs no action is history, not a turn: waking
 		// an agent just to tell it a reply it no longer needs is not coming
 		// would cost a CLI call for nothing.
-		return o.decisionCompletesTask(t, m) || m.Metadata[domain.MetaOrchestrator] == "closed"
+		return o.decisionCompletesTask(t, m) || m.Metadata[domain.MetaOrchestrator] == "closed" ||
+			m.Metadata[metaDecisionDeferred] != ""
 	}
 	return o
 }
@@ -685,6 +686,22 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		return o.pauseIfOverTimeOrBudget(ctx, t, out.AgentID)
 	}
 
+	// Whether a FINAL_DECISION can be taken up is settled before it is
+	// routed: one that cannot is recorded but delivered to nobody, and it
+	// changes neither the task's state nor its decisions. The mark is the
+	// orchestrator's alone; an agent's reply cannot carry it in.
+	delete(m.Metadata, metaDecisionDeferred)
+	var outstanding []string
+	if m.Type == domain.MsgFinalDecision && m.FromAgent == t.AuthorityAgent {
+		if outstanding = o.outstandingWork(ctx, t); len(outstanding) > 0 {
+			if m.Metadata == nil {
+				m.Metadata = map[string]string{}
+			}
+			m.Metadata[metaDecisionDeferred] = "true"
+		}
+	}
+	deferred := len(outstanding) > 0
+
 	if err := o.Bus.Route(ctx, t, m); err != nil {
 		var v *Violation
 		if errors.As(err, &v) {
@@ -719,7 +736,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		}
 	}
 
-	if next := StateForMessage(m.Type); next != "" && next != t.State {
+	if next := StateForMessage(m.Type); next != "" && next != t.State && !deferred {
 		if domain.CanTransition(t.State, next) {
 			if t, err = o.Tasks.Transition(ctx, id, next, m.FromAgent, string(m.Type)); err != nil {
 				return true, err
@@ -737,7 +754,12 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		o.recordDisagreement(ctx, t, m)
 	}
 
-	if m.Type == domain.MsgFinalDecision {
+	switch {
+	case deferred:
+		// Not taken up; the limits below still apply to it, so an authority
+		// sending the same decision again and again is caught as a stall.
+		o.deferDecision(ctx, t, m, outstanding)
+	case m.Type == domain.MsgFinalDecision:
 		return o.handleFinalDecision(ctx, t, m)
 	}
 
@@ -1019,6 +1041,72 @@ func (o *Orchestrator) ledger(ctx context.Context, id domain.TaskID) ([]domain.R
 		return nil, err
 	}
 	return domain.BuildLedger(history), nil
+}
+
+// metaDecisionDeferred marks, on the recorded message, a FINAL_DECISION that
+// was not taken up because work was still outstanding (outstandingWork).
+const metaDecisionDeferred = "decisionDeferred"
+
+// outstandingWork lists what a decision taken now would cut short: a
+// participant other than the authority in the middle of a turn (or about to
+// retry one), and an IMPLEMENT or REQUEST_CHANGE not yet reported on.
+//
+// A decision accepted while another agent was implementing completed the
+// task, and ending the task stopped that agent in the middle of its turn: the
+// workspace was left half-changed with the decision ACCEPTED. The authority
+// sending IMPLEMENT and FINAL_DECISION in one reply did exactly that.
+//
+// Neither can hold a task for ever. A turn is bounded by the agent's response
+// timeout, after which the failure policy retries it and then drops the
+// agent; an IMPLEMENT to an idle agent is chased by a reminder and then closed
+// as unanswered (chaseOpenRequests). A dropped agent never counts. An open
+// DELEGATE or QUESTION does not either: deciding without its answer is the
+// authority's call, recorded as a caveat (handleFinalDecision).
+func (o *Orchestrator) outstandingWork(ctx context.Context, t *domain.Task) []string {
+	var out []string
+	for _, p := range t.Participants {
+		if p == t.AuthorityAgent || t.IsDropped(p) {
+			continue
+		}
+		if ad, ok := o.Agents.AdapterFor(t.ID, p); ok && ad.Status() == domain.AgentStateWorking {
+			out = append(out, fmt.Sprintf("%s is in the middle of a turn", p))
+		} else if o.isRetrying(t.ID, p) {
+			out = append(out, fmt.Sprintf("%s's failed turn is about to be tried again", p))
+		}
+	}
+	ledger, err := o.ledger(ctx, t.ID)
+	if err != nil {
+		o.log.Warn("check outstanding work", "taskId", string(t.ID), "error", err)
+		return out
+	}
+	for _, r := range domain.OpenRequests(ledger) {
+		q := r.Message
+		if q.Type != domain.MsgImplement && q.Type != domain.MsgRequestChange {
+			continue
+		}
+		if !t.HasParticipant(q.ToAgent) || q.ToAgent == t.AuthorityAgent || t.IsDropped(q.ToAgent) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s's %s to %s (%q) has not been reported on",
+			q.FromAgent, q.Type, q.ToAgent, excerpt(q.Content, 120)))
+	}
+	return out
+}
+
+// deferDecision tells the authority its FINAL_DECISION was not taken up and
+// what it is waiting for. There is no way to withdraw the work instead: the
+// adapters cannot interrupt a turn short of killing it, which is what this
+// exists to avoid.
+func (o *Orchestrator) deferDecision(ctx context.Context, t *domain.Task, m *domain.Message, outstanding []string) {
+	what := strings.Join(outstanding, "; ")
+	o.Events.emit(ctx, domain.EvtDecisionDeferred, t.ID, m.FromAgent,
+		"decision not taken up while work is outstanding: "+what,
+		map[string]string{"messageId": string(m.ID), "count": fmt.Sprint(len(outstanding))})
+	o.notice(ctx, t, t.AuthorityAgent, "decision-deferred", fmt.Sprintf(
+		"Note from the orchestrator: your FINAL_DECISION was not taken up, because work is still outstanding: %s. "+
+			"Completing the task now would stop that work part-way and could leave files half-changed. "+
+			"Wait until it has been reported to you, then send FINAL_DECISION again; if it cannot wait, "+
+			"ask the human (to=human).", what))
 }
 
 // handleFinalDecision records the authority agent's decision and, unless the

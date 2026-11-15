@@ -105,6 +105,7 @@ type Agent struct {
 	lifetime  context.Context
 	cancelAll context.CancelFunc
 	turns     int
+	killed    int
 	received  []domain.Message
 }
 
@@ -218,6 +219,9 @@ func (a *Agent) run(ctx context.Context, t *domain.Task, m domain.Message) {
 	select {
 	case <-ctx.Done():
 		// Cancelled: nobody is waiting for the answer, so nothing is sent.
+		a.mu.Lock()
+		a.killed++
+		a.mu.Unlock()
 		a.activity.Emit(ports.ActivityStatus, "cancelled")
 		return
 	case <-time.After(wait):
@@ -306,6 +310,14 @@ func (a *Agent) Turns() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.turns
+}
+
+// Killed is how many turns were ended before they finished: by Stop, or by
+// the delivery's context being cancelled.
+func (a *Agent) Killed() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.killed
 }
 
 func (a *Agent) setState(s domain.AgentState) {
