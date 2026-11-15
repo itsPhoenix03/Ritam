@@ -168,7 +168,23 @@ func (s *Service) Approve(ctx context.Context, id domain.TaskID, note string) er
 // Reject refuses the pending final decision and returns the task to
 // deliberation.
 func (s *Service) Reject(ctx context.Context, id domain.TaskID, note string) error {
-	return s.orch.Reject(ctx, id, note)
+	if err := s.orch.Reject(ctx, id, note); err != nil {
+		return err
+	}
+	// With no run alive the REJECT waits for one; start it off the
+	// caller's goroutine, as Resume does. Without this a rejected task sat
+	// in DELIBERATING with nothing driving it.
+	if s.orch.Running(id) {
+		return nil
+	}
+	go func() {
+		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
+			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
+				Type: domain.EvtTaskFailed, TaskID: id, Summary: "reject failed: " + err.Error(),
+			})
+		}
+	}()
+	return nil
 }
 
 // FollowUp reopens a completed task with content addressed to agent to, and
@@ -189,7 +205,22 @@ func (s *Service) FollowUp(ctx context.Context, id domain.TaskID, to domain.Agen
 
 // SendInstruction injects a human message into a live task.
 func (s *Service) SendInstruction(ctx context.Context, id domain.TaskID, to domain.AgentID, content string) error {
-	return s.orch.SendInstruction(ctx, id, to, content)
+	if err := s.orch.SendInstruction(ctx, id, to, content); err != nil {
+		return err
+	}
+	// A task with no run alive (a decision held for the human) has the
+	// message queued; start the run that delivers it, as Resume does.
+	if s.orch.Running(id) {
+		return nil
+	}
+	go func() {
+		if err := s.orch.RunTask(context.WithoutCancel(ctx), id); err != nil {
+			s.orch.Events.Publish(context.WithoutCancel(ctx), domain.Event{
+				Type: domain.EvtTaskFailed, TaskID: id, Summary: "instruction failed: " + err.Error(),
+			})
+		}
+	}()
+	return nil
 }
 
 // SearchKnowledge queries shared project knowledge.

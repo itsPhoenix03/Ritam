@@ -30,7 +30,8 @@ func TestManager_ProposeAcceptReject(t *testing.T) {
 		t.Fatalf("Propose: status = %s", d.Status)
 	}
 
-	d2, err := m.Propose(c, &domain.Decision{TaskID: taskID, Author: "opus", Decision: "second"})
+	d2, err := m.Propose(c, &domain.Decision{TaskID: taskID, Author: "opus", Decision: "second",
+		Reasoning: "the benchmarks favour it"})
 	if err != nil || d2.ID != "D-002" {
 		t.Fatalf("Propose sequential: %+v, err %v", d2, err)
 	}
@@ -56,7 +57,10 @@ func TestManager_ProposeAcceptReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reject: %v", err)
 	}
-	if rejected.Status != domain.DecisionRejected || rejected.Reasoning != "not enough evidence" {
+	// The human's note is recorded beside the author's reasoning, which a
+	// rejection used to overwrite.
+	if rejected.Status != domain.DecisionRejected || rejected.HumanNote != "not enough evidence" ||
+		rejected.Reasoning != "the benchmarks favour it" {
 		t.Fatalf("Reject: %+v", rejected)
 	}
 	// Illegal: cannot accept an already-rejected decision.

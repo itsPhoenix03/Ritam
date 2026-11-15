@@ -168,7 +168,7 @@ func (o *Orchestrator) flush(ctx context.Context, t *domain.Task, ledger []domai
 	}
 	// With the decision accepted and only the human's questions left, only
 	// the agents that owe the human a reply take another turn.
-	if o.isClosing(t.ID) && !owesHuman(ledger, agent) {
+	if t.Closing && !owesHuman(ledger, agent) {
 		return
 	}
 	ib.mu.Lock()

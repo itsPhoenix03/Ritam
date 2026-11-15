@@ -187,6 +187,12 @@ type Task struct {
 	// the requests are answered; like the original task it ends with a
 	// FINAL_DECISION.
 	FollowUpWork bool
+	// Closing marks a task whose final decision is accepted but which waits
+	// for the agents to answer the human's open questions before it
+	// completes. It is stored with the task: kept in memory, it was lost by
+	// a pause and resume (or a restart), and the task then never completed
+	// and could not be approved.
+	Closing bool
 
 	// Usage reported by the agent CLIs, summed over the task's life.
 	CostUSD      float64

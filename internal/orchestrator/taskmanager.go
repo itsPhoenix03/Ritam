@@ -131,6 +131,7 @@ func (tm *TaskManager) Reopen(ctx context.Context, id domain.TaskID, by domain.A
 	t.UpdatedAt = time.Now()
 	t.FollowUp = true
 	t.FollowUpWork = false
+	t.Closing = false
 	resetAllowance(t)
 	if err := tm.repo.Update(ctx, t); err != nil {
 		return nil, err
@@ -160,6 +161,10 @@ func (tm *TaskManager) Transition(ctx context.Context, id domain.TaskID, to doma
 	}
 	t.State = to
 	t.UpdatedAt = time.Now()
+	if to.IsTerminal() {
+		// Nothing is left to wait for once the task has ended.
+		t.Closing = false
+	}
 
 	switch to {
 	case domain.TaskCompleted:
@@ -337,6 +342,12 @@ func (tm *TaskManager) AddUsage(ctx context.Context, id domain.TaskID, agent dom
 // SetAuthority hands task authority to another participant.
 func (tm *TaskManager) SetAuthority(ctx context.Context, id domain.TaskID, to domain.AgentID) (*domain.Task, error) {
 	return tm.update(ctx, id, func(t *domain.Task) { t.AuthorityAgent = to })
+}
+
+// SetClosing records whether the task's decision is accepted and it waits
+// only for the human's open questions to be answered (see domain.Task).
+func (tm *TaskManager) SetClosing(ctx context.Context, id domain.TaskID, closing bool) (*domain.Task, error) {
+	return tm.update(ctx, id, func(t *domain.Task) { t.Closing = closing })
 }
 
 // MarkFollowUpWork records that the authority handed out new work during a
