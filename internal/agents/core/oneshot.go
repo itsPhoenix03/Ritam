@@ -120,13 +120,14 @@ func (r *OneShotRunner) Run(ctx context.Context, args []string, stdin string) (*
 	killWholeTreeOnCancel(cmd)
 
 	start := time.Now()
+	endTurn := r.Guard.Begin(r.AgentID)
 	runErr := cmd.Start()
 	if runErr == nil {
 		tree := startTree(cmd)
 		runErr = cmd.Wait()
 		tree.end() // before the check: nothing left running may write after it
 	}
-	r.Guard.Check(r.AgentID)
+	endTurn()
 	res := &OneShotResult{
 		Stdout:   out.String(),
 		Stderr:   errBuf.String(),
@@ -178,7 +179,9 @@ func (r *OneShotRunner) RunStreaming(ctx context.Context, args []string, stdin s
 	killWholeTreeOnCancel(cmd)
 
 	start := time.Now()
+	endTurn := r.Guard.Begin(r.AgentID)
 	if err := cmd.Start(); err != nil {
+		endTurn()
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("agent %s: %w", r.AgentID, ErrCancelled)
 		}
@@ -190,7 +193,7 @@ func (r *OneShotRunner) RunStreaming(ctx context.Context, args []string, stdin s
 
 	runErr := cmd.Wait()
 	tree.end() // before the check: nothing left running may write after it
-	r.Guard.Check(r.AgentID)
+	endTurn()
 	res := &OneShotResult{
 		Stdout:   stdoutText,
 		Stderr:   errBuf.String(),

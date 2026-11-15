@@ -465,24 +465,31 @@ func sensitivePaths(root string) []string {
 // the app home: what decides how agents run next time. The database is
 // left out; ritam writes it all the time. It guards the workspace's
 // sensitive files and folders too (see sensitiveFiles).
+//
+// The app home's files are shared: every ritam on the machine writes them
+// and the user edits them, so they are guarded as of when agent activity
+// starts (core.FileGuard.GuardShared), not as of this start. The project's
+// own files and the workspace's are this ritam's alone.
 func newGuard(cfg *config.Config, ws config.Workspace) *core.FileGuard {
 	paths := []string{filepath.Join(ws.Root, brand.ConfigFile()), cfg.Runtime.ProjectConfig, cfg.Sessions.File,
-		teamFile(cfg), cfg.Runtime.ModelsFile}
+		teamFile(cfg)}
 	if ws.Writable {
 		for _, f := range sensitiveFiles {
 			paths = append(paths, filepath.Join(ws.Root, filepath.FromSlash(f)))
 		}
 	}
+	shared := []string{cfg.Runtime.ModelsFile}
 	keep := ""
 	if h := cfg.Runtime.HomeDir; h != "" {
 		home := layout.Home{Root: h}
-		paths = append(paths, home.ConfigPath(), home.ProjectsFile())
+		shared = append(shared, home.ConfigPath(), home.ProjectsFile())
 		keep = home.RejectedDir()
 	}
 	if cfg.Runtime.ProjectConfig != "" {
 		paths = append(paths, filepath.Join(filepath.Dir(cfg.Runtime.ProjectConfig), "project.json"))
 	}
 	g := core.NewFileGuard(keep, paths...)
+	g.GuardShared(shared...)
 	if ws.Writable {
 		for _, d := range sensitiveDirs {
 			g.WatchDirs(filepath.Join(ws.Root, filepath.FromSlash(d)))
