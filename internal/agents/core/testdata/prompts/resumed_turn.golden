@@ -15,9 +15,12 @@ Clear the cookie with Path=/ in auth/logout.go and add a regression test.
 --- END ---
 
 TEAM STATUS (as of this delivery; read-only):
-- opus-1 (authority): working
-- sonnet-1: idle
-- codex-1: idle
+id        model              role        files      commands    state    spent
+opus-1    claude opus        authority   write      no          working  $0.42
+sonnet-1  claude sonnet      supporting  read-only  no          idle     $0.08
+codex-1   codex gpt-5-codex  supporting  write      build/test  idle     n/a
+- opus-1: waiting on codex-1 (IMPLEMENT, 2m)
+- codex-1: owes opus-1 a reply (IMPLEMENT, 2m)
 This is for your awareness only. Do not reassign or take over others' work; if something
 needs to change, tell opus-1. If someone is still working on what you need, wait for it.
 

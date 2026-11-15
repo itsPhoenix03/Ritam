@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"ritam/internal/domain"
+	"ritam/internal/ports"
 )
 
 // SetFollowUpSettleInterval shortens the follow-up settle check for tests.
@@ -28,6 +29,14 @@ func (o *Orchestrator) Dispatch(ctx context.Context, id domain.TaskID) { o.dispa
 
 // SetMaxHold shortens how long a hold may last, for tests.
 func SetMaxHold(d time.Duration) { maxHold = d }
+
+// Assign sends the authority its opening brief, for tests.
+func (o *Orchestrator) Assign(ctx context.Context, t *domain.Task) error { return o.assign(ctx, t) }
+
+// HandleOutboundForTest takes one adapter output as the run loop would.
+func (o *Orchestrator) HandleOutboundForTest(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+	return o.handleOutbound(ctx, id, out)
+}
 
 // AttachRecapForTest exposes the session recap for tests.
 func AttachRecapForTest(o *Orchestrator, ctx context.Context, t *domain.Task, m *domain.Message) {

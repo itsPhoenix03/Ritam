@@ -147,7 +147,7 @@ func TestABusyAgentGetsEverythingWaitingInOneTurn(t *testing.T) {
 		t.Error("messages must be laid out oldest first")
 	}
 	if board := batch.Metadata[ports.TeamMetadataKey]; !strings.Contains(board, "codex (you)") ||
-		!strings.Contains(board, "opus (authority)") {
+		!strings.Contains(board, "opus         authority") {
 		t.Errorf("every delivery carries the team board:\n%s", board)
 	}
 }
@@ -233,10 +233,12 @@ func TestTheTeamBoardShowsWhoWaitsOnWhom(t *testing.T) {
 	}
 	board := got[0].Metadata[ports.TeamMetadataKey]
 	for _, want := range []string{
-		"codex: working · 1 unread · owes opus a reply (DELEGATE",
-		"opus (authority): idle · waiting on codex (DELEGATE",
-		"scout (you)",
-		"human: waiting on scout",
+		"opus         authority   idle",
+		"codex        supporting  working",
+		"scout (you)  supporting  idle",
+		"- codex: 1 unread · owes opus a reply (DELEGATE",
+		"- opus: waiting on codex (DELEGATE",
+		"- human: waiting on scout",
 	} {
 		if !strings.Contains(board, want) {
 			t.Errorf("team board is missing %q:\n%s", want, board)

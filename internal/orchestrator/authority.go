@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"fmt"
+	"strings"
 
 	"ritam/internal/domain"
 )
@@ -42,7 +43,12 @@ func (v *Violation) Error() string {
 // alone are not trusted: if a supporting agent emits FINAL_DECISION while
 // another agent holds authority, the action is rejected here regardless of how
 // convincingly the agent asserted its own authority.
-type AuthorityManager struct{}
+type AuthorityManager struct {
+	// Rights, when set, reports what each agent may do on a task. With it a
+	// request for a change addressed to an agent that cannot write is refused
+	// at once, instead of costing that agent a turn to say it cannot.
+	Rights RightsReporter
+}
 
 // NewAuthorityManager returns an AuthorityManager.
 func NewAuthorityManager() *AuthorityManager { return &AuthorityManager{} }
@@ -108,7 +114,39 @@ func (a *AuthorityManager) Authorize(t *domain.Task, m *domain.Message) error {
 		return err
 	}
 
-	return a.checkRouting(t, m)
+	if err := a.checkRouting(t, m); err != nil {
+		return err
+	}
+	return a.checkWriter(t, m)
+}
+
+// checkWriter refuses an IMPLEMENT or REQUEST_CHANGE addressed to an agent
+// that cannot write files, naming the agents that can. Only an agent's
+// request is checked: the human remains free to ask anyone anything.
+func (a *AuthorityManager) checkWriter(t *domain.Task, m *domain.Message) error {
+	if a.Rights == nil || (m.Type != domain.MsgImplement && m.Type != domain.MsgRequestChange) ||
+		!t.HasParticipant(m.ToAgent) {
+		return nil
+	}
+	if r, known := a.Rights.AgentRights(t, m.ToAgent); !known || r.Writes {
+		return nil
+	}
+	var writers []string
+	for _, p := range t.Participants {
+		if p == m.ToAgent || t.IsDropped(p) {
+			continue
+		}
+		if r, known := a.Rights.AgentRights(t, p); known && r.Writes {
+			writers = append(writers, string(p))
+		}
+	}
+	reason := fmt.Sprintf("%s is read-only and cannot change files", m.ToAgent)
+	if len(writers) > 0 {
+		reason += "; send it to an agent that can write: " + strings.Join(writers, ", ")
+	} else {
+		reason += "; no agent on this task can write files, so describe the change for the human (to=human)"
+	}
+	return &Violation{Kind: ViolationRouting, TaskID: t.ID, AgentID: m.FromAgent, Message: m.Type, Reason: reason}
 }
 
 // checkVerdict validates a REVIEW's verdict and normalises its spelling. A

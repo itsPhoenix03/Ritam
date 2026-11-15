@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"ritam/internal/domain"
@@ -34,6 +35,31 @@ type Manager struct {
 
 	instOnce sync.Once
 	instSet  *instances
+
+	// access is the workspace's access policy, from which AgentRights reads
+	// who may write and build; nil reports no rights.
+	access *Access
+}
+
+// UseAccess gives the manager the access policy it reports agents' rights
+// from.
+func (m *Manager) UseAccess(a *Access) { m.access = a }
+
+// AgentRights reports what agent id may do on task t, for the team roster
+// and the bus's check that a change is asked of an agent that can make it.
+// An agent builds only if it also writes: a read-only agent's CLI is given
+// no command rules (see WriteRules). A mock agent runs no CLI, so it has no
+// rights to report.
+func (m *Manager) AgentRights(t *domain.Task, id domain.AgentID) (ports.AgentRights, bool) {
+	a, ok := m.reg.Get(id)
+	if m.access == nil || !ok || a.Kind == domain.AgentKindMock {
+		return ports.AgentRights{}, false
+	}
+	m.access.mu.RLock()
+	defer m.access.mu.RUnlock()
+	writes := m.access.writers[id]
+	builders, everyone := m.access.buildersLocked(t)
+	return ports.AgentRights{Writes: writes, Builds: writes && (everyone || slices.Contains(builders, id))}, true
 }
 
 // NewManager builds a Manager over reg. log may be nil, in which case a

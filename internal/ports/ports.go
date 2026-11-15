@@ -316,6 +316,16 @@ type AgentActivity struct {
 	Time    time.Time
 }
 
+// AgentRights is what one agent may do on a task: the facts the team roster
+// shows each agent, and the bus checks before handing an agent work it
+// cannot do.
+type AgentRights struct {
+	// Writes says the agent may change files in the project.
+	Writes bool
+	// Builds says the agent may run builds and tests on this task.
+	Builds bool
+}
+
 // AgentAdapter normalises one concrete agent CLI into the internal protocol.
 // Claude Code and Codex are separate applications with different interaction
 // models; all of that difference stays behind this interface.

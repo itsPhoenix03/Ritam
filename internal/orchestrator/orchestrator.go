@@ -2241,14 +2241,15 @@ func (o *Orchestrator) assign(ctx context.Context, t *domain.Task) error {
 		}
 	}
 
+	// The authority's role is stated in its brief; this message adds what
+	// only the start of the task needs: who is waiting for it, and how to
+	// choose among them from the roster on the team board that comes with it.
 	content := fmt.Sprintf(
-		"Task %s: %s\n\n%s\n\nYou are the authoritative agent for this task. "+
-			"Decide what investigation is required, delegate it, evaluate the responses, "+
-			"challenge conclusions you do not believe, and make the final decision. "+
-			"Authority is responsibility, not correctness: revise your position when the evidence warrants.\n\n"+
+		"Task %s: %s\n\n%s\n\n"+
 			"The other participants (%s) have NOT been briefed and are idle. "+
-			"They will not act until you delegate to them, so state what you want investigated or implemented.",
-		t.ID, t.Title, t.Description, strings.Join(supporting, ", "))
+			"They will not act until you delegate to them, so state what you want investigated or implemented.\n"+
+			"%s",
+		t.ID, t.Title, t.Description, strings.Join(supporting, ", "), o.rosterGuidance(t))
 
 	m := &domain.Message{
 		TaskID:           t.ID,

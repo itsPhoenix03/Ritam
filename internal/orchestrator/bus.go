@@ -30,6 +30,17 @@ type AgentGateway interface {
 	ReportOutboundFor(task domain.TaskID, id domain.AgentID, out ports.Outbound)
 }
 
+// RightsReporter is what an AgentGateway may also report: what each agent may
+// do on a task. The orchestrator learns it here rather than from the app's
+// access policy, which it must not depend on. A gateway that does not report
+// rights (a test's, say) leaves the roster without them and refuses nothing
+// on their account.
+type RightsReporter interface {
+	// AgentRights reports id's rights on t; known is false when there are
+	// none to report (an unknown agent, or a mock that runs no CLI).
+	AgentRights(t *domain.Task, id domain.AgentID) (rights ports.AgentRights, known bool)
+}
+
 // MessageBus validates and routes every message. Agents never reach each other
 // by any other path: an agent emits a message, the bus checks identity,
 // routing and authority, records it, and only then delivers it.

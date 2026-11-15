@@ -398,24 +398,16 @@ func combine(msgs []*domain.Message) *domain.Message {
 	return env
 }
 
-// teamBoard describes every participant for the agent being delivered to:
-// state, unread messages, and who it waits on and owes.
+// teamBoard describes every participant for the agent being delivered to: the
+// roster (who each one is, what it may do, its state and spending), then
+// unread messages and who waits on and owes whom.
 func (o *Orchestrator) teamBoard(t *domain.Task, ledger []domain.Request, ib *taskInbox, self domain.AgentID) string {
 	now := time.Now()
 	var b strings.Builder
+	b.WriteString(o.roster(t, self))
+	b.WriteString("\n")
 	for _, p := range t.Participants {
-		state := "stopped"
-		if ad, ok := o.Agents.AdapterFor(t.ID, p); ok {
-			state = strings.ToLower(strings.TrimPrefix(string(ad.Status()), "AGENT_"))
-		}
-		name := string(p)
-		if p == self {
-			name += " (you)"
-		}
-		if p == t.AuthorityAgent {
-			name += " (authority)"
-		}
-		parts := []string{state}
+		var parts []string
 		if n := ib.unread(p); n > 0 && p != self {
 			parts = append(parts, fmt.Sprintf("%d unread", n))
 		}
@@ -432,7 +424,9 @@ func (o *Orchestrator) teamBoard(t *domain.Task, ledger []domain.Request, ib *ta
 				parts = append(parts, fmt.Sprintf("owes %s a reply (%s, %s)", q.FromAgent, q.Type, age))
 			}
 		}
-		fmt.Fprintf(&b, "- %s: %s\n", name, strings.Join(parts, " · "))
+		if len(parts) > 0 {
+			fmt.Fprintf(&b, "- %s: %s\n", p, strings.Join(parts, " · "))
+		}
 	}
 	var human []string
 	for _, r := range ledger {

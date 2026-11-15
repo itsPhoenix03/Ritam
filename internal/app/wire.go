@@ -229,6 +229,11 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		RateLimitWait:        cfg.Orchestrator.MaxRateLimitWait,
 	})
 
+	// Who may write and build, for the team roster every delivery carries and
+	// for refusing a change asked of an agent that cannot make it.
+	agentMgr.UseAccess(acc)
+	orch.Authority.Rights = agentMgr
+
 	// The agent manager reports runtime state changes as events so the TUI can
 	// show an agent crashing without polling.
 	agentMgr.OnStateChange = func(a domain.Agent) {

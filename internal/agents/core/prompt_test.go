@@ -39,8 +39,15 @@ func goldenTask() *domain.Task {
 	}
 }
 
-// goldenBoard is a team board as the orchestrator attaches it.
-const goldenBoard = "- opus-1 (authority): working\n- sonnet-1: idle\n- codex-1: idle"
+// goldenBoard is a team board as the orchestrator attaches it: the roster,
+// then who waits on whom.
+const goldenBoard = "" +
+	"id        model              role        files      commands    state    spent\n" +
+	"opus-1    claude opus        authority   write      no          working  $0.42\n" +
+	"sonnet-1  claude sonnet      supporting  read-only  no          idle     $0.08\n" +
+	"codex-1   codex gpt-5-codex  supporting  write      build/test  idle     n/a\n" +
+	"- opus-1: waiting on codex-1 (IMPLEMENT, 2m)\n" +
+	"- codex-1: owes opus-1 a reply (IMPLEMENT, 2m)"
 
 func goldenRules(self domain.AgentID) string {
 	g := Grant{Level: domain.AccessBuildAndTest}
