@@ -411,9 +411,10 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 	a.log.ForAgent(a.id).Debug("claude-code reply",
 		"duration", res.Duration.String(), "text", logging.Redact(truncate(text, 400)))
 
-	if strings.TrimSpace(text) == "" {
-		// The turn finished and the agent chose to say nothing -- right when
-		// it was told no reply is needed. That is not a failure.
+	if core.NothingToSay(text) {
+		// The turn finished and the agent chose to say nothing (an empty
+		// reply, or NO_REPLY) -- right when it was told no reply is needed.
+		// That is not a failure.
 		a.activity.Emit(ports.ActivityStatus, "nothing to reply")
 		return
 	}
@@ -472,13 +473,16 @@ func (a *ClaudeCodeAdapter) openSession(t *domain.Task) (core.Session, bool) {
 // runTurn sends one message in sess: the full brief when the session is new,
 // the short standing brief when it is being resumed.
 func (a *ClaudeCodeAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Message, sess core.Session, resuming bool) (*core.OneShotResult, string, error, error) {
-	prompt := renderPrompt(t, m, a.cfg.AllowWrites)
-	if resuming {
-		prompt = core.RenderTurn(t, m, a.cfg.AllowWrites, headerMarker)
-	}
 	g := a.grant(t)
+	// The write rules go inside the brief, before the reply format, which
+	// must be the last thing the model reads.
+	rules := ""
 	if a.cfg.AllowWrites {
-		prompt += core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), g)
+		rules = core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), g)
+	}
+	prompt := renderPrompt(t, m, rules)
+	if resuming {
+		prompt = renderTurn(t, m, rules)
 	}
 	args := append(a.buildArgsFor(g), a.sessionArgs(t, sess, resuming)...)
 	args = append(args, budgetArgs(t)...)

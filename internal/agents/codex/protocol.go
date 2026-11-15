@@ -1,9 +1,6 @@
 package codex
 
 import (
-	"fmt"
-	"strings"
-
 	"ritam/internal/agents/core"
 	"ritam/internal/domain"
 )
@@ -15,92 +12,27 @@ import (
 // change to one from silently altering how the other is parsed.
 const headerMarker = "##CODEX"
 
-// renderPrompt turns an internal protocol message into the prompt text passed
-// to `codex exec`.
-//
-// Every invocation is a fresh process with no memory of earlier ones, so the
-// prompt must carry the agent's role and authority, the task, the exact ids it
-// may address, any shared knowledge the orchestrator retrieved, and the reply
-// format.
-func renderPrompt(t *domain.Task, m domain.Message, allowWrites bool) string {
-	var b strings.Builder
+// dialect is how Codex's briefs write the header (keys in capitals, as they
+// always have been) and describe its read-only sandbox; the rest of the brief
+// is shared with Claude (core.RenderBrief).
+var dialect = core.Dialect{
+	Marker:    headerMarker,
+	UpperKeys: true,
+	ReadOnly: "You are READ-ONLY, in the read-only sandbox: you can inspect files, but you cannot edit " +
+		"anything or make network calls.",
+}
 
-	self := m.ToAgent
-	isAuthority := t != nil && t.AuthorityAgent == self
+// renderPrompt is the full brief passed to `codex exec` for a new thread: the
+// agent's role and authority, the task, the exact ids it may address, any
+// shared knowledge the orchestrator retrieved, the rules and the reply
+// format. writeRules is the agent's core.WriteRules, "" when it is read-only.
+func renderPrompt(t *domain.Task, m domain.Message, writeRules string) string {
+	return core.RenderBrief(t, m, dialect, writeRules)
+}
 
-	b.WriteString("You are a coding agent participating in a multi-agent deliberation.\n")
-	b.WriteString("An orchestrator routes every message; you never talk to another agent directly.\n\n")
-
-	fmt.Fprintf(&b, "YOUR AGENT ID: %s\n", self)
-	if isAuthority {
-		b.WriteString("YOUR ROLE: AUTHORITY. You hold final decision-making responsibility for this task.\n")
-		b.WriteString("Decide what investigation is needed, delegate it, weigh the answers, challenge\n")
-		b.WriteString("conclusions you do not believe, and issue the final decision when the evidence\n")
-		b.WriteString("supports one. Authority is responsibility, not correctness.\n")
-	} else {
-		authority := domain.AgentID("unknown")
-		if t != nil {
-			authority = t.AuthorityAgent
-		}
-		fmt.Fprintf(&b, "YOUR ROLE: SUPPORTING AGENT. The authority for this task is %q.\n", authority)
-		b.WriteString("You may investigate, propose, implement, review and CHALLENGE the authority.\n")
-		b.WriteString("Disagreement is expected and is recorded, not suppressed — back it with evidence.\n")
-		b.WriteString("You may NOT issue FINAL_DECISION; the orchestrator will reject it.\n")
-	}
-
-	if t != nil {
-		fmt.Fprintf(&b, "\nTASK %s: %s\n", t.ID, t.Title)
-		if t.Description != "" {
-			fmt.Fprintf(&b, "%s\n", t.Description)
-		}
-		b.WriteString("\nAGENTS YOU MAY ADDRESS (use these exact ids):\n")
-		for _, p := range t.Participants {
-			if p == self {
-				continue
-			}
-			marker := ""
-			if p == t.AuthorityAgent {
-				marker = "  (authority)"
-			}
-			fmt.Fprintf(&b, "  - %s%s\n", p, marker)
-		}
-		b.WriteString("  - human            (to ask the operator)\n")
-		b.WriteString("  - *                (broadcast to all participants)\n")
-	}
-
-	if k := strings.TrimSpace(m.Metadata["knowledge"]); k != "" {
-		b.WriteString("\nRELEVANT PROJECT KNOWLEDGE (established earlier in this task):\n")
-		b.WriteString(k)
-		b.WriteString("\n")
-	}
-
-	// An agent starting (or restarting) its session has no memory of the task
-	// so far; the orchestrator's transcript fills that gap.
-	core.WriteRecap(&b, m)
-	core.WriteIncoming(&b, t, m)
-
-	if allowWrites {
-		b.WriteString("\nYou have write access to the project folder: follow the WRITE RULES below.\n")
-	} else {
-		b.WriteString("\nYou are running in the read-only sandbox: you can inspect files, but you cannot\n")
-		b.WriteString("edit anything or make network calls. If asked to IMPLEMENT, do not attempt to\n")
-		b.WriteString("write files — describe the change precisely, or supply a patch in your reply.\n")
-	}
-
-	b.WriteString("\nREPLY FORMAT — this is mandatory. Your final message MUST begin with a header:\n")
-	fmt.Fprintf(&b, "  %s TYPE=<MESSAGE_TYPE> TO=<agent id>\n", headerMarker)
-	b.WriteString("followed by your message body. Emit several blocks if you need to say several\n")
-	b.WriteString("things. Do not wrap the header in code fences or add anything before it.\n\n")
-	b.WriteString("Valid MESSAGE_TYPE values:\n  ")
-	b.WriteString(core.TypeList(isAuthority))
-	b.WriteString("\n")
-	core.WriteRoleGuide(&b, isAuthority, headerMarker)
-	b.WriteString("\nExample:\n")
-	fmt.Fprintf(&b, "  %s TYPE=ANSWER TO=opus\n", headerMarker)
-	b.WriteString("  The cookie is created with Path=/ but cleared with Path=/api.\n")
-
-	// Task titles and agent-supplied content are free text; see SanitizePrompt.
-	return core.SanitizePrompt(b.String())
+// renderTurn is the standing brief for a resumed thread.
+func renderTurn(t *domain.Task, m domain.Message, writeRules string) string {
+	return core.RenderTurn(t, m, dialect, writeRules)
 }
 
 // parseOutput parses the `##CODEX` reply header format back into protocol

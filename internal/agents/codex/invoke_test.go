@@ -259,7 +259,7 @@ func TestPromptTravelsOnStdinAndNULIsStripped(t *testing.T) {
 func TestRenderPromptStripsControlCharacters(t *testing.T) {
 	task := testTask()
 	task.Title = "a\x00b\x1bc"
-	p := renderPrompt(task, msg("x\ty\r\nz"), false)
+	p := renderPrompt(task, msg("x\ty\r\nz"), "")
 	if strings.ContainsAny(p, "\x00\x1b") {
 		t.Error("control characters must be removed from the prompt")
 	}

@@ -67,9 +67,12 @@ func (t MessageType) ExpectsResponse() bool {
 
 // RequiresAuthority reports whether only the task's authority agent may send
 // this message type. This is enforced by the orchestrator, never by prompting.
+//
+// TASK_ASSIGNMENT is among them: from a supporting agent it was a way round
+// DELEGATE, handing another agent work the authority never asked for.
 func (t MessageType) RequiresAuthority() bool {
 	switch t {
-	case MsgFinalDecision, MsgApprove, MsgReject, MsgRequestChange, MsgImplement, MsgDelegate:
+	case MsgFinalDecision, MsgApprove, MsgReject, MsgRequestChange, MsgImplement, MsgDelegate, MsgTaskAssignment:
 		return true
 	}
 	return false
@@ -217,13 +220,20 @@ func VerdictOf(m *Message) (Verdict, bool) {
 	return ParseVerdict(m.Metadata[MetaVerdict])
 }
 
-// AllowedTypes lists the message types an agent may send. The authority may
-// send everything; a supporting agent everything that does not require
+// AllowedTypes lists the message types an agent is offered. The authority is
+// offered everything; a supporting agent everything that does not require
 // authority. Prompts list exactly these, so an agent is never offered a type
 // the orchestrator will refuse.
+//
+// ERROR is offered to nobody: it is how the orchestrator reports a refused or
+// unreadable reply. An agent describing its own trouble says so in an ANSWER
+// or STATUS_UPDATE, which does not read as a protocol fault.
 func AllowedTypes(authority bool) []MessageType {
 	var out []MessageType
 	for _, t := range AllMessageTypes() {
+		if t == MsgError {
+			continue
+		}
 		if authority || !t.RequiresAuthority() {
 			out = append(out, t)
 		}
@@ -242,7 +252,7 @@ func SupportingAlternative(t MessageType) string {
 		return "send REVIEW with verdict=reject, or CHALLENGE with your evidence"
 	case MsgRequestChange:
 		return "send REVIEW with verdict=changes and say what should change"
-	case MsgDelegate, MsgImplement:
+	case MsgDelegate, MsgImplement, MsgTaskAssignment:
 		return "send a QUESTION to the agent you need, or ask the authority to delegate"
 	case MsgFinalDecision:
 		return "send your recommendation to the authority as a PROPOSAL"

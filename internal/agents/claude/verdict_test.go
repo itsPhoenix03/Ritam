@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"ritam/internal/agents/core"
 	"ritam/internal/domain"
 	"ritam/internal/ports"
 )
@@ -27,8 +26,8 @@ func TestSupportingPromptsOfferOnlyPermittedTypes(t *testing.T) {
 	m.ToAgent = "codex"
 
 	for name, p := range map[string]string{
-		"full brief": renderPrompt(tk, m, false),
-		"turn brief": core.RenderTurn(tk, m, false, headerMarker),
+		"full brief": renderPrompt(tk, m, ""),
+		"turn brief": renderTurn(tk, m, ""),
 	} {
 		typeLine := ""
 		for _, l := range strings.Split(p, "\n") {
@@ -51,7 +50,7 @@ func TestSupportingPromptsOfferOnlyPermittedTypes(t *testing.T) {
 }
 
 func TestTheAuthorityIsStillOfferedEverything(t *testing.T) {
-	p := renderPrompt(testTask(), msg("start"), false) // to opus, the authority
+	p := renderPrompt(testTask(), msg("start"), "") // to opus, the authority
 	if !strings.Contains(p, "APPROVE") || !strings.Contains(p, "FINAL_DECISION") {
 		t.Error("the authority must be offered its decision types")
 	}
@@ -70,8 +69,8 @@ func TestAHelperIsToldTheQuestionIsTheHumans(t *testing.T) {
 		Metadata: map[string]string{ports.ThreadMetadataKey: `the human asked codex: "how good were the reviews?"`}}
 
 	for name, p := range map[string]string{
-		"full brief": renderPrompt(tk, m, false),
-		"turn brief": core.RenderTurn(tk, m, false, headerMarker),
+		"full brief": renderPrompt(tk, m, ""),
+		"turn brief": renderTurn(tk, m, ""),
 	} {
 		if !strings.Contains(p, "PART OF A QUESTION FROM THE HUMAN") || !strings.Contains(p, "the human asked codex") {
 			t.Errorf("%s does not tell the agent the request is the human's", name)
@@ -83,7 +82,7 @@ func TestAHelperIsToldTheQuestionIsTheHumans(t *testing.T) {
 
 	plain := m
 	plain.Metadata = nil
-	if strings.Contains(core.RenderTurn(tk, plain, false, headerMarker), "PART OF A QUESTION FROM THE HUMAN") {
+	if strings.Contains(renderTurn(tk, plain, ""), "PART OF A QUESTION FROM THE HUMAN") {
 		t.Error("a request that is not the human's must not carry the note")
 	}
 }
@@ -92,8 +91,8 @@ func TestEveryRoleIsToldToAnswerTheHumanDirectly(t *testing.T) {
 	sup := msg("x")
 	sup.ToAgent = "codex"
 	for name, p := range map[string]string{
-		"authority":  renderPrompt(testTask(), msg("x"), false),
-		"supporting": renderPrompt(testTask(), sup, false),
+		"authority":  renderPrompt(testTask(), msg("x"), ""),
+		"supporting": renderPrompt(testTask(), sup, ""),
 	} {
 		if !strings.Contains(p, "answer the human directly") {
 			t.Errorf("the %s brief should prefer answering the human directly", name)
