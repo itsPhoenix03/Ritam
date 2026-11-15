@@ -248,7 +248,9 @@ func (a *Agent) run(ctx context.Context, t *domain.Task, m domain.Message) {
 		a.emit(ports.Outbound{AgentID: a.id, Err: f})
 		return
 	}
-	if turn.Reply == "" {
+	// NO_REPLY is the silence the briefs ask for; the real adapters take it
+	// as saying nothing, so the fake must not report it as a malformed reply.
+	if core.NothingToSay(turn.Reply) {
 		a.activity.Emit(ports.ActivityStatus, "nothing to reply")
 		return
 	}

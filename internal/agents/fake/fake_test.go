@@ -95,3 +95,19 @@ func TestScriptedFailuresArriveAsTypedFailures(t *testing.T) {
 		t.Fatalf("an empty reply is the agent saying nothing: %+v", o)
 	}
 }
+
+// TestNoReplyFromTheFakeIsSilenceNotAMalformedReply: the briefs tell an agent
+// with nothing to add to reply NO_REPLY, and the real adapters take that as
+// saying nothing. The fake must agree, or a test scripting the silence the
+// prompts ask for would see a malformed reply instead.
+func TestNoReplyFromTheFakeIsSilenceNotAMalformedReply(t *testing.T) {
+	a := New("codex", Steps(Turn{Reply: "NO_REPLY"}))
+	started(t, a)
+	if err := a.SendMessage(context.Background(), task, domain.Message{Type: domain.MsgInformation, FromAgent: "opus", ToAgent: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	o := next(t, a)
+	if o.Err != nil || !o.IsUsageOnly() {
+		t.Fatalf("NO_REPLY must produce no message and no failure, only the turn's usage: %+v", o)
+	}
+}
