@@ -4,9 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"ritam/internal/config"
+	"ritam/internal/domain"
+	"ritam/internal/logging"
 )
 
 // TestAgentsAreToldWhatIsTheirsAndWhatIsRitams: every agent learns the
@@ -33,6 +36,74 @@ func TestAgentsAreToldWhatIsTheirsAndWhatIsRitams(t *testing.T) {
 	}
 	if slices.Contains(ac.Protected, cfg.Storage.Path) {
 		t.Errorf("a file outside the workspace needs no rule: %v", ac.Protected)
+	}
+}
+
+// TestAnAgentInTheSettingsWritesOnlyWhenItsProviderMay: the global settings
+// make Codex read-only, and an agent entry of type codex that may write is
+// read-only too, the same rule a recruit gets.
+func TestAnAgentInTheSettingsWritesOnlyWhenItsProviderMay(t *testing.T) {
+	no := false
+	cfg := config.Default()
+	cfg.TUI.UseMockAgents = false
+	cfg.Storage.Backend = "memory"
+	cfg.Workspace.Root = t.TempDir()
+	cfg.Providers["codex"] = config.ProviderConfig{Executable: "codex", AllowWrites: &no}
+	cfg.Agents = map[string]config.AgentConfig{
+		"x":    {Type: "codex", Role: "IMPLEMENTER", Enabled: true, AllowWrites: true},
+		"opus": {Type: "claude-code", Role: "AUTHORITY", Enabled: true, AllowWrites: true},
+	}
+	sys, err := Build(cfg, logging.NewDiscard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sys.Close() })
+	if got := sys.Access.Unsandboxed(); !slices.Equal(got, []domain.AgentID{"opus"}) {
+		t.Errorf("only the agent whose provider may write writes: %v", got)
+	}
+}
+
+// TestAClonedProjectGetsNoWritingRealAgent: the escape end to end. The
+// global settings make Codex read-only; a cloned folder's ritam.yaml defines
+// a Codex agent that may write and switches the scripted agents off. A plain
+// start gives a scripted, read-only agent and tells the human why.
+func TestAClonedProjectGetsNoWritingRealAgent(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "clone")
+	_ = os.MkdirAll(root, 0o700)
+	globalFile := filepath.Join(dir, "global.yaml")
+	_ = os.WriteFile(globalFile, []byte("providers: {codex: {allowWrites: false}}\n"), 0o600)
+	projFile := filepath.Join(root, "ritam.yaml")
+	_ = os.WriteFile(projFile, []byte("agents: {x: {type: codex, role: IMPLEMENTER, enabled: true, allowWrites: true}}\n"+
+		"tui: {useMockAgents: false}\n"), 0o600)
+
+	global, err := config.LoadLayers(globalFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadLayers(globalFile, projFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := cfg.RestrictProject(global, root)
+	notice := config.HeldNotice(held, globalFile)
+	for _, want := range []string{"agents.x.allowWrites", "tui.useMockAgents"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("the human must be told %s was held back: %q", want, notice)
+		}
+	}
+	cfg.Storage.Backend = "memory"
+	cfg.Workspace.Root = root
+	sys, err := Build(cfg, logging.NewDiscard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sys.Close() })
+	if a, ok := sys.Service.team.reg.Get("x"); !ok || a.Kind != domain.AgentKindMock {
+		t.Errorf("the clone's agent must stay scripted: %+v", a)
+	}
+	if got := sys.Access.Unsandboxed(); len(got) != 0 {
+		t.Errorf("no agent of the clone may write: %v", got)
 	}
 }
 

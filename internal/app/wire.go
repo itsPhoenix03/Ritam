@@ -172,6 +172,10 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		if ac, err = applyWorkspace(ac, ws, cfg); err != nil {
 			return nil, fmt.Errorf("agent %s: %w", name, err)
 		}
+		// The same rule as a recruit's (Team.register): an agent writes only
+		// when its provider may. Entries here once skipped it, so a provider
+		// made read-only still had a writing agent under its older name.
+		ac.AllowWrites = ac.AllowWrites && cfg.Providers[ac.Type].MayWrite()
 		id := domain.AgentID(name)
 		role := parseRole(ac.Role)
 
