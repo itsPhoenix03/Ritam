@@ -8,6 +8,10 @@
 # Only what a file sets is overridden, so a project file can hold just the
 # few settings that differ for that project. `ritam where` shows the paths.
 #
+# Keys are read exactly as written here, capitals included: a key ritam does
+# not know (maxDailyCostUsd for maxDailyCostUSD) stops it starting, with the
+# file, the key and the nearest valid key named, rather than being ignored.
+#
 # Copy to one of those places and edit. Everything here is local: there is no remote
 # config source, and NO API KEYS BELONG IN THIS FILE. Claude Code and Codex
 # authenticate through their own CLI mechanisms; the orchestrator never reads
@@ -89,6 +93,10 @@ orchestrator:
 # Only one ritam may use a project's database at a time.
 storage:
   backend: sqlite
+
+# A `knowledge:` section (backend, path), found in older settings files, is
+# still accepted so those files load, but it currently has no effect: shared
+# knowledge is kept in the storage above.
 
 # Each project's database is backed up into the app home
 # (backups/<project>-<id>/): when a task finishes, when ritam exits, every

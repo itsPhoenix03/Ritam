@@ -114,8 +114,10 @@ type OrchestratorConfig struct {
 	IdleTimeout time.Duration `yaml:"idleTimeout"`
 }
 
-// KnowledgeConfig is kept so existing config files still load. Shared
-// knowledge is stored with everything else, in the backend Storage selects.
+// KnowledgeConfig is kept so existing config files still load: settings are
+// read strictly, and a file with a knowledge section would otherwise be
+// refused. Nothing reads it. Shared knowledge is stored with everything else,
+// in the backend Storage selects.
 type KnowledgeConfig struct {
 	Backend string `yaml:"backend"`
 	Path    string `yaml:"path"`
@@ -312,7 +314,8 @@ func Load(path string) (*Config, error) {
 // before it: the defaults, then the global settings in the app home, then
 // the project's. A file that does not exist is skipped. Only what a file
 // sets is overridden; a provider entry overrides field by field, so a
-// project can change one setting of a provider and keep the rest.
+// project can change one setting of a provider and keep the rest. A key no
+// setting has is an error, never ignored.
 func LoadLayers(paths ...string) (*Config, error) {
 	cfg := Default()
 	for _, path := range paths {
@@ -343,11 +346,12 @@ func (c *Config) overlay(path string) error {
 		before[k] = v
 	}
 	// Decoding into the existing values keeps whatever the file leaves out.
-	if err := yaml.Unmarshal(data, c); err != nil {
-		return fmt.Errorf("parse config %s: %w", path, err)
+	if err := decodeStrict(path, data, c); err != nil {
+		return err
 	}
 	// A map entry is decoded whole, so a provider the file mentions would
-	// lose the fields it leaves out; merge those back.
+	// lose the fields it leaves out; merge those back. The file's keys were
+	// checked above; this pass reads only its providers.
 	var layer struct {
 		Providers map[string]ProviderConfig `yaml:"providers"`
 	}
