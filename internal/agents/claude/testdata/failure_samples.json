@@ -1,0 +1,125 @@
+{
+  "comment": "Synthetic samples, NOT recorded from a live run: built from the stream-json formats this package's existing tests already use (result events with type, subtype, is_error, result; stream_event lines; system lines). stdout is a list of lines: a JSON object is written as the line, a string as itself. kind is the failure the adapter must report, \"\" for none; retryAfterSeconds is the reset it must read, when given.",
+  "samples": [
+    {
+      "name": "a successful turn",
+      "stdout": [
+        {"type": "system", "subtype": "init", "session_id": "abc"},
+        {"type": "result", "subtype": "success", "is_error": false, "result": "@@ORCH type=ANSWER to=opus\nThe cookie path differs."}
+      ],
+      "exit": 0,
+      "kind": ""
+    },
+    {
+      "name": "an empty successful result is the agent saying nothing",
+      "stdout": [{"type": "result", "subtype": "success", "is_error": false, "result": ""}],
+      "exit": 0,
+      "kind": ""
+    },
+    {
+      "name": "a stderr warning before an overloaded result",
+      "stdout": [{"type": "result", "subtype": "success", "is_error": true, "result": "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"}],
+      "stderr": "Warning: the settings file has an unknown key \"theme\"\n",
+      "exit": 1,
+      "kind": "overloaded"
+    },
+    {
+      "name": "a server error result",
+      "stdout": [{"type": "result", "subtype": "error", "is_error": true, "result": "API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"}}"}],
+      "exit": 1,
+      "kind": "overloaded"
+    },
+    {
+      "name": "a usage limit with a reset time",
+      "stdout": [{"type": "result", "subtype": "success", "is_error": true, "result": "API Error: 429 rate_limit_error: retry after 30 seconds"}],
+      "exit": 1,
+      "kind": "limit",
+      "retryAfterSeconds": 30
+    },
+    {
+      "name": "a usage limit that resets at a clock time",
+      "stdout": [{"type": "result", "subtype": "success", "is_error": true, "result": "5-hour limit reached - resets 3pm"}],
+      "exit": 1,
+      "kind": "limit",
+      "retryAfterSeconds": 0
+    },
+    {
+      "name": "no credits",
+      "stdout": [{"type": "result", "subtype": "success", "is_error": true, "result": "Credit balance is too low"}],
+      "exit": 1,
+      "kind": "credits"
+    },
+    {
+      "name": "a model the plan does not include",
+      "stdout": [{"type": "result", "subtype": "error", "is_error": true, "result": "Your organization does not have access to claude-fable-5-1"}],
+      "exit": 1,
+      "kind": "plan"
+    },
+    {
+      "name": "a model the CLI does not know",
+      "stdout": [{"type": "result", "subtype": "error", "is_error": true, "result": "API Error: 404 {\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"model: claude-opus-9\"}}"}],
+      "exit": 1,
+      "kind": "model"
+    },
+    {
+      "name": "not logged in, said on stderr with no result",
+      "stdout": [],
+      "stderr": "Invalid API key · Please run /login\n",
+      "exit": 1,
+      "kind": "auth"
+    },
+    {
+      "name": "a turn stopped at the spending limit",
+      "stdout": [{"type": "result", "subtype": "error_max_budget_usd", "is_error": true, "total_cost_usd": 0.45, "usage": {"input_tokens": 10, "output_tokens": 5}}],
+      "exit": 1,
+      "kind": "budget"
+    },
+    {
+      "name": "a session the CLI no longer has, after a warning",
+      "stdout": [],
+      "stderr": "Warning: running in a non-interactive shell\nNo conversation found with session ID: 0b7d6c1e\n",
+      "exit": 1,
+      "kind": "session-missing"
+    },
+    {
+      "name": "a crash with no recognisable cause",
+      "stdout": [{"type": "stream_event", "event": {"type": "message_start", "message": {"usage": {"input_tokens": 2, "output_tokens": 1}}}}],
+      "stderr": "TypeError: Cannot read properties of undefined (reading 'map')\n    at main (cli.js:1:2)\n",
+      "exit": 1,
+      "kind": "crash"
+    },
+    {
+      "name": "project output mentioning a rate limit is never classified",
+      "stdout": [
+        {"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "The test log says: rate limit exceeded, billing failed, not logged in."}}}
+      ],
+      "stderr": "Error: unexpected end of stream\n",
+      "exit": 1,
+      "kind": "crash"
+    },
+    {
+      "name": "a turn the runner ended at its time limit",
+      "stdout": [{"type": "stream_event", "event": {"type": "message_start", "message": {"usage": {"input_tokens": 2, "output_tokens": 1}}}}],
+      "timeout": true,
+      "kind": "timeout"
+    },
+    {
+      "name": "a reply in prose with no header",
+      "stdout": [{"type": "result", "subtype": "success", "is_error": false, "result": "I had a look and everything seems fine."}],
+      "exit": 0,
+      "kind": "malformed"
+    },
+    {
+      "name": "a reply whose only block has no recipient",
+      "stdout": [{"type": "result", "subtype": "success", "is_error": false, "result": "@@ORCH type=ANSWER\nThe cookie path differs."}],
+      "exit": 0,
+      "kind": "malformed"
+    },
+    {
+      "name": "output that is not the JSON envelope",
+      "stdout": ["Please run `claude /login` to authenticate."],
+      "exit": 0,
+      "kind": "malformed"
+    }
+  ]
+}

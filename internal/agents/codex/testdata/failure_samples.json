@@ -1,0 +1,136 @@
+{
+  "comment": "Synthetic samples, NOT recorded from a live run: built from the `codex exec --json` events this package's existing tests already use (thread.started, turn.started, turn.completed with usage, item.* with an agent_message or command_execution item, turn.failed) plus the error event, whose message is read from whichever of message / error / error.message is present. stdout is a list of lines (a JSON object is the line, a string is itself); reply is what the --output-last-message file held. kind is the failure the adapter must report, \"\" for none; retryAfterSeconds is the reset it must read, when given.",
+  "samples": [
+    {
+      "name": "a successful turn",
+      "stdout": [
+        {"type": "thread.started", "thread_id": "thread-1"},
+        {"type": "turn.started"},
+        {"type": "turn.completed", "usage": {"input_tokens": 1000, "cached_input_tokens": 400, "output_tokens": 50}}
+      ],
+      "reply": "##CODEX TYPE=ANSWER TO=opus\nThe cookie path differs.",
+      "exit": 0,
+      "kind": ""
+    },
+    {
+      "name": "an empty reply with a clean exit is the agent saying nothing",
+      "stdout": [{"type": "turn.started"}, {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 0}}],
+      "reply": "",
+      "exit": 0,
+      "kind": ""
+    },
+    {
+      "name": "an error event Codex recovered from",
+      "stdout": [
+        {"type": "turn.started"},
+        {"type": "error", "message": "Reconnecting... 1/5"},
+        {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}
+      ],
+      "reply": "##CODEX TYPE=ANSWER TO=opus\nDone.",
+      "exit": 0,
+      "kind": ""
+    },
+    {
+      "name": "turn.failed with a server error",
+      "stdout": [
+        {"type": "turn.started"},
+        {"type": "turn.failed", "error": {"message": "stream disconnected before completion: 503 Service Unavailable"}}
+      ],
+      "exit": 1,
+      "kind": "overloaded"
+    },
+    {
+      "name": "a usage limit with a reset time, in an error event",
+      "stdout": [
+        {"type": "turn.started"},
+        {"type": "error", "message": "You've hit your usage limit. Try again in 2 hours 5 minutes."},
+        {"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again in 2 hours 5 minutes."}}
+      ],
+      "exit": 1,
+      "kind": "limit",
+      "retryAfterSeconds": 7500
+    },
+    {
+      "name": "a usage limit with no reset time",
+      "stdout": [{"type": "turn.failed", "error": "You've hit your usage limit. Upgrade to Pro or try again later"}],
+      "exit": 1,
+      "kind": "limit",
+      "retryAfterSeconds": 0
+    },
+    {
+      "name": "an error event and an exit, with no turn.failed",
+      "stdout": [{"type": "turn.started"}, {"type": "error", "message": "exceeded retry limit, last status: 529 overloaded"}],
+      "exit": 1,
+      "kind": "overloaded"
+    },
+    {
+      "name": "no quota",
+      "stdout": [{"type": "turn.failed", "error": {"message": "insufficient_quota: You exceeded your current quota"}}],
+      "exit": 1,
+      "kind": "credits"
+    },
+    {
+      "name": "a model the account cannot use",
+      "stdout": [{"type": "turn.failed", "error": {"message": "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account."}}],
+      "exit": 1,
+      "kind": "plan"
+    },
+    {
+      "name": "a model that does not exist",
+      "stdout": [{"type": "error", "message": "The model `gpt-9` does not exist or you do not have access to it."}],
+      "exit": 1,
+      "kind": "model"
+    },
+    {
+      "name": "not logged in, said only on stderr",
+      "stdout": [],
+      "stderr": "WARNING: proceeding, even though we could not update PATH\nError: Not signed in. Please run `codex login`.\n",
+      "exit": 1,
+      "kind": "auth"
+    },
+    {
+      "name": "a thread Codex no longer has",
+      "stdout": [],
+      "stderr": "Error: thread/resume failed: no rollout found for thread id 0199a8f2\n",
+      "exit": 1,
+      "kind": "session-missing"
+    },
+    {
+      "name": "a crash with no recognisable cause",
+      "stdout": [{"type": "thread.started", "thread_id": "thread-2"}],
+      "stderr": "thread 'main' panicked at core/src/exec.rs:41:5\n",
+      "exit": 101,
+      "kind": "crash"
+    },
+    {
+      "name": "project output mentioning a rate limit is never classified",
+      "stdout": [
+        {"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": "go test ./... # rate limit, billing, not logged in"}},
+        {"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": "The API docs mention a rate limit and billing."}}
+      ],
+      "stderr": "error: sandbox refused the write\n",
+      "exit": 1,
+      "kind": "crash"
+    },
+    {
+      "name": "a turn the runner ended at its time limit",
+      "stdout": [{"type": "turn.started"}],
+      "timeout": true,
+      "kind": "timeout"
+    },
+    {
+      "name": "a reply in prose with no header",
+      "stdout": [{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}],
+      "reply": "I looked and it is fine.",
+      "exit": 0,
+      "kind": "malformed"
+    },
+    {
+      "name": "a reply whose only block has no recipient",
+      "stdout": [{"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}],
+      "reply": "##CODEX TYPE=ANSWER\nThe cookie path differs.",
+      "exit": 0,
+      "kind": "malformed"
+    }
+  ]
+}

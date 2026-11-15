@@ -345,18 +345,27 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 	a.log.ForAgent(a.id).Debug("codex reply",
 		"duration", res.Duration.String(), "text", logging.Redact(truncate(reply, 400)))
 
-	msgs, err := parseOutput(reply)
-	if err != nil {
-		a.fail(err)
-		return
-	}
-	if len(msgs) == 0 {
-		a.fail(core.NoHeaderFailure("codex adapter", a.id, headerMarker, reply))
+	msgs, f := readReply(a.id, reply)
+	if f != nil {
+		a.fail(f)
 		return
 	}
 	for _, msg := range msgs {
 		a.emit(ports.Outbound{AgentID: a.id, Message: msg})
 	}
+}
+
+// readReply turns a reply's text into its messages, or the Malformed failure
+// of a reply none of whose blocks can be delivered.
+func readReply(agent domain.AgentID, reply string) ([]domain.Message, *domain.AgentFailure) {
+	msgs, err := parseOutput(reply)
+	if err != nil {
+		return nil, domain.FailureOf(err)
+	}
+	if len(msgs) == 0 {
+		return nil, core.NoHeaderFailure("codex adapter", agent, headerMarker, reply)
+	}
+	return msgs, nil
 }
 
 // runTurn sends one message: a new thread with the full brief, or a resumed

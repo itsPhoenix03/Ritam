@@ -418,21 +418,30 @@ func (a *ClaudeCodeAdapter) invoke(ctx context.Context, t *domain.Task, m domain
 		a.activity.Emit(ports.ActivityStatus, "nothing to reply")
 		return
 	}
-	msgs, err := parseOutput(text)
-	if err != nil {
-		a.fail(err)
-		return
-	}
-	if len(msgs) == 0 {
-		// The CLI answered but not in the protocol. Report it as an error so
-		// the orchestrator surfaces a stuck agent instead of waiting out its
-		// idle timeout in silence.
-		a.fail(core.NoHeaderFailure("claude-code adapter", a.id, headerMarker, text))
+	msgs, f := readReply(a.id, text)
+	if f != nil {
+		a.fail(f)
 		return
 	}
 	for _, msg := range msgs {
 		a.emit(ports.Outbound{AgentID: a.id, Message: msg})
 	}
+}
+
+// readReply turns a reply's text into its messages, or the Malformed failure
+// of a reply none of whose blocks can be delivered.
+func readReply(agent domain.AgentID, text string) ([]domain.Message, *domain.AgentFailure) {
+	msgs, err := parseOutput(text)
+	if err != nil {
+		return nil, domain.FailureOf(err)
+	}
+	if len(msgs) == 0 {
+		// The CLI answered but not in the protocol. Report it as an error so
+		// the orchestrator surfaces a stuck agent instead of waiting out its
+		// idle timeout in silence.
+		return nil, core.NoHeaderFailure("claude-code adapter", agent, headerMarker, text)
+	}
+	return msgs, nil
 }
 
 // openSession returns the session this turn should use, and whether it is a
