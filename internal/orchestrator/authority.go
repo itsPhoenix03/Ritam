@@ -120,12 +120,15 @@ func (a *AuthorityManager) Authorize(t *domain.Task, m *domain.Message) error {
 	return a.checkWriter(t, m)
 }
 
-// checkWriter refuses an IMPLEMENT or REQUEST_CHANGE addressed to an agent
-// that cannot write files, naming the agents that can. Only an agent's
-// request is checked: the human remains free to ask anyone anything.
+// checkWriter refuses an IMPLEMENT addressed to an agent that cannot write
+// files, naming the agents that can. Only an agent's request is checked: the
+// human remains free to ask anyone anything.
+//
+// REQUEST_CHANGE is deliberately let through: it is also how the authority
+// asks a read-only reviewer to revise its own proposal or review, which
+// changes no file. Refusing it would leave that agent's work unrevisable.
 func (a *AuthorityManager) checkWriter(t *domain.Task, m *domain.Message) error {
-	if a.Rights == nil || (m.Type != domain.MsgImplement && m.Type != domain.MsgRequestChange) ||
-		!t.HasParticipant(m.ToAgent) {
+	if a.Rights == nil || m.Type != domain.MsgImplement || !t.HasParticipant(m.ToAgent) {
 		return nil
 	}
 	if r, known := a.Rights.AgentRights(t, m.ToAgent); !known || r.Writes {

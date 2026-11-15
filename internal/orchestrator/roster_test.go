@@ -223,3 +223,18 @@ func checkGolden(t *testing.T, name, got string) {
 		}
 	}
 }
+
+// TestARequestToReviseReachesAReadOnlyAgent: REQUEST_CHANGE is also how the
+// authority asks a read-only reviewer to revise its own proposal, which
+// changes no file. Only IMPLEMENT is refused for a read-only agent.
+func TestARequestToReviseReachesAReadOnlyAgent(t *testing.T) {
+	r := newRosterRig(t)
+	ctx := context.Background()
+	if _, err := r.h.orch.HandleOutboundForTest(ctx, r.task.ID, ports.Outbound{AgentID: "opus-1",
+		Message: domain.Message{ToAgent: "sonnet-1", Type: domain.MsgRequestChange, Content: "Tighten section 2 of your proposal."}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.sonnet.deliveries()); n != 1 {
+		t.Fatalf("a read-only agent must still be asked to revise its own work, got %d deliveries", n)
+	}
+}
