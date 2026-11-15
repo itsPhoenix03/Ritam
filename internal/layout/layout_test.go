@@ -134,6 +134,7 @@ func TestFoldersMadeUnderAnOldNameAreRenamed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(oldHome, brand.ConfigFileFor(old)), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeFormerHome(t, oldHome)
 	msg, err := RenameHome(old)
 	if err != nil || msg == "" {
 		t.Fatalf("rename home: %q %v", msg, err)
@@ -147,6 +148,7 @@ func TestFoldersMadeUnderAnOldNameAreRenamed(t *testing.T) {
 	oldDir := filepath.Join(root, brand.HiddenDirFor(old))
 	_ = os.MkdirAll(oldDir, 0o755)
 	_ = os.WriteFile(filepath.Join(oldDir, brand.DBFileFor(old)), []byte("db"), 0o600)
+	_ = os.WriteFile(filepath.Join(oldDir, "project.json"), []byte(`{"id":"0a1b2c3d"}`), 0o600)
 	reg, _ := LoadRegistry(h.ProjectsFile())
 	done, err := RenameAll(old, reg, root)
 	if err != nil || len(done) != 1 {

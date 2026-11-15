@@ -34,12 +34,17 @@ type place struct {
 // <project>/.<name>/<name>.yaml.
 func prepare(configPath string) (*config.Config, place, error) {
 	var pl place
+	// An app home kept under both names is the human's to sort out; ritam
+	// uses the new one meanwhile rather than refuse to start.
 	for _, old := range brand.FormerNames {
 		msg, err := layout.RenameHome(old)
-		if err != nil {
+		var both *layout.BothExistError
+		switch {
+		case errors.As(err, &both):
+			pl.notices = append(pl.notices, "warning: "+err.Error())
+		case err != nil:
 			return nil, pl, err
-		}
-		if msg != "" {
+		case msg != "":
 			pl.notices = append(pl.notices, msg)
 		}
 	}
@@ -64,11 +69,11 @@ func prepare(configPath string) (*config.Config, place, error) {
 		root = filepath.Dir(visible)
 	}
 	for _, old := range brand.FormerNames {
-		done, err := layout.RenameAll(old, pl.reg, root)
+		done, err := layout.MigrateFormerName(old, pl.reg, root)
+		pl.notices = append(pl.notices, done...)
 		if err != nil {
 			return nil, pl, err
 		}
-		pl.notices = append(pl.notices, done...)
 	}
 
 	// The global settings are the user's own; the project's travel with it,

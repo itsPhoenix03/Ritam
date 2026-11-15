@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -21,6 +23,9 @@ type Registry struct {
 	// forgotten are ids this process removed, which a merge with the file
 	// on disk must not bring back.
 	forgotten map[string]bool
+	// pendingMigrated are former names already dealt with for folders not
+	// registered yet, applied when Touch registers them.
+	pendingMigrated map[string][]string
 }
 
 // Entry is one known project.
@@ -38,6 +43,10 @@ type Entry struct {
 	// a copy), so what they ask for is granted only up to what was approved
 	// here, for this project in this folder.
 	Access *AccessGrant `json:"access,omitempty"`
+	// Migrated lists the former app names whose hidden folder was already
+	// looked for in this project and renamed (or found absent or not ours),
+	// so the start-up migration does not run again here.
+	Migrated []string `json:"migrated,omitempty"`
 }
 
 // AccessGrant is an access level approved for one project folder.
@@ -151,8 +160,64 @@ func (r *Registry) Touch(p Project) error {
 	if !found {
 		r.entries = append(r.entries, Entry{ID: p.ID, Name: p.Name, Path: p.Root, LastSeen: time.Now()})
 	}
+	if names, ok := r.pendingMigrated[filepath.Clean(p.Root)]; ok {
+		for i := range r.entries {
+			if r.entries[i].ID == p.ID {
+				r.entries[i].Migrated = addNames(r.entries[i].Migrated, names...)
+			}
+		}
+		delete(r.pendingMigrated, filepath.Clean(p.Root))
+	}
 	r.mu.Unlock()
 	return r.Save()
+}
+
+// migrated reports whether the start-up rename from oldName was already
+// done for the project in folder path.
+func (r *Registry) migrated(path, oldName string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if samePath(e.Path, path) {
+			return slices.Contains(e.Migrated, oldName)
+		}
+	}
+	return false
+}
+
+// markMigrated records that the start-up rename from oldName is done for
+// the project in folder path. A folder not registered yet keeps the mark
+// until Touch registers it. The caller saves.
+func (r *Registry) markMigrated(path, oldName string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.entries {
+		if samePath(r.entries[i].Path, path) {
+			r.entries[i].Migrated = addNames(r.entries[i].Migrated, oldName)
+			return
+		}
+	}
+	if r.pendingMigrated == nil {
+		r.pendingMigrated = map[string][]string{}
+	}
+	key := filepath.Clean(path)
+	r.pendingMigrated[key] = addNames(r.pendingMigrated[key], oldName)
+}
+
+// addNames adds the names list lacks.
+func addNames(list []string, names ...string) []string {
+	for _, n := range names {
+		if !slices.Contains(list, n) {
+			list = append(list, n)
+		}
+	}
+	return list
 }
 
 // Missing lists the known projects whose folder no longer exists, noting
