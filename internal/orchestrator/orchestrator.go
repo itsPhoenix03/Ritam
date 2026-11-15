@@ -700,14 +700,21 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 
 // overDailyLimit adds a turn's usage to the day's spending and reports
 // whether the day is over its limit.
+//
+// A record that cannot be locked, read or written -- or was found corrupt and
+// set aside -- counts as over the limit. It used to be logged and the day
+// treated as under it, so a broken record meant no daily limit at all, and
+// spending went on unmetered with nothing on screen to say so. The task
+// pauses saying why; the human resumes it once the record is fixed.
 func (o *Orchestrator) overDailyLimit(u ports.Usage) (string, bool) {
 	if o.daily == nil {
 		return "", false
 	}
 	cost, tokens, err := o.daily.Add(u)
 	if err != nil {
-		o.log.Warn("recording the day's spending", "error", err)
-		return "", false
+		o.log.Error("recording the day's spending", "error", err)
+		return fmt.Sprintf("%s: the daily spend record could not be read or written (%v); "+
+			"fix it, then resume", domain.PauseReasonDailyBudget, err), true
 	}
 	switch {
 	case o.maxDailyCostUSD > 0 && cost >= o.maxDailyCostUSD:
