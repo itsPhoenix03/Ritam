@@ -147,9 +147,11 @@ func TestAnUnrelatedAppHomeUnderTheFormerNameIsNotAdopted(t *testing.T) {
 	}
 }
 
-// TestBackupsOfAProjectOnAnUnmountedDriveAreKept: with "delete" and no
-// days of grace, a project whose drive is not plugged in is not taken for
-// deleted, and its backups stay; a project really deleted loses them.
+// TestBackupsOfAProjectOnAnUnmountedDriveAreKept: with "delete" and the
+// days of grace long past, a project whose drive is not plugged in is not
+// taken for deleted, and its backups stay; a project really deleted loses
+// them. (The settings refuse zero days of grace, so both projects are
+// recorded as gone for two days against a grace of one.)
 func TestBackupsOfAProjectOnAnUnmountedDriveAreKept(t *testing.T) {
 	home, _ := inProject(t)
 	away := filepath.Join(string(filepath.Separator), "no-such-volume-ritam-test", "work", "away")
@@ -165,9 +167,10 @@ func TestBackupsOfAProjectOnAnUnmountedDriveAreKept(t *testing.T) {
 		}
 	}
 	gone := filepath.Join(t.TempDir(), "gone")
+	longGone := time.Now().Add(-48 * time.Hour)
 	entries := []layout.Entry{
-		{ID: "a0a0a0a0", Name: "away", Path: away, LastSeen: time.Now()},
-		{ID: "b0b0b0b0", Name: "gone", Path: gone, LastSeen: time.Now()},
+		{ID: "a0a0a0a0", Name: "away", Path: away, LastSeen: time.Now(), MissingSince: longGone},
+		{ID: "b0b0b0b0", Name: "gone", Path: gone, LastSeen: time.Now(), MissingSince: longGone},
 	}
 	writeRegistry(t, home, entries...)
 	for _, e := range entries {
@@ -176,7 +179,7 @@ func TestBackupsOfAProjectOnAnUnmountedDriveAreKept(t *testing.T) {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(home, brand.ConfigFile()),
-		[]byte("backups:\n  whenProjectDeleted: delete\n  deleteAfterDays: 0\n"), 0o600); err != nil {
+		[]byte("backups:\n  whenProjectDeleted: delete\n  deleteAfterDays: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
