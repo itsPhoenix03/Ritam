@@ -517,6 +517,12 @@ type Service interface {
 	// sessions kept, and runs it; the authority is told why it had failed.
 	Retry(ctx context.Context, id domain.TaskID) error
 	Cancel(ctx context.Context, id domain.TaskID, reason string) error
+	// RaiseLimits raises a task's message ceiling (MaxTotalMessages) or its
+	// spending limits (MaxCostUSD, MaxTokens) to the non-zero values in
+	// more. Nothing else resets the ceiling, so without this a task that
+	// reached it got one more message per resume. It raises only, and does
+	// not resume the task.
+	RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) error
 	Approve(ctx context.Context, id domain.TaskID, note string) error
 	Reject(ctx context.Context, id domain.TaskID, note string) error
 	SendInstruction(ctx context.Context, id domain.TaskID, to domain.AgentID, content string) error

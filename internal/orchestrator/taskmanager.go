@@ -464,16 +464,20 @@ func resetAllowance(t *domain.Task) {
 // (CheckpointDue), not pauses. A long task needs many rounds, and what is
 // worth stopping is agents making no progress, running unattended too long,
 // or spending too much.
+//
+// With several reached, the one reported is the one the human most needs to
+// know about: spending (budget; the day's cap is checked with the usage, see
+// Orchestrator.recordUsage), then time, then the message counts. The message
+// ceiling used to come first, and since nothing reset it, a task over it
+// reported every budget breach as a message limit -- and the usage path,
+// which pauses only for a budget, did not pause at all.
 func LimitExceeded(t *domain.Task) (string, bool) {
+	if reason, over := timeOrBudgetExceeded(t); over {
+		return reason, true
+	}
 	l := t.Limits
 	if l.MaxTotalMessages > 0 && t.MessageCount >= l.MaxTotalMessages {
 		return domain.PauseReasonMaxTotal, true
-	}
-	if l.MaxCostUSD > 0 && t.CostUSD >= l.MaxCostUSD {
-		return fmt.Sprintf("%s ($%.2f of $%.2f)", domain.PauseReasonBudget, t.CostUSD, l.MaxCostUSD), true
-	}
-	if l.MaxTokens > 0 && t.InputTokens+t.OutputTokens >= l.MaxTokens {
-		return fmt.Sprintf("%s (%d of %d tokens)", domain.PauseReasonBudget, t.InputTokens+t.OutputTokens, l.MaxTokens), true
 	}
 	if l.StallMessages > 0 && t.StallCount >= l.StallMessages {
 		return domain.PauseReasonStalled, true
@@ -481,14 +485,50 @@ func LimitExceeded(t *domain.Task) (string, bool) {
 	if l.MaxMessages > 0 && t.AgentMessages >= l.MaxMessages {
 		return domain.PauseReasonMaxMessages, true
 	}
-	start := t.SegmentStart
-	if start.IsZero() {
-		start = t.CreatedAt
-	}
-	if l.MaxDuration > 0 && time.Since(start) >= l.MaxDuration {
-		return domain.PauseReasonMaxDuration, true
-	}
 	return "", false
+}
+
+// RaiseLimits raises the task's message ceiling (MaxTotalMessages) and its
+// spending limits (MaxCostUSD, MaxTokens) to the values set in more; a zero
+// field leaves that limit as it is. Only the human raises them: nothing else
+// resets the message ceiling, so once a task reached it every resume allowed
+// exactly one more message, for ever.
+//
+// It raises only. A value at or below the current limit, or a limit the task
+// does not have (zero: none), is refused: lowering one, or imposing one, is
+// not what the human asked for here.
+func (tm *TaskManager) RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) (*domain.Task, error) {
+	other := more
+	other.MaxTotalMessages, other.MaxCostUSD, other.MaxTokens = 0, 0, 0
+	if other != (domain.TaskLimits{}) {
+		return nil, fmt.Errorf("raise limits of %s: only the message ceiling and the spending limits can be raised", id)
+	}
+	if more == (domain.TaskLimits{}) {
+		return nil, fmt.Errorf("raise limits of %s: no new limit given", id)
+	}
+	return tm.change(ctx, id, func(t *domain.Task) error {
+		l := &t.Limits
+		raise := func(name string, cur, to float64, set func()) error {
+			switch {
+			case to == 0:
+				return nil
+			case cur == 0:
+				return fmt.Errorf("raise limits of %s: it has no %s limit", id, name)
+			case to <= cur:
+				return fmt.Errorf("raise limits of %s: %s %v is not above the current %v", id, name, to, cur)
+			}
+			set()
+			return nil
+		}
+		if err := raise("message", float64(l.MaxTotalMessages), float64(more.MaxTotalMessages),
+			func() { l.MaxTotalMessages = more.MaxTotalMessages }); err != nil {
+			return err
+		}
+		if err := raise("cost", l.MaxCostUSD, more.MaxCostUSD, func() { l.MaxCostUSD = more.MaxCostUSD }); err != nil {
+			return err
+		}
+		return raise("token", float64(l.MaxTokens), float64(more.MaxTokens), func() { l.MaxTokens = more.MaxTokens })
+	})
 }
 
 // timeOrBudgetExceeded reports whether the task has run past its duration or

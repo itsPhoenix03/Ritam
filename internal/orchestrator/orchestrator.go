@@ -443,7 +443,7 @@ func (o *Orchestrator) CreateTask(ctx context.Context, in ports.CreateTaskInput)
 // There is no fixed number of rounds. The authority agent decides when enough
 // evidence exists; the configured limits only ever pause the task and ask for
 // a human, they never declare a winner.
-func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
+func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) (err error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// The run is entered before it waits for a slot, so a pause or a cancel
@@ -467,6 +467,9 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 		}
 		o.mu.Unlock()
 	}()
+	// Runs after the agents are stopped and billed (endRun), before the run
+	// is gone.
+	defer func() { o.pauseAfterError(context.WithoutCancel(ctx), id, err) }()
 
 	waited, err := o.acquireSlot(runCtx, id)
 	if err != nil {
@@ -2061,6 +2064,30 @@ func (o *Orchestrator) queue(id domain.TaskID, msgs ...*domain.Message) {
 	o.mu.Unlock()
 }
 
+// pauseAfterError pauses a task whose run ended on an error, with the error
+// as the reason. A storage or routing error returned from the run used to
+// leave the task PLANNING or DELIBERATING with nothing driving it, until a
+// restart found it. A run ended by its context -- a pause, a cancel, ritam
+// exiting -- is not an error here: whoever ended it set the task's state.
+func (o *Orchestrator) pauseAfterError(ctx context.Context, id domain.TaskID, err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t, gerr := o.Tasks.Get(ctx, id)
+	if gerr != nil {
+		o.log.Error("pause a task whose run failed", "taskId", string(id), "error", err, "readError", gerr)
+		return
+	}
+	if t.State.IsTerminal() || t.State == domain.TaskPaused {
+		return
+	}
+	reason := fmt.Sprintf("the run stopped on an error (%v); resume to try again", err)
+	o.Events.emit(ctx, domain.EvtLimitReached, id, "", reason, map[string]string{"kind": "RUN_ERROR"})
+	if _, perr := o.Tasks.Pause(ctx, id, domain.HumanAgentID, reason); perr != nil {
+		o.log.Error("pause a task whose run failed", "taskId", string(id), "error", err, "pauseError", perr)
+	}
+}
+
 // taskRun is one RunTask holding a task: queued for a slot, then live.
 type taskRun struct {
 	cancel context.CancelFunc
@@ -2514,6 +2541,32 @@ func (o *Orchestrator) Pause(ctx context.Context, id domain.TaskID, reason strin
 	o.cancelRun(id)
 	_, err := o.Tasks.Pause(ctx, id, domain.HumanAgentID, reason)
 	return err
+}
+
+// RaiseLimits raises a task's message ceiling or spending limits at the
+// human's request (see TaskManager.RaiseLimits). It does not resume the
+// task: a task paused at a limit is resumed as usual, and then has room.
+func (o *Orchestrator) RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) error {
+	before, err := o.Tasks.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	after, err := o.Tasks.RaiseLimits(ctx, id, more)
+	if err != nil {
+		return err
+	}
+	var parts []string
+	if b, a := before.Limits.MaxTotalMessages, after.Limits.MaxTotalMessages; a != b {
+		parts = append(parts, fmt.Sprintf("messages %d -> %d (%d used)", b, a, after.MessageCount))
+	}
+	if b, a := before.Limits.MaxCostUSD, after.Limits.MaxCostUSD; a != b {
+		parts = append(parts, fmt.Sprintf("budget $%.2f -> $%.2f ($%.2f spent)", b, a, after.CostUSD))
+	}
+	if b, a := before.Limits.MaxTokens, after.Limits.MaxTokens; a != b {
+		parts = append(parts, fmt.Sprintf("tokens %d -> %d (%d used)", b, a, after.InputTokens+after.OutputTokens))
+	}
+	o.Events.emit(ctx, domain.EvtHumanOverride, id, domain.HumanAgentID, "LIMITS raised: "+strings.Join(parts, "; "), nil)
+	return nil
 }
 
 // Resume restores a paused task to the state it held before the pause. The

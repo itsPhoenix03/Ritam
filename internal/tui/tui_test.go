@@ -43,7 +43,8 @@ type fakeService struct {
 	lastReason,
 	lastNote,
 	lastInstruction string
-	lastTo domain.AgentID
+	lastTo    domain.AgentID
+	lastRaise domain.TaskLimits
 }
 
 func newFakeService() *fakeService {
@@ -150,6 +151,14 @@ func (f *fakeService) Retry(ctx context.Context, id domain.TaskID) error {
 func (f *fakeService) Cancel(ctx context.Context, id domain.TaskID, reason string) error {
 	f.record("Cancel")
 	f.lastReason = reason
+	return nil
+}
+
+func (f *fakeService) RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) error {
+	f.record("RaiseLimits")
+	f.mu.Lock()
+	f.lastRaise = more
+	f.mu.Unlock()
 	return nil
 }
 

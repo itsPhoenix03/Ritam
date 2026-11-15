@@ -305,6 +305,11 @@ func (s *Service) Retry(ctx context.Context, id domain.TaskID) error {
 	return s.goRun(ctx, id, "retry")
 }
 
+// RaiseLimits raises a task's message ceiling or spending limits.
+func (s *Service) RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) error {
+	return s.orch.RaiseLimits(ctx, id, more)
+}
+
 // Cancel terminates a task.
 func (s *Service) Cancel(ctx context.Context, id domain.TaskID, reason string) error {
 	return s.orch.Cancel(ctx, id, reason)
