@@ -142,6 +142,11 @@ func (f *fakeService) Resume(ctx context.Context, id domain.TaskID) error {
 	return nil
 }
 
+func (f *fakeService) Retry(ctx context.Context, id domain.TaskID) error {
+	f.record("Retry")
+	return nil
+}
+
 func (f *fakeService) Cancel(ctx context.Context, id domain.TaskID, reason string) error {
 	f.record("Cancel")
 	f.lastReason = reason

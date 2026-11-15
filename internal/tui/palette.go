@@ -42,6 +42,7 @@ var commands = []command{
 	{name: "instruct", usage: `instruct <agent> "..."`, help: "inject a human turn into the round", argHint: "agent"},
 	{name: "pause", usage: "pause [reason]", help: "stop the task's agents mid-turn; r resumes from the current round"},
 	{name: "resume", usage: "resume", help: "continue from the current round"},
+	{name: "retry", usage: "retry", help: "bring a FAILED task back: same agents, their sessions kept (R)"},
 	{name: "cancel", usage: "cancel [reason]", help: "end the task for good (asks first), terminate child CLIs"},
 	{name: "approve", usage: "approve [note]", help: "accept the pending FINAL_DECISION"},
 	{name: "reject", usage: "reject [note]", help: "refuse the pending FINAL_DECISION, saying what must change"},
@@ -212,6 +213,9 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		}
 		m.setStatus("resuming %s...", t.ID)
 		return m, resumeCmd(m.ctx, m.svc, t.ID)
+
+	case "retry":
+		return m.retry()
 
 	// The typed forms of the keys follow the same rules: cancel asks first,
 	// approve and reject act only on a pending decision, and a rejection

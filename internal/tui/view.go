@@ -173,7 +173,8 @@ func (m Model) attention() (line, bool) {
 		l = append(l, key("i", "instruct")...)
 		return l, true
 	case domain.TaskFailed:
-		return line{st(" FAILED ", badgeErrStyle), st(" "+collapse(t.FailureReason), errorStyle)}, true
+		l := line{st(" FAILED ", badgeErrStyle), st(" "+collapse(t.FailureReason)+"  ", errorStyle)}
+		return append(l, key("R", "retry")...), true
 	}
 	if qs := m.openQuestionsToAgents(); qs != "" {
 		return line{st("waiting on ", dimStyle), st(qs, emphStyle), st(" to answer you", dimStyle)}, true
@@ -350,6 +351,9 @@ func (m Model) helpBarRow(width int) string {
 	}
 	if t := m.currentTask(); t != nil && t.State == domain.TaskPaused {
 		keys = append(keys, keyHint{"r", "resume"})
+	} else if t != nil && t.State == domain.TaskFailed {
+		// Shown only here: retry means nothing for any other state.
+		keys = append(keys, keyHint{"R", "retry"})
 	} else {
 		keys = append(keys, keyHint{"p", "pause"})
 	}

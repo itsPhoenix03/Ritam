@@ -178,6 +178,13 @@ type Task struct {
 	// or pauses it when the agent is the authority. A readable message from
 	// the agent clears its count.
 	MalformedCount map[AgentID]int
+	// Dropped holds, per agent, why it was taken off the task: its turns kept
+	// failing, or its account cannot run its model. A dropped agent receives
+	// nothing more on the task. Announcing the drop to the authority used to
+	// be all it was, and the agent went on receiving deliveries. It is stored
+	// with the task so a pause and resume keeps it; the human resuming the
+	// task clears it, giving every agent a fresh chance.
+	Dropped map[AgentID]string
 
 	// FollowUp marks a completed task reopened to answer a human follow-up.
 	// It completes again once the follow-up has been answered.
@@ -247,11 +254,23 @@ func (t *Task) Clone() *Task {
 			cp.MalformedCount[k] = v
 		}
 	}
+	if t.Dropped != nil {
+		cp.Dropped = make(map[AgentID]string, len(t.Dropped))
+		for k, v := range t.Dropped {
+			cp.Dropped[k] = v
+		}
+	}
 	if t.CompletedAt != nil {
 		v := *t.CompletedAt
 		cp.CompletedAt = &v
 	}
 	return &cp
+}
+
+// IsDropped reports whether agent was taken off the task (see Dropped).
+func (t *Task) IsDropped(agent AgentID) bool {
+	_, ok := t.Dropped[agent]
+	return ok
 }
 
 // Builder modes besides a participant's id.

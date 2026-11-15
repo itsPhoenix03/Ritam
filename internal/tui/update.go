@@ -333,6 +333,22 @@ func (m Model) requestQuit() (Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
+// retry brings the selected task back if it FAILED. FAILED used to be
+// terminal, with nothing on screen to do about it.
+func (m Model) retry() (Model, tea.Cmd) {
+	t := m.currentTask()
+	switch {
+	case t == nil:
+		m.setStatus("no task selected")
+		return m, nil
+	case t.State != domain.TaskFailed:
+		m.setStatus("%s is %s: only a failed task can be retried", t.ID, t.State)
+		return m, nil
+	}
+	m.setStatus("retrying %s...", t.ID)
+	return m, retryCmd(m.ctx, m.svc, t.ID)
+}
+
 // requestCancel asks before cancelling the selected task: a cancelled task
 // can never be resumed or reopened.
 func (m Model) requestCancel(reason string) (Model, tea.Cmd) {
@@ -764,6 +780,9 @@ func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 		}
 		m.setStatus("resuming %s...", t.ID)
 		return m, resumeCmd(m.ctx, m.svc, t.ID)
+
+	case ActionRetryTask:
+		return m.retry()
 
 	case ActionCancelTask:
 		return m.requestCancel("")

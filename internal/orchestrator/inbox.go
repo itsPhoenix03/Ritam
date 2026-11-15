@@ -107,6 +107,19 @@ func (o *Orchestrator) Backlog(id domain.TaskID) map[domain.AgentID]int {
 	return out
 }
 
+// discardInbox throws away what waits for agent: it was dropped from the
+// task and will never be handed it.
+func (o *Orchestrator) discardInbox(id domain.TaskID, agent domain.AgentID) {
+	ib := o.inbox(id)
+	if ib == nil {
+		return
+	}
+	ib.mu.Lock()
+	delete(ib.pending, agent)
+	delete(ib.heldSince, agent)
+	ib.mu.Unlock()
+}
+
 // handoff is the bus's Handoff hook: it puts a message for a running task in
 // the recipient's inbox and tries to hand the inbox over at once.
 func (o *Orchestrator) handoff(ctx context.Context, t *domain.Task, m *domain.Message) bool {
@@ -162,6 +175,11 @@ func (o *Orchestrator) dispatch(ctx context.Context, id domain.TaskID) {
 
 // flush hands agent its inbox if it is free and not held.
 func (o *Orchestrator) flush(ctx context.Context, t *domain.Task, ledger []domain.Request, ib *taskInbox, agent domain.AgentID) {
+	if t.IsDropped(agent) {
+		// Taken off the task: what waits for it is never delivered.
+		o.discardInbox(t.ID, agent)
+		return
+	}
 	ad, ok := o.Agents.AdapterFor(t.ID, agent)
 	if !ok || ad.Status() == domain.AgentStateWorking {
 		return
@@ -234,12 +252,14 @@ func (o *Orchestrator) holdFor(t *domain.Task, ledger []domain.Request, agent do
 	}
 	var busy []domain.AgentID
 	for _, y := range waitsOn(ledger, t, agent) {
-		if ad, ok := o.Agents.AdapterFor(t.ID, y); ok && ad.Status() == domain.AgentStateWorking {
+		if ad, ok := o.Agents.AdapterFor(t.ID, y); ok && ad.Status() == domain.AgentStateWorking || o.isRetrying(t.ID, y) {
 			busy = append(busy, y)
 		}
 	}
-	// Only a co-worker still working will produce the answer; waiting on an
-	// idle one would wait for nothing (the reminders deal with silence).
+	// Only a co-worker still working -- or about to be tried again -- will
+	// produce the answer; waiting on an idle one would wait for nothing (the
+	// reminders deal with silence). The note that a co-worker is being
+	// retried thus reaches the agent with the answer, in one turn.
 	return busy
 }
 
@@ -299,6 +319,8 @@ func (o *Orchestrator) deliverInbox(ctx context.Context, t *domain.Task, ad port
 			o.Events.emit(ctx, domain.EvtAgentFailed, t.ID, agent, fmt.Sprintf("delivery to %s failed: %v", agent, err), nil)
 			return
 		}
+		// Kept as the turn a retry sends again should this one fail.
+		o.noteDelivery(t.ID, agent, d)
 	}
 	for _, m := range msgs {
 		details := map[string]string{"messageId": string(m.ID)}

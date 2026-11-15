@@ -61,6 +61,13 @@ const (
 	// owing the reply stayed silent after a reminder.
 	EvtRequestAbandoned EventType = "RequestAbandoned"
 	EvtHumanOverride    EventType = "HumanOverride"
+	// EvtAgentRetried records an agent's failed turn being tried again (a
+	// timeout, an overloaded server, a crash, a limit that resets soon).
+	// Details: kind, attempt, delay.
+	EvtAgentRetried EventType = "AgentRetried"
+	// EvtAgentDropped records an agent taken off a task: it receives nothing
+	// more on it until the human resumes the task. Details: kind.
+	EvtAgentDropped EventType = "AgentDropped"
 	// EvtAccessLevel records the workspace's access level on a task: when
 	// the task starts, and on every change the human makes. Details: level,
 	// from (on a change), commands.

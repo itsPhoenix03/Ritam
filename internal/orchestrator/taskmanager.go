@@ -504,3 +504,56 @@ func joinAgents(ids []domain.AgentID) string {
 	}
 	return strings.Join(parts, ",")
 }
+
+// DropAgent records that agent was taken off the task, and why (see
+// domain.Task.Dropped).
+func (tm *TaskManager) DropAgent(ctx context.Context, id domain.TaskID, agent domain.AgentID, why string) (*domain.Task, error) {
+	return tm.update(ctx, id, func(t *domain.Task) {
+		if t.Dropped == nil {
+			t.Dropped = map[domain.AgentID]string{}
+		}
+		t.Dropped[agent] = why
+	})
+}
+
+// ClearDropped puts every dropped agent back on the task: the human resuming
+// it gives each a fresh chance.
+func (tm *TaskManager) ClearDropped(ctx context.Context, id domain.TaskID) (*domain.Task, error) {
+	return tm.update(ctx, id, func(t *domain.Task) { t.Dropped = nil })
+}
+
+// ErrNotRetryable is returned when a task that is not FAILED is asked to
+// retry.
+var ErrNotRetryable = errors.New("only a failed task can be retried")
+
+// Retry brings a FAILED task back to DELIBERATING, at the human's request,
+// with the same participants. FAILED was terminal: a task failed by one
+// agent's timeout (or by an older version of ritam) could only be abandoned.
+//
+// Like Reopen it is not an entry in the transition table, which governs what
+// the run loop and the agents can cause; only the human brings a failed task
+// back. The failure reason is kept on record in the events.
+func (tm *TaskManager) Retry(ctx context.Context, id domain.TaskID, by domain.AgentID) (*domain.Task, error) {
+	t, err := tm.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if t.State != domain.TaskFailed {
+		return nil, fmt.Errorf("retry %s (%s): %w", id, t.State, ErrNotRetryable)
+	}
+	from, reason := t.State, t.FailureReason
+	t.State = domain.TaskDeliberating
+	t.FailureReason = ""
+	t.Dropped = nil
+	t.MalformedCount = nil
+	t.UpdatedAt = time.Now()
+	resetAllowance(t)
+	if err := tm.repo.Update(ctx, t); err != nil {
+		return nil, err
+	}
+	tm.events.emit(ctx, domain.EvtTaskStateChanged, t.ID, by,
+		fmt.Sprintf("%s -> %s", from, t.State),
+		map[string]string{"from": string(from), "to": string(t.State), "reason": "retried by human"})
+	tm.events.emit(ctx, domain.EvtTaskResumed, t.ID, by, "retried after failing: "+reason, nil)
+	return t.Clone(), nil
+}

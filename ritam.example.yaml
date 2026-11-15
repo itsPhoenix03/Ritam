@@ -46,7 +46,12 @@ providers:
     # and on Windows these are usually shims on PATH.
     executable: claude
     startupTimeout: 30s
-    responseTimeout: 5m      # bounds a single CLI invocation
+    # Each CLI invocation (one turn) is bounded: responseTimeout for an agent
+    # that only reads, writeResponseTimeout for one that may write files or run
+    # commands (builds and tests take longer). A turn that times out is tried
+    # once more; a second timeout drops a supporting agent or pauses the task.
+    responseTimeout: 5m
+    writeResponseTimeout: 20m
     # Agents may edit files, only ever inside the workspace (the folder ritam
     # runs in). false makes this provider's agents read-only.
     allowWrites: true
@@ -58,6 +63,7 @@ providers:
     executable: codex
     startupTimeout: 30s
     responseTimeout: 5m
+    writeResponseTimeout: 20m
     allowWrites: true        # maps to codex's workspace-write sandbox
     allowedCommands: []
 
@@ -97,10 +103,13 @@ orchestrator:
   # Hold a task at AWAITING_DECISION until the human approves or rejects the
   # authority agent's FINAL_DECISION.
   requireHumanApproval: false
-  # Pause the task if no agent says or does anything for this long. An agent
-  # streaming output or running tools counts as active, so a long CLI turn
-  # that is visibly working is never mistaken for a hung one.
+  # Pause the task if no agent says or does anything for this long. It does
+  # not run while an agent is working: a long CLI turn, even a silent one, is
+  # bounded by its provider's responseTimeout / writeResponseTimeout instead.
   idleTimeout: 60s
+  # A usage limit that resets within this long is waited out and the turn
+  # tried again; one that resets later pauses the task, saying when.
+  maxRateLimitWait: 2m
 
 # Where tasks, messages, events, decisions and shared knowledge are kept.
 # sqlite (default): the project's own database, .ritam/ritam.db in its hidden

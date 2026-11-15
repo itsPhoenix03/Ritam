@@ -475,6 +475,9 @@ type Service interface {
 	// Human override surface. The human is always able to intervene.
 	Pause(ctx context.Context, id domain.TaskID, reason string) error
 	Resume(ctx context.Context, id domain.TaskID) error
+	// Retry brings a FAILED task back with the same participants, their
+	// sessions kept, and runs it; the authority is told why it had failed.
+	Retry(ctx context.Context, id domain.TaskID) error
 	Cancel(ctx context.Context, id domain.TaskID, reason string) error
 	Approve(ctx context.Context, id domain.TaskID, note string) error
 	Reject(ctx context.Context, id domain.TaskID, note string) error

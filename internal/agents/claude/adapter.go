@@ -169,10 +169,9 @@ func New(id domain.AgentID, cfg config.AgentConfig, log *logging.Logger) *Claude
 	if exe == "" {
 		exe = defaultExecutable
 	}
-	timeout := cfg.ResponseTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
+	// A turn that may build and test gets longer than one that only reads
+	// (config.AgentConfig.TurnTimeout).
+	timeout := cfg.TurnTimeout()
 	a := &ClaudeCodeAdapter{
 		id:  id,
 		cfg: cfg,

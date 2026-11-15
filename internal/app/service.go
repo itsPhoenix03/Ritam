@@ -293,6 +293,18 @@ func (s *Service) Resume(ctx context.Context, id domain.TaskID) error {
 	return s.goRun(ctx, id, "resume")
 }
 
+// Retry brings a failed task back (same participants, their sessions kept)
+// and continues its deliberation, the authority told why it had failed.
+func (s *Service) Retry(ctx context.Context, id domain.TaskID) error {
+	if err := s.accepting(); err != nil {
+		return err
+	}
+	if err := s.orch.Retry(ctx, id); err != nil {
+		return err
+	}
+	return s.goRun(ctx, id, "retry")
+}
+
 // Cancel terminates a task.
 func (s *Service) Cancel(ctx context.Context, id domain.TaskID, reason string) error {
 	return s.orch.Cancel(ctx, id, reason)
