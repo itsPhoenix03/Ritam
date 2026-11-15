@@ -67,6 +67,38 @@ func TestASettingsMistakeStopsEveryCommand(t *testing.T) {
 	}
 }
 
+// TestConfigCheckShowsTheSettingsAndWhereTheyCameFrom: the global file, the
+// project's, what was held back and the idle floor are each named.
+func TestConfigCheckShowsTheSettingsAndWhereTheyCameFrom(t *testing.T) {
+	home, project := inProject(t)
+	writeGlobal(t, home, "orchestrator:\n  stallMessages: 11\ntui:\n  useMockAgents: false\n")
+	if err := os.WriteFile(filepath.Join(project, brand.ConfigFile()),
+		[]byte("orchestrator:\n  maxTaskCostUSD: 2\nbackups:\n  keep: 9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if ok, err := runCommand([]string{"config", "check"}, &out); !ok || err != nil {
+		t.Fatalf("config check: %v %v", ok, err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"stallMessages: 11    <- global (" + filepath.Join(home, brand.ConfigFile()) + ")",
+		"maxTaskCostUSD: 2    <- project (" + filepath.Join(project, brand.ConfigFile()) + ")",
+		"backups.keep: 5    <- the project's value was held back",
+		"orchestrator.idleTimeout: 10m0s    <- raised to 10m0s for the real CLIs",
+		"orchestrator.maxDailyCostUSD: 50\n",
+		"held back from the project's settings",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the output must hold %q:\n%s", want, got)
+		}
+	}
+
+	if _, err := runCommand([]string{"config", "bogus"}, &out); err == nil {
+		t.Error("an unknown config command is an error")
+	}
+}
+
 // TestRealAgentsFromTheSettingsGetTheIdleFloorWithoutTheFlag: only -real
 // used to raise the idle timeout; settings choosing real agents did not.
 func TestRealAgentsFromTheSettingsGetTheIdleFloorWithoutTheFlag(t *testing.T) {
