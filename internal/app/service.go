@@ -215,6 +215,15 @@ func (s *Service) TaskDecisions(ctx context.Context, id domain.TaskID) ([]*domai
 	return s.storage.Decisions.ListByTask(ctx, id)
 }
 
+// TaskTurns lists every agent turn of a task: the messages each was handed,
+// how it ended and what it cost.
+func (s *Service) TaskTurns(ctx context.Context, id domain.TaskID) ([]*domain.Turn, error) {
+	if s.storage.Turns == nil {
+		return nil, nil
+	}
+	return s.storage.Turns.ListByTask(ctx, id)
+}
+
 // TaskDisagreements returns the explicit conflicts raised during a task,
 // resolved and unresolved. Disagreement is a first-class outcome: it is
 // recorded rather than smoothed away.

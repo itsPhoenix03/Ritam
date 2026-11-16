@@ -681,23 +681,51 @@ func (ib *taskInbox) takeSeen(ids []domain.MessageID) bool {
 // is still on its way. Only an agent that reports usage at all keeps one,
 // or every later report would be taken for the turn before.
 
-// turnRec is one turn, from the hand-over until its outcome is known.
+// turnRec is one turn, from the hand-over until its outcome is known, and
+// its record in the store (domain.Turn): written when the turn is handed
+// over and again whenever its end, outcome or usage becomes known.
 type turnRec struct {
-	id      domain.TurnID
-	agent   domain.AgentID
-	msgs    []domain.MessageID
-	started time.Time
-	ended   time.Time
-	outcome domain.TurnOutcome
-	kind    domain.FailureKind
-	usage   ports.Usage
+	domain.Turn
 	billed  bool
 	pending bool
+	// replied is set once a message of the agent's was taken from this
+	// turn: it was answered, whatever happens to the rest of it.
+	replied bool
+}
+
+// turnReplied notes that agent's oldest open turn has produced a message.
+func (o *Orchestrator) turnReplied(id domain.TaskID, agent domain.AgentID) {
+	ib := o.inbox(id)
+	if ib == nil {
+		return
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	if q := ib.open[agent]; len(q) > 0 {
+		q[0].replied = true
+	}
+}
+
+// saveTurn writes rec's record. A turn is only a record: failing to write
+// it is logged and the work goes on.
+func (o *Orchestrator) saveTurn(ctx context.Context, rec *turnRec, create bool) {
+	if o.storage.Turns == nil {
+		return
+	}
+	var err error
+	if create {
+		err = o.storage.Turns.Create(ctx, &rec.Turn)
+	} else {
+		err = o.storage.Turns.Update(ctx, &rec.Turn)
+	}
+	if err != nil {
+		o.log.Warn("record a turn", "taskId", string(rec.TaskID), "turn", string(rec.ID), "error", err)
+	}
 }
 
 // sendTurn hands d, which carries the stored messages ids, to agent as one
-// turn. The deliveries are marked sent only once the adapter has taken it:
-// a send that fails leaves them queued.
+// turn, and records it. The deliveries are marked sent only once the adapter
+// has taken it: a send that fails leaves them queued.
 func (o *Orchestrator) sendTurn(ctx context.Context, t *domain.Task, agent domain.AgentID, d *domain.Message, ids []domain.MessageID) error {
 	send := func() error {
 		if d.Type == domain.MsgTaskAssignment {
@@ -711,17 +739,19 @@ func (o *Orchestrator) sendTurn(ctx context.Context, t *domain.Task, agent domai
 	}
 	ib.tmu.Lock()
 	defer ib.tmu.Unlock()
-	rec := &turnRec{id: domain.NewTurnID(), agent: agent, msgs: ids, started: time.Now()}
+	rec := &turnRec{Turn: domain.Turn{ID: domain.NewTurnID(), TaskID: t.ID, AgentID: agent,
+		Messages: append([]domain.MessageID(nil), ids...), StartedAt: time.Now()}}
 	// Opened before the send, so a turn that ends at once still finds it;
-	// tmu keeps its end waiting until it is marked sent.
+	// tmu keeps its end waiting until it is recorded and marked sent.
 	ib.open[agent] = append(ib.open[agent], rec)
 	if err := send(); err != nil {
 		ib.open[agent] = ib.open[agent][:len(ib.open[agent])-1]
 		return err
 	}
 	ib.lastDelivered[agent] = ids
+	o.saveTurn(ctx, rec, true)
 	if o.durable() && len(ids) > 0 {
-		if err := o.storage.Deliveries.MarkSent(ctx, t.ID, agent, ids, rec.id, rec.started); err != nil {
+		if err := o.storage.Deliveries.MarkSent(ctx, t.ID, agent, ids, rec.ID, rec.StartedAt); err != nil {
 			o.log.Warn("mark deliveries sent", "taskId", string(t.ID), "agentId", string(agent), "error", err)
 		}
 	}
@@ -742,11 +772,13 @@ func (o *Orchestrator) lastDeliveredIDs(id domain.TaskID, agent domain.AgentID) 
 
 // endTurn records how rec ended and settles what it carried. Called with
 // ib.tmu held.
-func (o *Orchestrator) endTurn(ctx context.Context, ib *taskInbox, id domain.TaskID, rec *turnRec, outcome domain.TurnOutcome, kind domain.FailureKind) {
-	rec.ended, rec.outcome, rec.kind = time.Now(), outcome, kind
-	rec.pending = !rec.billed && ib.reportsUsage[rec.agent]
-	ib.last[rec.agent] = rec
-	o.settle(ctx, id, rec)
+func (o *Orchestrator) endTurn(ctx context.Context, ib *taskInbox, rec *turnRec, outcome domain.TurnOutcome, kind domain.FailureKind) {
+	now := time.Now()
+	rec.EndedAt, rec.Outcome, rec.FailureKind = &now, outcome, kind
+	rec.pending = !rec.billed && ib.reportsUsage[rec.AgentID]
+	ib.last[rec.AgentID] = rec
+	o.saveTurn(ctx, rec, false)
+	o.settle(ctx, rec)
 }
 
 // settle moves what rec carried on by how it ended: acknowledged when it
@@ -759,16 +791,16 @@ func (o *Orchestrator) endTurn(ctx context.Context, ib *taskInbox, id domain.Tas
 // sent with it): the in-memory inbox never gets them back, so the batch is
 // not delivered a second time beside its retry. If the run ends before the
 // retry is sent, they are where the next run finds them.
-func (o *Orchestrator) settle(ctx context.Context, id domain.TaskID, rec *turnRec) {
-	if !o.durable() || len(rec.msgs) == 0 {
+func (o *Orchestrator) settle(ctx context.Context, rec *turnRec) {
+	if !o.durable() || len(rec.Messages) == 0 {
 		return
 	}
 	status := domain.DeliveryQueued
-	if rec.outcome == domain.TurnCompleted || (rec.outcome == domain.TurnFailed && rec.kind == domain.FailureMalformed) {
+	if rec.Outcome == domain.TurnCompleted || (rec.Outcome == domain.TurnFailed && rec.FailureKind == domain.FailureMalformed) {
 		status = domain.DeliveryAcknowledged
 	}
-	if err := o.storage.Deliveries.SettleTurn(ctx, rec.id, status); err != nil {
-		o.log.Warn("settle a turn's deliveries", "taskId", string(id), "turn", string(rec.id), "error", err)
+	if err := o.storage.Deliveries.SettleTurn(ctx, rec.ID, status); err != nil {
+		o.log.Warn("settle a turn's deliveries", "taskId", string(rec.TaskID), "turn", string(rec.ID), "error", err)
 	}
 }
 
@@ -786,8 +818,12 @@ func (ib *taskInbox) popOpen(agent domain.AgentID) *turnRec {
 	return q[0]
 }
 
-// turnUsage takes one usage report of agent's: it belongs to the turn that
-// ended without its report, or else ends the oldest open turn.
+// turnUsage takes one usage report of agent's -- billed to the task by the
+// caller -- and bills it to a turn too: the turn that ended without its
+// report, or else the oldest open turn, which it ends. Every report lands on
+// some turn, so the turns of a task add up to what the task was billed: one
+// no turn can take (none was handed over in this run) gets a record of its
+// own, carrying no messages.
 func (o *Orchestrator) turnUsage(ctx context.Context, id domain.TaskID, agent domain.AgentID, u ports.Usage) {
 	ib := o.inbox(id)
 	if ib == nil {
@@ -797,27 +833,39 @@ func (o *Orchestrator) turnUsage(ctx context.Context, id domain.TaskID, agent do
 	defer ib.tmu.Unlock()
 	ib.reportsUsage[agent] = true
 	last := ib.last[agent]
-	if last != nil && last.pending {
+	switch rec := ib.popOpenUnlessPending(agent); {
+	case rec != nil:
+		addTurnUsage(rec, u)
+		o.endTurn(ctx, ib, rec, domain.TurnCompleted, "")
+	case last != nil:
 		last.pending = false
 		addTurnUsage(last, u)
-		return
-	}
-	if rec := ib.popOpen(agent); rec != nil {
+		o.saveTurn(ctx, last, false)
+	default:
+		now := time.Now()
+		rec := &turnRec{Turn: domain.Turn{ID: domain.NewTurnID(), TaskID: id, AgentID: agent, StartedAt: now,
+			EndedAt: &now, Outcome: domain.TurnCompleted}}
 		addTurnUsage(rec, u)
-		o.endTurn(ctx, ib, id, rec, domain.TurnCompleted, "")
-		return
+		ib.last[agent] = rec
+		o.saveTurn(ctx, rec, true)
 	}
-	if last != nil {
-		addTurnUsage(last, u)
+}
+
+// popOpenUnlessPending takes agent's oldest open turn, unless its last turn
+// still waits for its usage report. Called with ib.tmu held.
+func (ib *taskInbox) popOpenUnlessPending(agent domain.AgentID) *turnRec {
+	if last := ib.last[agent]; last != nil && last.pending {
+		return nil
 	}
+	return ib.popOpen(agent)
 }
 
 func addTurnUsage(rec *turnRec, u ports.Usage) {
 	rec.billed = true
-	rec.usage.InputTokens += u.InputTokens
-	rec.usage.OutputTokens += u.OutputTokens
-	rec.usage.CacheReadTokens += u.CacheReadTokens
-	rec.usage.CostUSD += u.CostUSD
+	rec.InputTokens += u.InputTokens
+	rec.OutputTokens += u.OutputTokens
+	rec.CacheReadTokens += u.CacheReadTokens
+	rec.CostUSD += u.CostUSD
 }
 
 // turnFailure takes a failed turn of agent's: the one already taken as done
@@ -834,19 +882,48 @@ func (o *Orchestrator) turnFailure(ctx context.Context, id domain.TaskID, agent 
 	}
 	ib.tmu.Lock()
 	defer ib.tmu.Unlock()
-	if last := ib.last[agent]; last != nil && last.pending && last.outcome == domain.TurnCompleted {
-		last.outcome, last.kind = outcome, kind
-		o.settle(ctx, id, last)
+	if last := ib.last[agent]; last != nil && last.pending && last.Outcome == domain.TurnCompleted {
+		last.Outcome, last.FailureKind = outcome, kind
+		o.saveTurn(ctx, last, false)
+		o.settle(ctx, last)
 		return
 	}
 	if rec := ib.popOpen(agent); rec != nil {
-		o.endTurn(ctx, ib, id, rec, outcome, kind)
+		o.endTurn(ctx, ib, rec, outcome, kind)
+	}
+}
+
+// closeInterruptedTurns marks killed the turns of a task still recorded as
+// running when its run starts: the process that ran them stopped first.
+func (o *Orchestrator) closeInterruptedTurns(ctx context.Context, id domain.TaskID) {
+	if o.storage.Turns == nil {
+		return
+	}
+	turns, err := o.storage.Turns.ListByTask(ctx, id)
+	if err != nil {
+		o.log.Warn("read the task's turns", "taskId", string(id), "error", err)
+		return
+	}
+	now := time.Now()
+	for _, tr := range turns {
+		if tr.Outcome != domain.TurnRunning {
+			continue
+		}
+		tr.Outcome, tr.EndedAt = domain.TurnKilled, &now
+		if err := o.storage.Turns.Update(ctx, tr); err != nil {
+			o.log.Warn("record an interrupted turn", "taskId", string(id), "turn", string(tr.ID), "error", err)
+		}
 	}
 }
 
 // closeIdleTurns ends the open turns of every agent no longer working: it
-// has finished them, whether or not it said anything.
+// has finished them, whether or not it said anything. Not once the run is
+// being stopped: stopping it ends the turns, and an agent idle for that
+// reason was cut off, not finished (killTurns).
 func (o *Orchestrator) closeIdleTurns(ctx context.Context, id domain.TaskID, ib *taskInbox) {
+	if ctx.Err() != nil || o.stopping(id) {
+		return
+	}
 	ib.tmu.Lock()
 	defer ib.tmu.Unlock()
 	for agent := range ib.open {
@@ -854,14 +931,15 @@ func (o *Orchestrator) closeIdleTurns(ctx context.Context, id domain.TaskID, ib 
 			continue
 		}
 		for rec := ib.popOpen(agent); rec != nil; rec = ib.popOpen(agent) {
-			o.endTurn(ctx, ib, id, rec, domain.TurnCompleted, "")
+			o.endTurn(ctx, ib, rec, domain.TurnCompleted, "")
 		}
 	}
 }
 
-// killTurns ends every open turn as the run stops: killed when its agent is
-// still working -- what it carried goes back to the queue -- and completed
-// when the agent had finished it.
+// killTurns ends every open turn as the run stops. One the agent answered
+// and finished is completed. Any other was killed -- by the stop, or by the
+// pause or cancel that ended the run -- or its answer is dropped with the
+// run, unread: what it carried goes back to the queue.
 func (o *Orchestrator) killTurns(ctx context.Context, id domain.TaskID) {
 	ib := o.inbox(id)
 	if ib == nil {
@@ -870,12 +948,17 @@ func (o *Orchestrator) killTurns(ctx context.Context, id domain.TaskID) {
 	ib.tmu.Lock()
 	defer ib.tmu.Unlock()
 	for agent := range ib.open {
-		outcome := domain.TurnCompleted
+		working := false
 		if ad, ok := o.Agents.AdapterFor(id, agent); ok && ad.Status() == domain.AgentStateWorking {
-			outcome = domain.TurnKilled
+			working = true
 		}
 		for rec := ib.popOpen(agent); rec != nil; rec = ib.popOpen(agent) {
-			o.endTurn(ctx, ib, id, rec, outcome, "")
+			outcome := domain.TurnKilled
+			if rec.replied && !working {
+				outcome = domain.TurnCompleted
+			}
+			o.endTurn(ctx, ib, rec, outcome, "")
 		}
 	}
 }
+

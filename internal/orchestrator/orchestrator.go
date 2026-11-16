@@ -690,6 +690,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		o.turnFailure(ctx, id, out.AgentID, domain.FailureOf(out.Err).Kind)
 		return o.handleFailure(ctx, id, out)
 	}
+	o.turnReplied(id, out.AgentID)
 
 	t, err := o.Tasks.Get(ctx, id)
 	if err != nil {
@@ -2017,6 +2018,7 @@ func (o *Orchestrator) kickoff(ctx context.Context, t *domain.Task) error {
 	if _, err := o.Tasks.NoteHumanInput(ctx, t.ID); err != nil {
 		return err
 	}
+	o.closeInterruptedTurns(ctx, t.ID)
 	o.mu.Lock()
 	// What the human is sending for this run is in the store before the run
 	// goes live and reads it; anything sent after is routed by the run. The
@@ -2108,6 +2110,10 @@ func (o *Orchestrator) pauseAfterError(ctx context.Context, id domain.TaskID, er
 // taskRun is one RunTask holding a task: queued for a slot, then live.
 type taskRun struct {
 	cancel context.CancelFunc
+	// stopping is set when the run is cancelled. Cancelling it ends its
+	// agents' turns at once, and an agent seen idle then has not finished
+	// its turn: it was cut off (see closeIdleTurns).
+	stopping bool
 	// live is set once the run's agents are up and it delivers messages
 	// itself. Until then what the human sends is queued for its kickoff
 	// (deliverOrQueue): routed straight away, it would reach agents that
@@ -3028,7 +3034,16 @@ func (o *Orchestrator) cancelRun(id domain.TaskID) {
 	o.mu.Lock()
 	// A queued run is cancelled the same way: it never starts.
 	if r, ok := o.running[id]; ok {
+		r.stopping = true
 		r.cancel()
 	}
 	o.mu.Unlock()
+}
+
+// stopping reports whether the task's run is being cancelled.
+func (o *Orchestrator) stopping(id domain.TaskID) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	r, ok := o.running[id]
+	return ok && r.stopping
 }

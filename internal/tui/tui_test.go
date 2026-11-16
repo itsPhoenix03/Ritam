@@ -127,6 +127,11 @@ func (f *fakeService) TaskDecisions(ctx context.Context, id domain.TaskID) ([]*d
 	return f.decisions[id], nil
 }
 
+func (f *fakeService) TaskTurns(ctx context.Context, id domain.TaskID) ([]*domain.Turn, error) {
+	f.record("TaskTurns")
+	return nil, nil
+}
+
 func (f *fakeService) Agents(ctx context.Context) ([]domain.Agent, error) {
 	f.record("Agents")
 	return f.agents, nil

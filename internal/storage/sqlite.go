@@ -237,6 +237,27 @@ var migrations = []string{
 	CREATE INDEX deliveries_task ON deliveries(task_id, seq);
 	CREATE INDEX deliveries_turn ON deliveries(turn_id);
 	`,
+
+	// 4: every agent turn: what it was handed, how it ended and what it
+	// cost. Nothing recorded which messages went into which turn.
+	`
+	CREATE TABLE turns (
+		seq               INTEGER PRIMARY KEY AUTOINCREMENT, -- start order
+		id                TEXT NOT NULL UNIQUE,
+		task_id           TEXT NOT NULL,
+		agent_id          TEXT NOT NULL,
+		messages          TEXT NOT NULL,                     -- JSON array of message ids
+		started_at        TEXT NOT NULL,
+		ended_at          TEXT NOT NULL,                     -- '' while running
+		outcome           TEXT NOT NULL,                     -- '', completed, failed, killed
+		failure_kind      TEXT NOT NULL,
+		cost_usd          REAL NOT NULL,
+		input_tokens      INTEGER NOT NULL,
+		output_tokens     INTEGER NOT NULL,
+		cache_read_tokens INTEGER NOT NULL
+	);
+	CREATE INDEX turns_task ON turns(task_id, seq);
+	`,
 }
 
 func (s *SQLite) migrate(ctx context.Context) error {

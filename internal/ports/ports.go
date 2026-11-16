@@ -125,6 +125,16 @@ type DeliveryRepository interface {
 	Clear(ctx context.Context, task domain.TaskID) error
 }
 
+// TurnRepository records every agent turn (domain.Turn).
+type TurnRepository interface {
+	// Create records a new turn. An id already recorded is ErrAlreadyExists.
+	Create(ctx context.Context, t *domain.Turn) error
+	// Update rewrites a recorded turn: its end, outcome and usage.
+	Update(ctx context.Context, t *domain.Turn) error
+	// ListByTask returns a task's turns in the order they started.
+	ListByTask(ctx context.Context, task domain.TaskID) ([]*domain.Turn, error)
+}
+
 // Storage bundles the repositories so wiring code can pass one value around.
 type Storage struct {
 	Tasks         TaskRepository
@@ -135,6 +145,7 @@ type Storage struct {
 	Knowledge     KnowledgeRepository
 	Artifacts     ArtifactRepository
 	Deliveries    DeliveryRepository
+	Turns         TurnRepository
 
 	// Tx runs a group of writes as one; the backend sets it. Callers use
 	// WithTx rather than this field.
@@ -520,6 +531,9 @@ type Service interface {
 	TaskMessages(ctx context.Context, id domain.TaskID) ([]*domain.Message, error)
 	TaskEvents(ctx context.Context, id domain.TaskID) ([]domain.Event, error)
 	TaskDecisions(ctx context.Context, id domain.TaskID) ([]*domain.Decision, error)
+	// TaskTurns lists every agent turn of a task, in the order they
+	// started: what each was handed, how it ended and what it cost.
+	TaskTurns(ctx context.Context, id domain.TaskID) ([]*domain.Turn, error)
 
 	Agents(ctx context.Context) ([]domain.Agent, error)
 	// TaskAgents returns the agents as they stand on one task: each task

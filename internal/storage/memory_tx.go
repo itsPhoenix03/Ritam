@@ -33,6 +33,7 @@ type memStore struct {
 	knowledge     *MemKnowledgeRepository
 	artifacts     *MemArtifactRepository
 	deliveries    *MemDeliveryRepository
+	turns         *MemTurnRepository
 }
 
 // memDoor is how a call gets to the repositories: through the gate from
@@ -53,6 +54,7 @@ func newMemStore() *memStore {
 		knowledge:     NewMemKnowledgeRepository(),
 		artifacts:     NewMemArtifactRepository(),
 		deliveries:    NewMemDeliveryRepository(),
+		turns:         NewMemTurnRepository(),
 	}
 }
 
@@ -72,6 +74,7 @@ func (s *memStore) storage(door memDoor, tx ports.Transactor) *ports.Storage {
 		Knowledge:     &gatedKnowledge{door, s.knowledge},
 		Artifacts:     &gatedArtifacts{door, s.artifacts},
 		Deliveries:    &gatedDeliveries{door, s.deliveries},
+		Turns:         &gatedTurns{door, s.turns},
 		Tx:            tx,
 	}
 }
@@ -128,6 +131,7 @@ func (s *memStore) snapshot() (restore func()) {
 	undo := []func(){
 		s.tasks.snapshot(), s.messages.snapshot(), s.events.snapshot(), s.decisions.snapshot(),
 		s.disagreements.snapshot(), s.knowledge.snapshot(), s.artifacts.snapshot(), s.deliveries.snapshot(),
+		s.turns.snapshot(),
 	}
 	return func() {
 		for _, u := range undo {
