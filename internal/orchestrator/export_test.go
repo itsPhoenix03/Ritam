@@ -38,6 +38,17 @@ func (o *Orchestrator) HandleOutboundForTest(ctx context.Context, id domain.Task
 	return o.handleOutbound(ctx, id, out)
 }
 
+// TurnsHeldForTest is what the turns of task id hold in reserve.
+func (o *Orchestrator) TurnsHeldForTest(id domain.TaskID) float64 {
+	o.turns.mu.Lock()
+	defer o.turns.mu.Unlock()
+	sum := 0.0
+	for _, s := range o.turns.slots[id] {
+		sum += s.usd
+	}
+	return sum
+}
+
 // AttachRecapForTest exposes the session recap for tests.
 func AttachRecapForTest(o *Orchestrator, ctx context.Context, t *domain.Task, m *domain.Message) {
 	o.attachRecap(ctx, t, m)

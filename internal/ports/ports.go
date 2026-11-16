@@ -328,6 +328,14 @@ const TeamMetadataKey = "team"
 // orchestrator records it and tells the agent.
 const ProtocolProblemsMetadataKey = "protocolProblems"
 
+// TurnBudgetMetadataKey carries, on a delivery, the most the turn it starts
+// may spend, in dollars ("0.2500"). The orchestrator sets it when the turn
+// is handed over, sharing what is left of the task's budget among the
+// agents that may be working at once; an adapter whose CLI takes a spending
+// cap passes it on. It is never shown to the agent. Absent, the task has no
+// cost limit or the delivery did not come through the orchestrator's inbox.
+const TurnBudgetMetadataKey = "turnBudgetUSD"
+
 // BatchCapable is implemented by adapters whose agent reads a prompt. When
 // several messages are waiting for such an agent they are combined into one
 // turn, so it answers all of them with everything in view rather than

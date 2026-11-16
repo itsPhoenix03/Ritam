@@ -105,6 +105,10 @@ type Orchestrator struct {
 	failing       map[domain.TaskID]map[domain.AgentID]map[domain.FailureKind]int
 	lastTurn      map[domain.TaskID]map[domain.AgentID]*domain.Message
 	retrying      map[domain.TaskID]map[domain.AgentID]int
+
+	// turns holds the spending allowance of each turn in progress
+	// (turnbudget.go).
+	turns turnBudgets
 }
 
 // New wires an Orchestrator from its dependencies.
@@ -688,6 +692,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 	}
 	if out.Err != nil {
 		o.turnFailure(ctx, id, out.AgentID, domain.FailureOf(out.Err).Kind)
+		o.turnFailed(id, out.AgentID)
 		return o.handleFailure(ctx, id, out)
 	}
 	o.turnReplied(id, out.AgentID)
@@ -857,6 +862,7 @@ func (o *Orchestrator) addUsage(ctx context.Context, id domain.TaskID, out ports
 // recordUsage adds one CLI turn's reported usage to the task, and to the
 // day's spending, and pauses if a spending ceiling has been reached.
 func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+	defer o.turnBilled(id, out.AgentID)
 	u := *out.Usage
 	t, err := o.addUsage(ctx, id, out)
 	if err != nil {
@@ -2452,6 +2458,7 @@ var stopDeadline = 15 * time.Second
 // everything else ignored -- the run is over, nothing more is routed.
 func (o *Orchestrator) endRun(ctx context.Context, t *domain.Task, mg *outboundMerge, enders []domain.AgentID) {
 	defer mg.abort()
+	defer o.forgetTurns(t.ID)
 	in := mg.out
 	take := func(out ports.Outbound, ok bool) {
 		if !ok {

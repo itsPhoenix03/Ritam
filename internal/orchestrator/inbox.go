@@ -386,6 +386,9 @@ func (o *Orchestrator) flush(ctx context.Context, t *domain.Task, ledger []domai
 		}
 		return
 	}
+	if !o.admitTurn(ctx, t.ID, agent) {
+		return // no money for the turn yet, or the task paused for it (turnbudget.go)
+	}
 
 	ib.mu.Lock()
 	msgs := ib.pending[agent]
@@ -487,6 +490,9 @@ func (o *Orchestrator) deliverInbox(ctx context.Context, t *domain.Task, ad port
 			// may have read it, and should not be puzzled to read it again.
 			d.Content = redeliveryNote + "\n\n" + d.Content
 		}
+		// The turn's spending cap travels with the delivery, out of the agent's
+		// sight (turnbudget.go).
+		o.stampTurnBudget(t.ID, agent, d)
 		// A send that fails leaves the messages queued in the store, for the
 		// next run; they used to be lost with it.
 		if err := o.sendTurn(ctx, t, agent, d, carries[i]); err != nil {

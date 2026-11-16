@@ -191,7 +191,10 @@ func TestATurnKilledByAnotherAgentsCompletionIsBilled(t *testing.T) {
 // were running when it was found over budget.
 func TestACoWorkersTurnKilledByABudgetPauseIsBilled(t *testing.T) {
 	limits := defaultLimits()
-	limits.MaxCostUSD = 0.05 // the authority's first turn crosses it
+	// The authority's $0.10 first turn reaches it. Less, and codex's turn
+	// would not start: the authority's turn holds half and a turn needs
+	// at least $0.05 (turnbudget.go).
+	limits.MaxCostUSD = 0.10
 	codex := slowCodex()
 	h, ledger, task, done := startBilling(t, codex, limits, false)
 	_ = runResult(t, done)

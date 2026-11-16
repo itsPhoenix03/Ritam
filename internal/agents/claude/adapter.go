@@ -485,7 +485,7 @@ func (a *ClaudeCodeAdapter) runTurn(ctx context.Context, t *domain.Task, m domai
 		prompt = renderTurn(t, m, rules)
 	}
 	args := append(a.buildArgsFor(g), a.sessionArgs(t, sess, resuming)...)
-	args = append(args, budgetArgs(t)...)
+	args = append(args, budgetArgs(t, m)...)
 
 	// Claude files sessions by working directory and cannot resume one from
 	// anywhere else, so every turn runs where the session was created.
@@ -637,15 +637,29 @@ const budgetStopped = "error_max_budget_usd"
 
 var errBudgetStopped = errors.New("claude-code adapter: turn stopped at the spending limit")
 
-// budgetArgs caps one turn's spending at what is left of the task's budget.
-// The orchestrator checks the budget between turns; without this, one turn
-// -- minutes of a model calling tools -- could run far past it before the
-// check. The CLI stops a turn once a call takes it over, so a task ends at
-// most one API call over its budget per agent at work.
+// budgetArgs caps one turn's spending. The orchestrator checks the budget
+// between turns; without a cap, one turn -- minutes of a model calling tools
+// -- could run far past it before the check. The CLI stops a turn once a
+// call takes it over, so a turn ends at most one API call over its cap.
 //
-// The CLI counts the cap per invocation, not over the resumed session, so
-// what is left of the task's budget is the right figure for every turn.
-func budgetArgs(t *domain.Task) []string {
+// The cap is the allowance the orchestrator gave the turn when it handed it
+// over (ports.TurnBudgetMetadataKey): its share of what is left of the task's
+// budget, with what co-workers' turns in progress hold taken out. Left to the adapter, every agent working at once was capped at
+// the whole remainder, read from the task as it stood when the job was
+// queued. Without an allowance (a delivery that did not come through the
+// orchestrator's inbox, such as a retry of a turn) it falls back to what is
+// left of the task's budget; a task with no cost limit gets no cap.
+//
+// UNVERIFIED: this takes --max-budget-usd to count this invocation's
+// spending only, not the resumed session's running total. The CLI's help
+// does not say, and no live run has checked it. If it turns out to count
+// the session's total, the figure to pass is the session's cost so far
+// (core.Session.ReportedCostUSD) plus the allowance; as it stands, every
+// resumed turn would then stop at its first API call.
+func budgetArgs(t *domain.Task, m domain.Message) []string {
+	if v, err := strconv.ParseFloat(m.Metadata[ports.TurnBudgetMetadataKey], 64); err == nil && v > 0 {
+		return []string{"--max-budget-usd", strconv.FormatFloat(v, 'f', 4, 64)}
+	}
 	if t == nil || t.Limits.MaxCostUSD <= 0 {
 		return nil
 	}
