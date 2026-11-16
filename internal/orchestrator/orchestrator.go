@@ -81,12 +81,16 @@ type Orchestrator struct {
 	// on a task paused while it waited, and a second resume queued a
 	// second run.
 	running map[domain.TaskID]*taskRun
-	// queued holds the human's messages for a task with no run loop: a
-	// reopened task's follow-up, an answer or instruction sent while a
-	// decision waits for the human, a rejection. They are delivered by the
-	// next run once the participants are up: sent straight away, they would
-	// reach agents that are still stopped.
-	queued map[domain.TaskID][]*domain.Message
+	// queuing counts, per task, the human's messages being recorded for the
+	// next run while no run is live (deliverOrQueue): a reopened task's
+	// follow-up, an answer or instruction sent while a decision waits for the
+	// human, a rejection. They are queued deliveries in the store, which the
+	// next run hands over once its agents are up -- sent straight away they
+	// would reach agents that are still stopped. They used to wait in memory
+	// only, and a restart before the run started lost them. queued is
+	// signalled when a count drops, for a run going live to wait on.
+	queuing map[domain.TaskID]int
+	queued  *sync.Cond
 	// resumed holds, for a task just resumed, why it had been paused, so the
 	// run loop opens by telling the agents to carry on and what was lost.
 	resumed map[domain.TaskID]string
@@ -136,7 +140,7 @@ func New(d Deps) *Orchestrator {
 		requireHumanApproval: d.RequireHumanApproval,
 		sem:                  make(chan struct{}, d.MaxConcurrentTasks),
 		running:              map[domain.TaskID]*taskRun{},
-		queued:               map[domain.TaskID][]*domain.Message{},
+		queuing:              map[domain.TaskID]int{},
 		resumed:              map[domain.TaskID]string{},
 		inboxes:              map[domain.TaskID]*taskInbox{},
 		retryBackoff:         d.RetryBackoff,
@@ -150,6 +154,20 @@ func New(d Deps) *Orchestrator {
 	}
 	if o.rateLimitWait <= 0 {
 		o.rateLimitWait = defaultRateLimitWait
+	}
+	o.queued = sync.NewCond(&o.mu)
+	if o.durable() {
+		store := d.Storage
+		o.Bus.Store = &store
+		o.Bus.Holds = o.holds
+		// A task that ends, with or without a run, has nothing more to be
+		// handed: what still waits for it is cleared.
+		o.Events.Subscribe(func(e domain.Event) {
+			switch e.Type {
+			case domain.EvtTaskCompleted, domain.EvtTaskFailed, domain.EvtTaskCancelled:
+				o.clearDeliveries(context.Background(), e.TaskID)
+			}
+		})
 	}
 	o.Bus.Enrich = func(ctx context.Context, t *domain.Task, m *domain.Message) {
 		o.attachKnowledge(ctx, t, m)
@@ -665,9 +683,11 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) (err error
 // loop continues rather than aborting the task.
 func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
 	if out.IsUsageOnly() {
+		o.turnUsage(ctx, id, out.AgentID, *out.Usage)
 		return o.recordUsage(ctx, id, out)
 	}
 	if out.Err != nil {
+		o.turnFailure(ctx, id, out.AgentID, domain.FailureOf(out.Err).Kind)
 		return o.handleFailure(ctx, id, out)
 	}
 
@@ -1983,32 +2003,36 @@ func (o *Orchestrator) settleFollowUp(ctx context.Context, id domain.TaskID) (bo
 
 // kickoff starts (or restarts) the conversation when the run loop comes up.
 //
-// Only a task with no history gets the opening assignment. Resuming a paused
-// task used to re-send it, re-briefing the authority as though nothing had
-// happened yet; with agents now keeping their own sessions that would also
-// contradict what they remember. A task the human sent something to while no
-// run was alive -- a follow-up, an answer, a rejection -- resumes with that
-// instead, and a resumed one is told to carry on (resumeAfterPause).
+// The inboxes are refilled first from what is queued in the store: what the
+// last run left undelivered or cut off mid-turn, and what the human sent
+// while no run was alive. Only a task with no history gets the opening
+// assignment. Resuming a paused task used to re-send it, re-briefing the
+// authority as though nothing had happened yet; with agents now keeping
+// their own sessions that would also contradict what they remember. A task
+// the human sent something to while no run was alive -- a follow-up, an
+// answer, a rejection -- resumes with that instead, and a resumed one is told
+// to carry on (resumeAfterPause), after what was queued for it.
 func (o *Orchestrator) kickoff(ctx context.Context, t *domain.Task) error {
 	// Starting (or restarting) a run is the human's doing.
 	if _, err := o.Tasks.NoteHumanInput(ctx, t.ID); err != nil {
 		return err
 	}
 	o.mu.Lock()
+	// What the human is sending for this run is in the store before the run
+	// goes live and reads it; anything sent after is routed by the run. The
+	// read is under o.mu with going live, so no message falls in between.
+	for o.queuing[t.ID] > 0 {
+		o.queued.Wait()
+	}
+	rows := o.queuedRows(ctx, t.ID)
 	if r := o.running[t.ID]; r != nil {
 		r.live = true
 	}
-	queued := o.queued[t.ID]
-	delete(o.queued, t.ID)
 	pausedFor, resumed := o.resumed[t.ID]
 	delete(o.resumed, t.ID)
 	o.mu.Unlock()
-	if len(queued) > 0 {
-		for _, m := range queued {
-			if err := o.Bus.Route(ctx, t, m); err != nil {
-				return fmt.Errorf("deliver the human's %s for %s: %w", m.Type, t.ID, err)
-			}
-		}
+	defer o.dispatch(ctx, t.ID)
+	if o.refillInbox(ctx, t, rows) {
 		return nil
 	}
 
@@ -2044,24 +2068,17 @@ func (o *Orchestrator) Reopen(ctx context.Context, id domain.TaskID, to domain.A
 		return err
 	}
 	o.Events.emit(ctx, domain.EvtHumanOverride, id, domain.HumanAgentID, "REOPEN -> "+string(to), nil)
-	o.mu.Lock()
-	o.queued[id] = []*domain.Message{{
+	if t, err = o.Tasks.Get(ctx, id); err != nil {
+		return err
+	}
+	return o.deliverOrQueue(ctx, t, &domain.Message{
 		FromAgent:        domain.HumanAgentID,
 		ToAgent:          to,
 		Type:             domain.MsgInformation,
 		Content:          content,
 		RequiresResponse: true,
 		Metadata:         map[string]string{ports.FollowUpMetadataKey: "true"},
-	}}
-	o.mu.Unlock()
-	return nil
-}
-
-// queue holds msgs for delivery when the task's next run starts.
-func (o *Orchestrator) queue(id domain.TaskID, msgs ...*domain.Message) {
-	o.mu.Lock()
-	o.queued[id] = append(o.queued[id], msgs...)
-	o.mu.Unlock()
+	})
 }
 
 // pauseAfterError pauses a task whose run ended on an error, with the error
@@ -2146,15 +2163,31 @@ func (o *Orchestrator) live(id domain.TaskID) bool {
 }
 
 // deliverOrQueue routes msgs on a task whose run is live, and otherwise
-// queues them for the next run's kickoff. Deciding and queueing are one step
-// under o.mu, as is the kickoff marking its run live and taking the queue:
-// a message queued a moment before the run went live is still delivered by
-// it, never left for a run that may not come.
+// records them now, queued in the store for the next run's kickoff. Deciding
+// is under o.mu, and a queuing in progress is counted there: the kickoff
+// marking its run live waits for it before it reads the queue, so a message
+// queued a moment before the run went live is still delivered by it, never
+// left for a run that may not come. The routing itself is not under o.mu: it
+// publishes events, whose handlers may call back in.
 func (o *Orchestrator) deliverOrQueue(ctx context.Context, t *domain.Task, msgs ...*domain.Message) error {
 	o.mu.Lock()
 	if r, ok := o.running[t.ID]; !ok || !r.live {
-		o.queued[t.ID] = append(o.queued[t.ID], msgs...)
+		o.queuing[t.ID]++
 		o.mu.Unlock()
+		defer func() {
+			o.mu.Lock()
+			if o.queuing[t.ID]--; o.queuing[t.ID] <= 0 {
+				delete(o.queuing, t.ID)
+			}
+			o.queued.Broadcast()
+			o.mu.Unlock()
+		}()
+		later := deferToNextRun(ctx)
+		for _, m := range msgs {
+			if err := o.Bus.Route(later, t, m); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	o.mu.Unlock()
@@ -2185,10 +2218,7 @@ func (o *Orchestrator) waitsOnlyOnTheHuman(ctx context.Context, t *domain.Task) 
 	if t.State != domain.TaskAwaitingDecision || t.Closing {
 		return false
 	}
-	o.mu.Lock()
-	pending := len(o.queued[t.ID])
-	o.mu.Unlock()
-	if pending > 0 {
+	if o.humanQueued(ctx, t.ID) {
 		return false
 	}
 	d := o.heldDecision(ctx, t)
@@ -2423,6 +2453,7 @@ func (o *Orchestrator) endRun(ctx context.Context, t *domain.Task, mg *outboundM
 			return
 		}
 		if out.IsUsageOnly() {
+			o.turnUsage(ctx, t.ID, out.AgentID, *out.Usage)
 			o.recordLateUsage(ctx, t.ID, out)
 		}
 	}
@@ -2443,6 +2474,9 @@ func (o *Orchestrator) endRun(ctx context.Context, t *domain.Task, mg *outboundM
 		grace.Stop()
 		tick.Stop()
 	}
+	// Whoever is still working now has its turn killed by the stop: what it
+	// carried goes back to the queue for the next run.
+	o.killTurns(ctx, t.ID)
 
 	stopCtx, cancel := context.WithTimeout(ctx, stopDeadline)
 	defer cancel()

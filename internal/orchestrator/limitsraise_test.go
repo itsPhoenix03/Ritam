@@ -34,6 +34,34 @@ func (f *failingMessages) Append(ctx context.Context, m *domain.Message) error {
 	return f.MessageRepository.Append(ctx, m)
 }
 
+// failingTx gives a transaction's writes the same failing messages: a
+// message is recorded in one transaction with its queued deliveries.
+type failingTx struct {
+	ports.Transactor
+	msgs *failingMessages
+}
+
+func (f failingTx) WithTx(ctx context.Context, fn func(*ports.Storage) error) error {
+	return f.Transactor.WithTx(ctx, func(tx *ports.Storage) error {
+		in := *tx
+		in.Messages = txMessages{MessageRepository: tx.Messages, count: f.msgs}
+		return fn(&in)
+	})
+}
+
+// txMessages counts a transaction's appends against the store's.
+type txMessages struct {
+	ports.MessageRepository
+	count *failingMessages
+}
+
+func (t txMessages) Append(ctx context.Context, m *domain.Message) error {
+	if t.count.n.Add(1) > t.count.failAfter {
+		return errors.New("disk I/O error (injected)")
+	}
+	return t.MessageRepository.Append(ctx, m)
+}
+
 // TestARunEndedByAStoreErrorPausesTheTask: an error returned from the run --
 // here the store refusing the authority's first reply -- used to leave the
 // task PLANNING with no run behind it and nothing on screen to say so, until
@@ -41,7 +69,9 @@ func (f *failingMessages) Append(ctx context.Context, m *domain.Message) error {
 func TestARunEndedByAStoreErrorPausesTheTask(t *testing.T) {
 	store := storage.NewInMemory()
 	broken := *store
-	broken.Messages = &failingMessages{MessageRepository: store.Messages, failAfter: 1}
+	msgs := &failingMessages{MessageRepository: store.Messages, failAfter: 1}
+	broken.Messages = msgs
+	broken.Tx = failingTx{Transactor: store.Tx, msgs: msgs}
 	gw := newGateway()
 	gw.add(fake.New("opus", fakeAuthority()), domain.RoleAuthority)
 	gw.add(fake.New("codex", fake.Steps(codexAnswer)), domain.RoleImplementer)

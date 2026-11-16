@@ -102,6 +102,29 @@ type ArtifactRepository interface {
 	ListByTask(ctx context.Context, id domain.TaskID) ([]*domain.Artifact, error)
 }
 
+// DeliveryRepository records each stored message's way to each recipient:
+// queued in its inbox, sent in a turn, acknowledged when that turn ended
+// well. It is what lets an inbox outlive the run, and the process, that
+// filled it.
+type DeliveryRepository interface {
+	// Enqueue records d as waiting. A message already recorded for that
+	// recipient is ErrAlreadyExists.
+	Enqueue(ctx context.Context, d *domain.Delivery) error
+	// MarkSent records that turn carried ids to recipient.
+	MarkSent(ctx context.Context, task domain.TaskID, recipient domain.AgentID, ids []domain.MessageID, turn domain.TurnID, at time.Time) error
+	// SettleTurn moves every delivery turn carried to status: acknowledged,
+	// or back to queued. One already back in the queue is left there: a
+	// later turn may carry it, and settling the old turn again must not
+	// mark it delivered.
+	SettleTurn(ctx context.Context, turn domain.TurnID, status domain.DeliveryStatus) error
+	// ListByTask returns a task's deliveries in the order they were queued.
+	ListByTask(ctx context.Context, task domain.TaskID) ([]*domain.Delivery, error)
+	// Discard forgets what still waits for recipient (not what it was given).
+	Discard(ctx context.Context, task domain.TaskID, recipient domain.AgentID) error
+	// Clear forgets every delivery of the task that was not acknowledged.
+	Clear(ctx context.Context, task domain.TaskID) error
+}
+
 // Storage bundles the repositories so wiring code can pass one value around.
 type Storage struct {
 	Tasks         TaskRepository
@@ -111,6 +134,7 @@ type Storage struct {
 	Disagreements DisagreementRepository
 	Knowledge     KnowledgeRepository
 	Artifacts     ArtifactRepository
+	Deliveries    DeliveryRepository
 
 	// Tx runs a group of writes as one; the backend sets it. Callers use
 	// WithTx rather than this field.

@@ -204,7 +204,7 @@ func (o *Orchestrator) retryTurn(ctx context.Context, t *domain.Task, agent doma
 				"no action is needed, its answer will follow.", agent, f.Kind, excerpt(f.Detail, 160), when, attempt, of))
 	}
 
-	last := o.lastDelivery(t.ID, agent)
+	last, carried := o.lastDelivery(t.ID, agent), o.lastDeliveredIDs(t.ID, agent)
 	o.setRetrying(t.ID, agent, 1)
 	go func() {
 		defer o.setRetrying(t.ID, agent, -1)
@@ -229,12 +229,9 @@ func (o *Orchestrator) retryTurn(ctx context.Context, t *domain.Task, agent doma
 			m.Metadata = map[string]string{}
 		}
 		m.Metadata["retry"] = fmt.Sprint(attempt)
-		if m.Type == domain.MsgTaskAssignment {
-			err = o.Agents.SendTask(ctx, cur, *m)
-		} else {
-			err = o.Agents.Send(ctx, cur, *m)
-		}
-		if err != nil {
+		// The retry is a turn of its own carrying the same messages: they
+		// are sent again with it, not queued again beside it (see settle).
+		if err := o.sendTurn(ctx, cur, agent, m, carried); err != nil {
 			o.log.Warn("retry turn", "taskId", string(t.ID), "agentId", string(agent), "error", err)
 		}
 	}()

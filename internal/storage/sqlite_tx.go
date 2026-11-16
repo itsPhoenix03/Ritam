@@ -27,6 +27,7 @@ func storageOn(db dbtx, tx ports.Transactor) *ports.Storage {
 		Disagreements: &sqlDisagreements{db},
 		Knowledge:     &sqlKnowledge{db},
 		Artifacts:     &sqlArtifacts{db},
+		Deliveries:    &sqlDeliveries{db},
 		Tx:            tx,
 	}
 }

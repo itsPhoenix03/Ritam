@@ -41,6 +41,7 @@ func writeAll(t *testing.T, c context.Context, s *ports.Storage) {
 	must(s.Disagreements.Create(c, &domain.Disagreement{ID: "DIS-1", TaskID: "T-NEW"}))
 	must(s.Knowledge.Put(c, &domain.KnowledgeEntry{ID: "K1", TaskID: "T-NEW", Title: "note"}))
 	must(s.Artifacts.Create(c, &domain.Artifact{ID: "A1", TaskID: "T-NEW"}))
+	must(s.Deliveries.Enqueue(c, &domain.Delivery{MessageID: "M1", Recipient: "codex", TaskID: "T-NEW"}))
 }
 
 // seed gives writeAll the records it changes.
@@ -80,6 +81,8 @@ func written(t *testing.T, c context.Context, s *ports.Storage) map[string]bool 
 	out["knowledge"] = err == nil
 	_, err = s.Artifacts.Get(c, "A1")
 	out["artifact"] = err == nil
+	dl, _ := s.Deliveries.ListByTask(c, "T-NEW")
+	out["delivery"] = len(dl) == 1
 	return out
 }
 

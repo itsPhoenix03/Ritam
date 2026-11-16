@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"ritam/internal/domain"
@@ -71,6 +72,18 @@ type MessageBus struct {
 	// together when the agent is free (see inbox.go). Without it, or when it
 	// returns false, the message goes to the adapter at once.
 	Handoff func(ctx context.Context, t *domain.Task, m *domain.Message) bool
+
+	// Holds optionally reports whether a message for to waits in an inbox
+	// rather than going to its adapter at once. Such a message gets a queued
+	// delivery in Store, written in the same transaction as the message, and
+	// is then given to Handoff; it never falls back to the adapter, since the
+	// queued delivery already promises it to the next run.
+	//
+	// Inboxes used to live only in memory: whatever waited in one when the
+	// run ended -- a reply that reached a busy agent, then a pause -- was
+	// dropped, and the agent was told to carry on without it.
+	Holds func(ctx context.Context, t *domain.Task, to domain.AgentID) bool
+	Store *ports.Storage
 }
 
 // NewMessageBus builds a MessageBus.
@@ -112,7 +125,8 @@ func (b *MessageBus) Route(ctx context.Context, t *domain.Task, m *domain.Messag
 		return err
 	}
 
-	if err := b.messages.Append(ctx, m); err != nil {
+	held := b.heldFor(ctx, t, m)
+	if err := b.record(ctx, m, held); err != nil {
 		return fmt.Errorf("record message: %w", err)
 	}
 
@@ -129,26 +143,86 @@ func (b *MessageBus) Route(ctx context.Context, t *domain.Task, m *domain.Messag
 			fmt.Sprintf("%s challenged %s", m.FromAgent, m.ToAgent), nil)
 	}
 
-	return b.deliver(ctx, t, m)
+	return b.deliver(ctx, t, m, held)
+}
+
+// targets lists who m is for: its recipient, or every other participant of
+// a broadcast.
+func targets(t *domain.Task, m *domain.Message) []domain.AgentID {
+	if m.ToAgent != domain.BroadcastAgentID {
+		return []domain.AgentID{m.ToAgent}
+	}
+	var out []domain.AgentID
+	for _, p := range t.Participants {
+		if p != m.FromAgent {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// heldFor returns the recipients m will wait for in an inbox (see Holds):
+// not the human, nor a dropped agent, nor anyone when m is only recorded --
+// those get no queued delivery, as nothing will ever hand it over.
+func (b *MessageBus) heldFor(ctx context.Context, t *domain.Task, m *domain.Message) map[domain.AgentID]bool {
+	if b.Holds == nil || b.Store == nil || b.Store.Deliveries == nil {
+		return nil
+	}
+	if b.RecordOnly != nil && b.RecordOnly(t, m) {
+		return nil
+	}
+	held := map[domain.AgentID]bool{}
+	for _, to := range targets(t, m) {
+		if to == domain.HumanAgentID || t.IsDropped(to) || !b.Holds(ctx, t, to) {
+			continue
+		}
+		held[to] = true
+	}
+	return held
+}
+
+// record appends m and queues its deliveries to held in one transaction, so
+// a crash never leaves a recorded message that no inbox will hand over. The
+// events about it are published by the caller, after the commit.
+func (b *MessageBus) record(ctx context.Context, m *domain.Message, held map[domain.AgentID]bool) error {
+	if len(held) == 0 {
+		return b.messages.Append(ctx, m)
+	}
+	write := func(s *ports.Storage) error {
+		if err := s.Messages.Append(ctx, m); err != nil {
+			return err
+		}
+		for _, to := range sortedKeys(held) {
+			if err := s.Deliveries.Enqueue(ctx, &domain.Delivery{
+				MessageID: m.ID, Recipient: to, TaskID: m.TaskID, Status: domain.DeliveryQueued, QueuedAt: m.Timestamp,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if b.Store.Tx == nil {
+		return write(b.Store)
+	}
+	return b.Store.WithTx(ctx, write)
+}
+
+func sortedKeys(set map[domain.AgentID]bool) []domain.AgentID {
+	out := make([]domain.AgentID, 0, len(set))
+	for a := range set {
+		out = append(out, a)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // deliver hands the message to the recipient's adapter. Messages addressed to
 // the human are not delivered to any runtime: the TUI reads them from history.
-func (b *MessageBus) deliver(ctx context.Context, t *domain.Task, m *domain.Message) error {
-	targets := []domain.AgentID{m.ToAgent}
-	if m.ToAgent == domain.BroadcastAgentID {
-		targets = targets[:0]
-		for _, p := range t.Participants {
-			if p != m.FromAgent {
-				targets = append(targets, p)
-			}
-		}
-	}
-
+func (b *MessageBus) deliver(ctx context.Context, t *domain.Task, m *domain.Message, held map[domain.AgentID]bool) error {
 	recordOnly := b.RecordOnly != nil && b.RecordOnly(t, m)
 
 	var firstErr error
-	for _, to := range targets {
+	for _, to := range targets(t, m) {
 		if to == domain.HumanAgentID {
 			continue
 		}
@@ -173,6 +247,14 @@ func (b *MessageBus) deliver(ctx context.Context, t *domain.Task, m *domain.Mess
 		delivered.ToAgent = to
 		if b.Enrich != nil {
 			b.Enrich(ctx, t, delivered)
+		}
+		if held[to] {
+			// Queued for to with the message: an inbox hands it over, now
+			// or in the next run.
+			if b.Handoff != nil {
+				b.Handoff(ctx, t, delivered)
+			}
+			continue
 		}
 		if b.Handoff != nil && b.Handoff(ctx, t, delivered) {
 			continue
