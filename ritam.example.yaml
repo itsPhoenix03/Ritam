@@ -22,7 +22,8 @@
 #     no type, role or executable from the global file, so repeat every
 #     field you need. Agents the project does not list are kept.
 # A project's files may tighten anything but not loosen limits, choose the
-# programs run, or change backups or the proxy; what they ask for beyond that
+# programs run or their arguments, give agents write access, switch the mock
+# agents off, or change backups or the proxy; what they ask for beyond that
 # is held back and you are told at start.
 #
 # Keys are read exactly as written here, capitals included: a key ritam does
@@ -92,8 +93,10 @@ orchestrator:
   # Spending ceilings from the usage the CLIs report. 0 disables each.
   # Claude reports cost; Codex reports tokens only, so only maxTaskTokens
   # bounds Codex spending. Tokens count fresh input and output, not what is
-  # re-read from the cache. Each Claude turn is also capped at what is left
-  # of maxTaskCostUSD, so a task stops within one API call of it.
+  # re-read from the cache. Each Claude turn is also capped (--max-budget-usd)
+  # at its share of what is left of the task's budget and the day's, so a task
+  # stops within about one API call of it. Whether the CLI counts only the
+  # turn on a resumed session is unverified. Codex turns get no dollar cap.
   maxTaskCostUSD: 10
   maxTaskTokens: 5000000
   # The same over a whole day, every task and project on this machine
@@ -156,9 +159,12 @@ logging:
   # app home's logs folder, unless a file is given here.
 
 tui:
+  # Does not work in this version: the demo task it creates has only one
+  # participant (orchestrator.defaultAuthority) and is refused. Leave it off.
   demoOnStart: false
   # Force every agent onto the mock adapter. Defaults to true so that nothing
-  # reaches a real provider by accident. The `-real` flag overrides this.
+  # reaches a real provider by accident. The `-real` flag overrides this; a
+  # project's own settings cannot set it to false.
   # Whenever the real CLIs are used (false here, or `-real`), idleTimeout is
   # raised to at least 10m, since they take minutes rather than milliseconds
   # to answer.
@@ -196,15 +202,18 @@ workspace:
 # permissions, killing processes, network access, installing software,
 # rewriting git history. A global launch stays at level 0. A level a
 # project's own settings ask for is granted only once you approved it on this
-# machine for that folder (a clone or copy starts at 0). Claude Code has no
-# sandbox here: at level 2 it runs the listed commands directly on this
-# machine, and level 3 means you trust these agents.
+# machine for that folder (a clone or copy starts at 0). Claude Code has a
+# sandbox only on macOS, Linux and WSL2. Without one (native Windows) it runs
+# no commands at any level unless allowUnsandboxed is set below; then level 2
+# runs the listed commands directly on this machine, and level 3 means you
+# trust these agents.
 access:
   level: 0
   commands: []
+  # for example:
+  #  - cmake
+  #  - ctest
   # Agents with no verified sandbox (Claude Code on native Windows) run no
   # commands at any level unless this is true; they ask an agent that has a
   # sandbox, or you. Only honoured in the global settings in the app home.
   # allowUnsandboxed: false
-  #  - cmake
-  #  - ctest
