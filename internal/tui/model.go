@@ -269,6 +269,9 @@ type Model struct {
 	access       ports.AccessInfo
 	accessLoaded bool
 	levelSel     int
+	// spendToday is today's spending against the daily limits (spend.go).
+	spendToday ports.DailySpend
+	spendErr   error
 	// inspect is what the inspector shows; zoom gives the inspector the
 	// whole body, for reading a long message.
 	inspect inspectSubject
@@ -375,6 +378,7 @@ func (m Model) Init() tea.Cmd {
 		loadAgentsCmd(m.ctx, m.svc, m.currentTaskID),
 		loadTasksCmd(m.ctx, m.svc),
 		loadAccessCmd(m.ctx, m.svc),
+		loadSpendCmd(m.ctx, m.svc),
 	}
 	if m.opts.DemoOnStart {
 		// Init cannot record a creation on the model (it returns only a

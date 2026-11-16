@@ -237,6 +237,19 @@ func (o Outbound) IsUsageOnly() bool {
 type SpendLedger interface {
 	// Add records one turn's usage and returns today's totals with it.
 	Add(u Usage) (costUSD float64, tokens int64, err error)
+	// Today returns today's totals without adding to them. The orchestrator
+	// reads them before a turn starts, to cap it at what is left of the day;
+	// an error means the day's spending is not known, and no turn starts.
+	Today() (costUSD float64, tokens int64, err error)
+}
+
+// DailySpend is today's spending on this machine, over every task and
+// project, beside the daily limits (0: none set).
+type DailySpend struct {
+	CostUSD    float64
+	Tokens     int64
+	MaxCostUSD float64
+	MaxTokens  int64
 }
 
 // Usage is what one agent CLI turn consumed. CostUSD is zero when the CLI
@@ -591,6 +604,9 @@ type Service interface {
 	// Backlog reports how many messages wait undelivered for each agent of
 	// a running task.
 	Backlog(id domain.TaskID) map[domain.AgentID]int
+	// SpendToday reports today's spending over every task on this machine
+	// against the daily limits; with no daily limit set, the limits are 0.
+	SpendToday(ctx context.Context) (DailySpend, error)
 
 	SearchKnowledge(ctx context.Context, q domain.KnowledgeQuery) ([]domain.KnowledgeHit, error)
 

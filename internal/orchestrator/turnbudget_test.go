@@ -9,8 +9,13 @@ import (
 	"time"
 
 	"ritam/internal/agents/fake"
+	"ritam/internal/decisions"
 	"ritam/internal/domain"
+	"ritam/internal/knowledge"
+	"ritam/internal/logging"
+	"ritam/internal/orchestrator"
 	"ritam/internal/ports"
+	"ritam/internal/storage"
 )
 
 // Each turn's spending cap is decided by the orchestrator when the turn is
@@ -22,6 +27,12 @@ import (
 // with limits, its agents started and its inbox open, and no run.
 func budgetRig(t *testing.T, limits domain.TaskLimits, others ...domain.AgentID) *inboxRig {
 	t.Helper()
+	return dailyRig(t, limits, nil, 0, others...)
+}
+
+// dailyRig is budgetRig with a daily spend record and a daily cost limit.
+func dailyRig(t *testing.T, limits domain.TaskLimits, daily ports.SpendLedger, maxDaily float64, others ...domain.AgentID) *inboxRig {
+	t.Helper()
 	r := &inboxRig{opus: newPromptAgent("opus"), codex: newPromptAgent("codex"), scout: newPromptAgent("scout")}
 	all := map[domain.AgentID]*promptAgent{"codex": r.codex, "scout": r.scout}
 	gw := newGateway()
@@ -31,7 +42,14 @@ func budgetRig(t *testing.T, limits domain.TaskLimits, others ...domain.AgentID)
 		gw.add(all[id], domain.RoleImplementer)
 		_ = all[id].Start(context.Background())
 	}
-	r.h = newHarness(t, limits, time.Minute, gw)
+	store := storage.NewInMemory()
+	r.h = &harness{store: *store, gw: gw}
+	r.h.orch = orchestrator.New(orchestrator.Deps{
+		Storage: *store, Agents: gw, Knowledge: knowledge.New(store.Knowledge),
+		Decisions: decisions.New(store.Decisions), Logger: logging.NewDiscard(),
+		Limits: limits, MaxConcurrentTasks: 2, IdleTimeout: time.Minute,
+		Daily: daily, MaxDailyCostUSD: maxDaily,
+	})
 	r.task = createTask(t, r.h, "opus", append([]domain.AgentID{"opus"}, others...)...)
 	r.h.orch.OpenInbox(r.task.ID)
 	return r

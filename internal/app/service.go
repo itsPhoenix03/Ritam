@@ -382,6 +382,12 @@ func (s *Service) Backlog(id domain.TaskID) map[domain.AgentID]int {
 	return s.orch.Backlog(id)
 }
 
+// SpendToday reports today's spending on this machine against the daily
+// limits.
+func (s *Service) SpendToday(context.Context) (ports.DailySpend, error) {
+	return s.orch.SpendToday()
+}
+
 func (s *Service) SearchKnowledge(ctx context.Context, q domain.KnowledgeQuery) ([]domain.KnowledgeHit, error) {
 	return s.knowledge.Search(ctx, q)
 }

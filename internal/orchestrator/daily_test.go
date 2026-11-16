@@ -32,6 +32,12 @@ func (l *memLedger) Add(u ports.Usage) (float64, int64, error) {
 	return l.cost, 0, nil
 }
 
+func (l *memLedger) Today() (float64, int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.cost, 0, nil
+}
+
 // TestADayOverItsLimitPausesANewTask: a new task has its own budget, but
 // the day's spending over every task still has a limit.
 func TestADayOverItsLimitPausesANewTask(t *testing.T) {
@@ -65,10 +71,18 @@ func TestADayOverItsLimitPausesANewTask(t *testing.T) {
 	}
 }
 
-// brokenLedger cannot lock, read or write the day's record.
-type brokenLedger struct{}
+// brokenLedger cannot lock, read or write the day's record -- or, readable,
+// it can be read but no turn can be added to it.
+type brokenLedger struct{ readable bool }
 
 func (brokenLedger) Add(ports.Usage) (float64, int64, error) {
+	return 0, 0, errors.New("spend record is locked by another process")
+}
+
+func (l brokenLedger) Today() (float64, int64, error) {
+	if l.readable {
+		return 0, 0, nil
+	}
 	return 0, 0, errors.New("spend record is locked by another process")
 }
 
@@ -76,6 +90,8 @@ func (brokenLedger) Add(ports.Usage) (float64, int64, error) {
 // not be read or written used to be logged and the day treated as under its
 // limit -- no limit at all, with nothing on screen. The task pauses on the
 // first turn, saying why, and the turn's usage still counts on the task.
+// (A record that cannot even be read starts no turn at all:
+// TestWithTheDailyRecordUnreadableNoTurnStarts.)
 func TestAnUnreadableDailyRecordPausesTheTask(t *testing.T) {
 	gw := newGateway()
 	gw.add(mockagent.New("opus", domain.AgentKindMock, mockagent.AuthorityBehavior()), domain.RoleAuthority)
@@ -87,7 +103,7 @@ func TestAnUnreadableDailyRecordPausesTheTask(t *testing.T) {
 		Storage: *store, Agents: gw, Knowledge: knowledge.New(store.Knowledge),
 		Decisions: decisions.New(store.Decisions), Logger: logging.NewDiscard(),
 		Limits: defaultLimits(), MaxConcurrentTasks: 2, IdleTimeout: time.Second,
-		Daily: brokenLedger{}, MaxDailyCostUSD: 5,
+		Daily: brokenLedger{readable: true}, MaxDailyCostUSD: 5,
 	})
 	task := createTask(t, h, "opus", "opus", "codex")
 

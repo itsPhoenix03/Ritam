@@ -644,7 +644,8 @@ var errBudgetStopped = errors.New("claude-code adapter: turn stopped at the spen
 //
 // The cap is the allowance the orchestrator gave the turn when it handed it
 // over (ports.TurnBudgetMetadataKey): its share of what is left of the task's
-// budget, with what co-workers' turns in progress hold taken out. Left to the adapter, every agent working at once was capped at
+// budget and of the day's, with what co-workers' turns in progress hold
+// taken out. Left to the adapter, every agent working at once was capped at
 // the whole remainder, read from the task as it stood when the job was
 // queued. Without an allowance (a delivery that did not come through the
 // orchestrator's inbox, such as a retry of a turn) it falls back to what is

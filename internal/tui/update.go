@@ -47,6 +47,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.applyAccess(msg.info), nil
 
+	case spendLoadedMsg:
+		m.spendToday, m.spendErr = msg.spend, msg.err
+		return m, nil
+
 	case accessChangedMsg:
 		if msg.err != nil {
 			m.setError(msg.err)
@@ -227,6 +231,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case domain.EvtAccessLevel:
 			cmds = append(cmds, loadAccessCmd(m.ctx, m.svc))
+		case domain.EvtAgentUsage, domain.EvtLimitReached:
+			cmds = append(cmds, loadSpendCmd(m.ctx, m.svc))
 		case domain.EvtRunQueued:
 			m = m.markQueued(ev.TaskID, true)
 			if ev.TaskID == m.currentTaskID {

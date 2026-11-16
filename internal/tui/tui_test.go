@@ -28,6 +28,7 @@ type fakeService struct {
 	agents    []domain.Agent
 	backlog   map[domain.AgentID]int
 	models    []ports.ModelInfo
+	spend     ports.DailySpend
 
 	lastRecruit ports.RecruitInput
 	recruits    []ports.RecruitInput
@@ -239,6 +240,13 @@ func (f *fakeService) Backlog(id domain.TaskID) map[domain.AgentID]int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.backlog
+}
+
+func (f *fakeService) SpendToday(ctx context.Context) (ports.DailySpend, error) {
+	f.record("SpendToday")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.spend, nil
 }
 
 func (f *fakeService) SearchKnowledge(ctx context.Context, q domain.KnowledgeQuery) ([]domain.KnowledgeHit, error) {
