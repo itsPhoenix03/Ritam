@@ -278,3 +278,33 @@ func TestATurnStoppedByItsCapPausesTheTaskForItsBudget(t *testing.T) {
 		t.Errorf("what the stopped turn spent is billed: $%.2f", got.CostUSD)
 	}
 }
+
+// TestARetriedTurnTakesItsOwnShareOfTheBudget: a retry used to go out with
+// the failed turn's cap and no reservation. codex is handed a turn capped
+// at half of $1; it times out; meanwhile opus is billed $0.80. The retry
+// must be capped from what is left now ($0.20), not at the old $0.50, and
+// must hold that amount in reserve like any other turn.
+func TestARetriedTurnTakesItsOwnShareOfTheBudget(t *testing.T) {
+	r := budgetRig(t, costLimit(1), "codex")
+	r.send(t, domain.HumanAgentID, "codex", domain.MsgQuestion, "Where is the cookie cleared?")
+	if got := allowance(t, r.codex, 1); !about(got, 0.50) {
+		t.Fatalf("codex's first turn shares the $1 with opus: got $%.4f", got)
+	}
+	r.bill(t, r.opus, 0.80)
+
+	r.codex.finish()
+	if _, err := r.h.orch.HandleOutboundForTest(context.Background(), r.task.ID, ports.Outbound{AgentID: "codex",
+		Err: domain.NewFailure(domain.FailureTimeout, "agent CLI timed out after 5m0s", nil)}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return len(r.codex.deliveries()) == 2 })
+	got := allowance(t, r.codex, 2)
+	if got < 0 || got > 0.20+0.0005 {
+		t.Errorf("the retry must be capped from the $0.20 that is left, got $%.4f", got)
+	}
+	// The authority may hold a share of its own by now (it is told of the
+	// retry), so the retry's share is the least that must be in reserve.
+	if held := r.h.orch.TurnsHeldForTest(r.task.ID); held < got-0.0005 {
+		t.Errorf("the retry must hold its allowance in reserve: $%.4f held, $%.4f allowed", held, got)
+	}
+}
