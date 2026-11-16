@@ -25,7 +25,7 @@ func testTask() *domain.Task {
 
 func TestRenderPromptTellsTheAuthorityWhatItIs(t *testing.T) {
 	m := domain.Message{FromAgent: domain.HumanAgentID, ToAgent: "opus", Type: domain.MsgTaskAssignment, Content: "Start."}
-	prompt := renderPrompt(testTask(), m, false)
+	prompt := renderPrompt(testTask(), m, "")
 
 	for _, want := range []string{"opus", "AUTHORITY", "TASK-001", "Fix the authentication cookie bug", headerMarker} {
 		if !strings.Contains(prompt, want) {
@@ -40,7 +40,7 @@ func TestRenderPromptTellsTheAuthorityWhatItIs(t *testing.T) {
 
 func TestRenderPromptTellsSupportingAgentsTheyCannotDecide(t *testing.T) {
 	m := domain.Message{FromAgent: "opus", ToAgent: "codex", Type: domain.MsgDelegate, Content: "Investigate."}
-	prompt := renderPrompt(testTask(), m, false)
+	prompt := renderPrompt(testTask(), m, "")
 
 	if !strings.Contains(prompt, "SUPPORTING AGENT") {
 		t.Error("supporting agents must be told their role")
@@ -60,7 +60,7 @@ func TestRenderPromptTellsSupportingAgentsTheyCannotDecide(t *testing.T) {
 // task, its role and who it may reply to.
 func TestRenderPromptOrientsAnAgentThatWasNeverBriefed(t *testing.T) {
 	m := domain.Message{FromAgent: "opus", ToAgent: "codex", Type: domain.MsgDelegate, Content: "Investigate the logout path."}
-	prompt := renderPrompt(testTask(), m, false)
+	prompt := renderPrompt(testTask(), m, "")
 
 	for _, want := range []string{"TASK-001", "Fix the authentication cookie bug", "codex", "- opus", "Investigate the logout path."} {
 		if !strings.Contains(prompt, want) {
@@ -72,11 +72,11 @@ func TestRenderPromptOrientsAnAgentThatWasNeverBriefed(t *testing.T) {
 func TestRenderPromptStatesTheReadOnlyConstraint(t *testing.T) {
 	m := domain.Message{FromAgent: "opus", ToAgent: "codex", Type: domain.MsgImplement, Content: "Implement it."}
 
-	ro := renderPrompt(testTask(), m, false)
+	ro := renderPrompt(testTask(), m, "")
 	if !strings.Contains(ro, "READ-ONLY") {
 		t.Error("a read-only agent must be told it cannot write")
 	}
-	rw := renderPrompt(testTask(), m, true)
+	rw := renderPrompt(testTask(), m, writeRulesForTest)
 	if strings.Contains(rw, "READ-ONLY") {
 		t.Error("a write-enabled agent must not be told it is read-only")
 	}
@@ -87,7 +87,7 @@ func TestRenderPromptCarriesRetrievedKnowledge(t *testing.T) {
 		FromAgent: "opus", ToAgent: "codex", Type: domain.MsgDelegate, Content: "Investigate.",
 		Metadata: map[string]string{"knowledge": "- [INVESTIGATION] cookie path\n  Path=/ vs Path=/api"},
 	}
-	prompt := renderPrompt(testTask(), m, false)
+	prompt := renderPrompt(testTask(), m, "")
 	if !strings.Contains(prompt, "Path=/api") {
 		t.Fatal("retrieved knowledge must reach the prompt: it is what replaces memory between one-shot runs")
 	}
@@ -99,7 +99,7 @@ func TestRenderPromptCarriesRetrievedKnowledge(t *testing.T) {
 func TestRenderPromptShowsANoticeAsTheOrchestrators(t *testing.T) {
 	m := domain.Message{FromAgent: domain.OrchestratorID, ToAgent: "codex", Type: domain.MsgError,
 		Content: "Part of your last reply did not follow the protocol.", Metadata: map[string]string{domain.MetaReason: "partial-reply"}}
-	prompt := renderPrompt(testTask(), m, false)
+	prompt := renderPrompt(testTask(), m, "")
 	for _, want := range []string{"--- NOTICE FROM orchestrator ---",
 		"A NOTICE FROM orchestrator is about the protocol or the state of the task"} {
 		if !strings.Contains(prompt, want) {

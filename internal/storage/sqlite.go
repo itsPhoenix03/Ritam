@@ -218,6 +218,46 @@ var migrations = []string{
 	`
 	ALTER TABLE tasks ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
 	`,
+
+	// 3: each stored message's way to each recipient. Inboxes lived only in
+	// memory, and a pause, a crash or a restart dropped what was waiting in
+	// them.
+	`
+	CREATE TABLE deliveries (
+		seq        INTEGER PRIMARY KEY AUTOINCREMENT, -- queue order
+		message_id TEXT NOT NULL,
+		recipient  TEXT NOT NULL,
+		task_id    TEXT NOT NULL,
+		status     TEXT NOT NULL,                     -- queued, sent, acknowledged
+		turn_id    TEXT NOT NULL,                     -- the turn that last carried it, or ''
+		queued_at  TEXT NOT NULL,
+		sent_at    TEXT NOT NULL,                     -- '' until sent
+		UNIQUE (message_id, recipient)
+	);
+	CREATE INDEX deliveries_task ON deliveries(task_id, seq);
+	CREATE INDEX deliveries_turn ON deliveries(turn_id);
+	`,
+
+	// 4: every agent turn: what it was handed, how it ended and what it
+	// cost. Nothing recorded which messages went into which turn.
+	`
+	CREATE TABLE turns (
+		seq               INTEGER PRIMARY KEY AUTOINCREMENT, -- start order
+		id                TEXT NOT NULL UNIQUE,
+		task_id           TEXT NOT NULL,
+		agent_id          TEXT NOT NULL,
+		messages          TEXT NOT NULL,                     -- JSON array of message ids
+		started_at        TEXT NOT NULL,
+		ended_at          TEXT NOT NULL,                     -- '' while running
+		outcome           TEXT NOT NULL,                     -- '', completed, failed, killed
+		failure_kind      TEXT NOT NULL,
+		cost_usd          REAL NOT NULL,
+		input_tokens      INTEGER NOT NULL,
+		output_tokens     INTEGER NOT NULL,
+		cache_read_tokens INTEGER NOT NULL
+	);
+	CREATE INDEX turns_task ON turns(task_id, seq);
+	`,
 }
 
 func (s *SQLite) migrate(ctx context.Context) error {

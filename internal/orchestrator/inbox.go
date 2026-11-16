@@ -36,6 +36,13 @@ import (
 //   - With the team in view. Every delivery carries a status board: who is
 //     working, how much each has unread, who is waiting on whom. Every agent
 //     can read it; only the authority may act on it.
+//   - Durable. A message waiting in an inbox is a queued delivery in the
+//     store, written with the message. Handed over, it is sent in a turn;
+//     when that turn ends well it is acknowledged, and when the turn is
+//     killed or fails it goes back to the queue. A run starts by refilling
+//     the inboxes from the queue, so a pause, a crash or a restart loses
+//     nothing that was stored. A retried turn re-sends its own batch, which
+//     stays with the retry and is not queued a second time beside it.
 
 // maxHold bounds how long an agent's messages wait for the answers it needs.
 var maxHold = 4 * time.Minute
@@ -50,14 +57,43 @@ type taskInbox struct {
 	pending   map[domain.AgentID][]*domain.Message
 	heldSince map[domain.AgentID]time.Time
 	flushing  map[domain.AgentID]bool
+	// seen marks messages handed to an agent before, in a turn that never
+	// finished: the agent may have read them.
+	seen map[domain.MessageID]bool
+
+	// tmu guards the turns: each agent's turns handed over and not yet
+	// ended (oldest first), its last ended one, whether it reports usage,
+	// and what its last turn carried (what a retry sends again).
+	tmu           sync.Mutex
+	open          map[domain.AgentID][]*turnRec
+	last          map[domain.AgentID]*turnRec
+	reportsUsage  map[domain.AgentID]bool
+	lastDelivered map[domain.AgentID][]domain.MessageID
 }
 
 func newTaskInbox() *taskInbox {
 	return &taskInbox{
-		pending:   map[domain.AgentID][]*domain.Message{},
-		heldSince: map[domain.AgentID]time.Time{},
-		flushing:  map[domain.AgentID]bool{},
+		pending:       map[domain.AgentID][]*domain.Message{},
+		heldSince:     map[domain.AgentID]time.Time{},
+		flushing:      map[domain.AgentID]bool{},
+		seen:          map[domain.MessageID]bool{},
+		open:          map[domain.AgentID][]*turnRec{},
+		last:          map[domain.AgentID]*turnRec{},
+		reportsUsage:  map[domain.AgentID]bool{},
+		lastDelivered: map[domain.AgentID][]domain.MessageID{},
 	}
+}
+
+// add puts m in agent's inbox unless it is there already.
+func (ib *taskInbox) add(agent domain.AgentID, m *domain.Message) {
+	ib.mu.Lock()
+	defer ib.mu.Unlock()
+	for _, p := range ib.pending[agent] {
+		if p.ID == m.ID {
+			return
+		}
+	}
+	ib.pending[agent] = append(ib.pending[agent], m)
 }
 
 // unread reports how many messages wait for agent.
@@ -74,13 +110,134 @@ func (o *Orchestrator) openInbox(id domain.TaskID) {
 	o.mu.Unlock()
 }
 
-// closeInbox stops holding messages for a task whose run has ended. Anything
-// undelivered is dropped: the messages are in the history, and a resumed run
-// asks again for whatever is still owed.
+// closeInbox stops holding messages for a task whose run has ended. It only
+// releases memory: what was undelivered is queued in the store, and the next
+// run hands it over. It used to be dropped here, so a reply that reached a
+// busy agent was lost to a pause, and the agent told to carry on without it.
+// A task that has ended needs none of it any more.
 func (o *Orchestrator) closeInbox(id domain.TaskID) {
 	o.mu.Lock()
 	delete(o.inboxes, id)
 	o.mu.Unlock()
+	if t, err := o.Tasks.Get(context.Background(), id); err == nil && t.State.IsTerminal() {
+		o.clearDeliveries(context.Background(), id)
+	}
+}
+
+// durable reports whether the store keeps deliveries (see MessageBus.Holds).
+func (o *Orchestrator) durable() bool { return o.storage.Deliveries != nil }
+
+// clearDeliveries forgets what still waits for a task that has ended: it
+// will never be handed over, and the table would otherwise grow with every
+// finished task. What was acknowledged stays as the record of what each
+// agent was given.
+func (o *Orchestrator) clearDeliveries(ctx context.Context, id domain.TaskID) {
+	if !o.durable() {
+		return
+	}
+	if err := o.storage.Deliveries.Clear(ctx, id); err != nil {
+		o.log.Warn("clear the deliveries of a finished task", "taskId", string(id), "error", err)
+	}
+}
+
+// deferredKey marks a context whose routes are recorded and queued for the
+// task's next run rather than handed to an inbox (deliverOrQueue).
+type deferredKey struct{}
+
+func deferToNextRun(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deferredKey{}, true)
+}
+
+func deferred(ctx context.Context) bool {
+	b, _ := ctx.Value(deferredKey{}).(bool)
+	return b
+}
+
+// holds is the bus's Holds hook: a message waits in an inbox, durably, when
+// the task's run is up or it is queued for the next one.
+func (o *Orchestrator) holds(ctx context.Context, t *domain.Task, _ domain.AgentID) bool {
+	return deferred(ctx) || o.inbox(t.ID) != nil
+}
+
+// queuedRows reads what is queued for a task, first giving back to the queue
+// what a turn of an earlier process carried and never finished: that process
+// stopped mid-turn, so the turn is as good as killed.
+func (o *Orchestrator) queuedRows(ctx context.Context, id domain.TaskID) []*domain.Delivery {
+	if !o.durable() {
+		return nil
+	}
+	rows, err := o.storage.Deliveries.ListByTask(ctx, id)
+	if err != nil {
+		o.log.Warn("read the queued deliveries", "taskId", string(id), "error", err)
+		return nil
+	}
+	var queued []*domain.Delivery
+	interrupted := map[domain.TurnID]bool{}
+	for _, d := range rows {
+		if d.Status == domain.DeliverySent {
+			if !interrupted[d.TurnID] {
+				interrupted[d.TurnID] = true
+				if err := o.storage.Deliveries.SettleTurn(ctx, d.TurnID, domain.DeliveryQueued); err != nil {
+					o.log.Warn("requeue an interrupted turn", "taskId", string(id), "error", err)
+				}
+			}
+			d.Status = domain.DeliveryQueued
+		}
+		if d.Status == domain.DeliveryQueued {
+			queued = append(queued, d)
+		}
+	}
+	return queued
+}
+
+// humanQueued reports whether a message of the human's waits for the task's
+// next run.
+func (o *Orchestrator) humanQueued(ctx context.Context, id domain.TaskID) bool {
+	for _, d := range o.queuedRows(ctx, id) {
+		if m, err := o.storage.Messages.Get(ctx, d.MessageID); err == nil && m.FromAgent == domain.HumanAgentID {
+			return true
+		}
+	}
+	return false
+}
+
+// refillInbox puts what is queued (rows, from queuedRows) in the inboxes of
+// the run that is starting: what waited in an inbox when the last run ended,
+// the human's messages sent while no run was alive, and what was in a turn
+// that never finished, which the agent may have seen. It reports whether any
+// of it is from the human.
+func (o *Orchestrator) refillInbox(ctx context.Context, t *domain.Task, rows []*domain.Delivery) (fromHuman bool) {
+	ib := o.inbox(t.ID)
+	if ib == nil {
+		return false
+	}
+	for _, d := range rows {
+		if t.IsDropped(d.Recipient) {
+			o.discardInbox(t.ID, d.Recipient)
+			continue
+		}
+		m, err := o.storage.Messages.Get(ctx, d.MessageID)
+		if err != nil {
+			o.log.Warn("refill an inbox", "taskId", string(t.ID), "messageId", string(d.MessageID), "error", err)
+			continue
+		}
+		// As the bus hands it over: addressed to this recipient, with the
+		// context it would have been given.
+		m.ToAgent = d.Recipient
+		if o.Bus.Enrich != nil {
+			o.Bus.Enrich(ctx, t, m)
+		}
+		if m.FromAgent == domain.HumanAgentID {
+			fromHuman = true
+		}
+		if d.TurnID != "" {
+			ib.mu.Lock()
+			ib.seen[m.ID] = true
+			ib.mu.Unlock()
+		}
+		ib.add(d.Recipient, m)
+	}
+	return fromHuman
 }
 
 func (o *Orchestrator) inbox(id domain.TaskID) *taskInbox {
@@ -110,6 +267,11 @@ func (o *Orchestrator) Backlog(id domain.TaskID) map[domain.AgentID]int {
 // discardInbox throws away what waits for agent: it was dropped from the
 // task and will never be handed it.
 func (o *Orchestrator) discardInbox(id domain.TaskID, agent domain.AgentID) {
+	if o.durable() {
+		if err := o.storage.Deliveries.Discard(context.Background(), id, agent); err != nil {
+			o.log.Warn("discard a dropped agent's deliveries", "taskId", string(id), "agentId", string(agent), "error", err)
+		}
+	}
 	ib := o.inbox(id)
 	if ib == nil {
 		return
@@ -122,14 +284,19 @@ func (o *Orchestrator) discardInbox(id domain.TaskID, agent domain.AgentID) {
 
 // handoff is the bus's Handoff hook: it puts a message for a running task in
 // the recipient's inbox and tries to hand the inbox over at once.
+//
+// A message routed for the next run (deferred) is already queued in the
+// store, where that run finds it; it is not put in an inbox that may belong
+// to a run still starting.
 func (o *Orchestrator) handoff(ctx context.Context, t *domain.Task, m *domain.Message) bool {
+	if deferred(ctx) {
+		return true
+	}
 	ib := o.inbox(t.ID)
 	if ib == nil {
 		return false
 	}
-	ib.mu.Lock()
-	ib.pending[m.ToAgent] = append(ib.pending[m.ToAgent], m)
-	ib.mu.Unlock()
+	ib.add(m.ToAgent, m)
 	o.dispatch(ctx, t.ID)
 	return true
 }
@@ -142,6 +309,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, id domain.TaskID) {
 	if ib == nil {
 		return
 	}
+	o.closeIdleTurns(ctx, id, ib)
 	ib.mu.Lock()
 	var agents []domain.AgentID
 	for a, msgs := range ib.pending {
@@ -217,6 +385,9 @@ func (o *Orchestrator) flush(ctx context.Context, t *domain.Task, ledger []domai
 			ib.mu.Unlock()
 		}
 		return
+	}
+	if !o.admitTurn(ctx, t.ID, agent) {
+		return // no money for the turn yet, or the task paused for it (turnbudget.go)
 	}
 
 	ib.mu.Lock()
@@ -296,25 +467,35 @@ func (o *Orchestrator) deliverInbox(ctx context.Context, t *domain.Task, ad port
 		batch = false
 	}
 	var deliveries []*domain.Message
+	var carries [][]domain.MessageID
 	if batch {
 		deliveries = []*domain.Message{combine(msgs)}
+		carries = [][]domain.MessageID{messageIDs(msgs)}
 	} else {
 		deliveries = msgs
+		for _, m := range msgs {
+			carries = append(carries, []domain.MessageID{m.ID})
+		}
 	}
-	for _, d := range deliveries {
+	ib := o.inbox(t.ID)
+	for i, d := range deliveries {
 		if board != "" {
 			if d.Metadata == nil {
 				d.Metadata = map[string]string{}
 			}
 			d.Metadata[ports.TeamMetadataKey] = board
 		}
-		var err error
-		if d.Type == domain.MsgTaskAssignment {
-			err = o.Agents.SendTask(ctx, t, *d)
-		} else {
-			err = o.Agents.Send(ctx, t, *d)
+		if ib != nil && ib.takeSeen(carries[i]) {
+			// Handed over before in a turn that never finished: the agent
+			// may have read it, and should not be puzzled to read it again.
+			d.Content = redeliveryNote + "\n\n" + d.Content
 		}
-		if err != nil {
+		// The turn's spending cap travels with the delivery, out of the agent's
+		// sight (turnbudget.go).
+		o.stampTurnBudget(t.ID, agent, d)
+		// A send that fails leaves the messages queued in the store, for the
+		// next run; they used to be lost with it.
+		if err := o.sendTurn(ctx, t, agent, d, carries[i]); err != nil {
 			o.log.Error("deliver message", "taskId", string(t.ID), "agentId", string(agent), "error", err)
 			o.Events.emit(ctx, domain.EvtAgentFailed, t.ID, agent, fmt.Sprintf("delivery to %s failed: %v", agent, err), nil)
 			return
@@ -398,24 +579,16 @@ func combine(msgs []*domain.Message) *domain.Message {
 	return env
 }
 
-// teamBoard describes every participant for the agent being delivered to:
-// state, unread messages, and who it waits on and owes.
+// teamBoard describes every participant for the agent being delivered to: the
+// roster (who each one is, what it may do, its state and spending), then
+// unread messages and who waits on and owes whom.
 func (o *Orchestrator) teamBoard(t *domain.Task, ledger []domain.Request, ib *taskInbox, self domain.AgentID) string {
 	now := time.Now()
 	var b strings.Builder
+	b.WriteString(o.roster(t, self))
+	b.WriteString("\n")
 	for _, p := range t.Participants {
-		state := "stopped"
-		if ad, ok := o.Agents.AdapterFor(t.ID, p); ok {
-			state = strings.ToLower(strings.TrimPrefix(string(ad.Status()), "AGENT_"))
-		}
-		name := string(p)
-		if p == self {
-			name += " (you)"
-		}
-		if p == t.AuthorityAgent {
-			name += " (authority)"
-		}
-		parts := []string{state}
+		var parts []string
 		if n := ib.unread(p); n > 0 && p != self {
 			parts = append(parts, fmt.Sprintf("%d unread", n))
 		}
@@ -432,7 +605,9 @@ func (o *Orchestrator) teamBoard(t *domain.Task, ledger []domain.Request, ib *ta
 				parts = append(parts, fmt.Sprintf("owes %s a reply (%s, %s)", q.FromAgent, q.Type, age))
 			}
 		}
-		fmt.Fprintf(&b, "- %s: %s\n", name, strings.Join(parts, " · "))
+		if len(parts) > 0 {
+			fmt.Fprintf(&b, "- %s: %s\n", p, strings.Join(parts, " · "))
+		}
 	}
 	var human []string
 	for _, r := range ledger {
@@ -471,3 +646,325 @@ func plural(one bool, single, many string) string {
 	}
 	return many
 }
+
+// redeliveryNote heads a delivery of messages an agent was handed before, in
+// a turn that was cut off.
+const redeliveryNote = "(Note from the orchestrator: delivered again -- you may have seen these before your last turn was cut off.)"
+
+func messageIDs(msgs []*domain.Message) []domain.MessageID {
+	ids := make([]domain.MessageID, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+// takeSeen reports whether any of ids may have been seen before, and forgets
+// it: it is said once.
+func (ib *taskInbox) takeSeen(ids []domain.MessageID) bool {
+	ib.mu.Lock()
+	defer ib.mu.Unlock()
+	seen := false
+	for _, id := range ids {
+		if ib.seen[id] {
+			seen = true
+			delete(ib.seen, id)
+		}
+	}
+	return seen
+}
+
+// ---------------------------------------------------------------------------
+// Turns
+// ---------------------------------------------------------------------------
+//
+// A turn is one hand-over to an adapter. Adapters say nothing of turns: an
+// agent's outbound is its messages, then a failure if the turn failed, then
+// its usage -- each turn's after the one before, since an adapter runs one
+// at a time. So a usage report ends the oldest open turn, a failure ends it
+// failed, and an agent seen idle has ended every turn it had. A turn seen to
+// end before its usage was read keeps a place for it (pending): the report
+// is still on its way. Only an agent that reports usage at all keeps one,
+// or every later report would be taken for the turn before.
+
+// turnRec is one turn, from the hand-over until its outcome is known, and
+// its record in the store (domain.Turn): written when the turn is handed
+// over and again whenever its end, outcome or usage becomes known.
+type turnRec struct {
+	domain.Turn
+	billed  bool
+	pending bool
+	// replied is set once a message of the agent's was taken from this
+	// turn: it was answered, whatever happens to the rest of it.
+	replied bool
+}
+
+// turnReplied notes that agent's oldest open turn has produced a message.
+func (o *Orchestrator) turnReplied(id domain.TaskID, agent domain.AgentID) {
+	ib := o.inbox(id)
+	if ib == nil {
+		return
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	if q := ib.open[agent]; len(q) > 0 {
+		q[0].replied = true
+	}
+}
+
+// saveTurn writes rec's record. A turn is only a record: failing to write
+// it is logged and the work goes on.
+func (o *Orchestrator) saveTurn(ctx context.Context, rec *turnRec, create bool) {
+	if o.storage.Turns == nil {
+		return
+	}
+	var err error
+	if create {
+		err = o.storage.Turns.Create(ctx, &rec.Turn)
+	} else {
+		err = o.storage.Turns.Update(ctx, &rec.Turn)
+	}
+	if err != nil {
+		o.log.Warn("record a turn", "taskId", string(rec.TaskID), "turn", string(rec.ID), "error", err)
+	}
+}
+
+// sendTurn hands d, which carries the stored messages ids, to agent as one
+// turn, and records it. The deliveries are marked sent only once the adapter
+// has taken it: a send that fails leaves them queued.
+func (o *Orchestrator) sendTurn(ctx context.Context, t *domain.Task, agent domain.AgentID, d *domain.Message, ids []domain.MessageID) error {
+	send := func() error {
+		if d.Type == domain.MsgTaskAssignment {
+			return o.Agents.SendTask(ctx, t, *d)
+		}
+		return o.Agents.Send(ctx, t, *d)
+	}
+	ib := o.inbox(t.ID)
+	if ib == nil {
+		return send()
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	rec := &turnRec{Turn: domain.Turn{ID: domain.NewTurnID(), TaskID: t.ID, AgentID: agent,
+		Messages: append([]domain.MessageID(nil), ids...), StartedAt: time.Now()}}
+	// Opened before the send, so a turn that ends at once still finds it;
+	// tmu keeps its end waiting until it is recorded and marked sent.
+	ib.open[agent] = append(ib.open[agent], rec)
+	if err := send(); err != nil {
+		ib.open[agent] = ib.open[agent][:len(ib.open[agent])-1]
+		return err
+	}
+	ib.lastDelivered[agent] = ids
+	o.saveTurn(ctx, rec, true)
+	if o.durable() && len(ids) > 0 {
+		if err := o.storage.Deliveries.MarkSent(ctx, t.ID, agent, ids, rec.ID, rec.StartedAt); err != nil {
+			o.log.Warn("mark deliveries sent", "taskId", string(t.ID), "agentId", string(agent), "error", err)
+		}
+	}
+	return nil
+}
+
+// lastDeliveredIDs is what agent's last turn carried: what a retry of it
+// carries again.
+func (o *Orchestrator) lastDeliveredIDs(id domain.TaskID, agent domain.AgentID) []domain.MessageID {
+	ib := o.inbox(id)
+	if ib == nil {
+		return nil
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	return ib.lastDelivered[agent]
+}
+
+// endTurn records how rec ended and settles what it carried. Called with
+// ib.tmu held.
+func (o *Orchestrator) endTurn(ctx context.Context, ib *taskInbox, rec *turnRec, outcome domain.TurnOutcome, kind domain.FailureKind) {
+	now := time.Now()
+	rec.EndedAt, rec.Outcome, rec.FailureKind = &now, outcome, kind
+	rec.pending = !rec.billed && ib.reportsUsage[rec.AgentID]
+	ib.last[rec.AgentID] = rec
+	o.saveTurn(ctx, rec, false)
+	o.settle(ctx, rec)
+}
+
+// settle moves what rec carried on by how it ended: acknowledged when it
+// completed, back in the queue when it was killed or failed. A malformed
+// reply is the exception: the agent took its turn on the batch and has it in
+// its session; it is asked to reply again, not handed the batch again.
+//
+// A failed turn the policy retries goes back to the queue only until the
+// retry is sent, which carries the same messages again (sendTurn marks them
+// sent with it): the in-memory inbox never gets them back, so the batch is
+// not delivered a second time beside its retry. If the run ends before the
+// retry is sent, they are where the next run finds them.
+func (o *Orchestrator) settle(ctx context.Context, rec *turnRec) {
+	if !o.durable() || len(rec.Messages) == 0 {
+		return
+	}
+	status := domain.DeliveryQueued
+	if rec.Outcome == domain.TurnCompleted || (rec.Outcome == domain.TurnFailed && rec.FailureKind == domain.FailureMalformed) {
+		status = domain.DeliveryAcknowledged
+	}
+	if err := o.storage.Deliveries.SettleTurn(ctx, rec.ID, status); err != nil {
+		o.log.Warn("settle a turn's deliveries", "taskId", string(rec.TaskID), "turn", string(rec.ID), "error", err)
+	}
+}
+
+// popOpen takes agent's oldest open turn, or nil. Called with ib.tmu held.
+func (ib *taskInbox) popOpen(agent domain.AgentID) *turnRec {
+	q := ib.open[agent]
+	if len(q) == 0 {
+		return nil
+	}
+	if len(q) == 1 {
+		delete(ib.open, agent)
+	} else {
+		ib.open[agent] = q[1:]
+	}
+	return q[0]
+}
+
+// turnUsage takes one usage report of agent's -- billed to the task by the
+// caller -- and bills it to a turn too: the turn that ended without its
+// report, or else the oldest open turn, which it ends. Every report lands on
+// some turn, so the turns of a task add up to what the task was billed: one
+// no turn can take (none was handed over in this run) gets a record of its
+// own, carrying no messages.
+func (o *Orchestrator) turnUsage(ctx context.Context, id domain.TaskID, agent domain.AgentID, u ports.Usage) {
+	ib := o.inbox(id)
+	if ib == nil {
+		return
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	ib.reportsUsage[agent] = true
+	last := ib.last[agent]
+	switch rec := ib.popOpenUnlessPending(agent); {
+	case rec != nil:
+		addTurnUsage(rec, u)
+		o.endTurn(ctx, ib, rec, domain.TurnCompleted, "")
+	case last != nil:
+		last.pending = false
+		addTurnUsage(last, u)
+		o.saveTurn(ctx, last, false)
+	default:
+		now := time.Now()
+		rec := &turnRec{Turn: domain.Turn{ID: domain.NewTurnID(), TaskID: id, AgentID: agent, StartedAt: now,
+			EndedAt: &now, Outcome: domain.TurnCompleted}}
+		addTurnUsage(rec, u)
+		ib.last[agent] = rec
+		o.saveTurn(ctx, rec, true)
+	}
+}
+
+// popOpenUnlessPending takes agent's oldest open turn, unless its last turn
+// still waits for its usage report. Called with ib.tmu held.
+func (ib *taskInbox) popOpenUnlessPending(agent domain.AgentID) *turnRec {
+	if last := ib.last[agent]; last != nil && last.pending {
+		return nil
+	}
+	return ib.popOpen(agent)
+}
+
+func addTurnUsage(rec *turnRec, u ports.Usage) {
+	rec.billed = true
+	rec.InputTokens += u.InputTokens
+	rec.OutputTokens += u.OutputTokens
+	rec.CacheReadTokens += u.CacheReadTokens
+	rec.CostUSD += u.CostUSD
+}
+
+// turnFailure takes a failed turn of agent's: the one already taken as done
+// -- seen idle -- whose failure was still on its way, or else the oldest open
+// one. Cancelled is a turn the orchestrator ended itself: killed.
+func (o *Orchestrator) turnFailure(ctx context.Context, id domain.TaskID, agent domain.AgentID, kind domain.FailureKind) {
+	ib := o.inbox(id)
+	if ib == nil {
+		return
+	}
+	outcome := domain.TurnFailed
+	if kind == domain.FailureCancelled {
+		outcome = domain.TurnKilled
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	if last := ib.last[agent]; last != nil && last.pending && last.Outcome == domain.TurnCompleted {
+		last.Outcome, last.FailureKind = outcome, kind
+		o.saveTurn(ctx, last, false)
+		o.settle(ctx, last)
+		return
+	}
+	if rec := ib.popOpen(agent); rec != nil {
+		o.endTurn(ctx, ib, rec, outcome, kind)
+	}
+}
+
+// closeInterruptedTurns marks killed the turns of a task still recorded as
+// running when its run starts: the process that ran them stopped first.
+func (o *Orchestrator) closeInterruptedTurns(ctx context.Context, id domain.TaskID) {
+	if o.storage.Turns == nil {
+		return
+	}
+	turns, err := o.storage.Turns.ListByTask(ctx, id)
+	if err != nil {
+		o.log.Warn("read the task's turns", "taskId", string(id), "error", err)
+		return
+	}
+	now := time.Now()
+	for _, tr := range turns {
+		if tr.Outcome != domain.TurnRunning {
+			continue
+		}
+		tr.Outcome, tr.EndedAt = domain.TurnKilled, &now
+		if err := o.storage.Turns.Update(ctx, tr); err != nil {
+			o.log.Warn("record an interrupted turn", "taskId", string(id), "turn", string(tr.ID), "error", err)
+		}
+	}
+}
+
+// closeIdleTurns ends the open turns of every agent no longer working: it
+// has finished them, whether or not it said anything. Not once the run is
+// being stopped: stopping it ends the turns, and an agent idle for that
+// reason was cut off, not finished (killTurns).
+func (o *Orchestrator) closeIdleTurns(ctx context.Context, id domain.TaskID, ib *taskInbox) {
+	if ctx.Err() != nil || o.stopping(id) {
+		return
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	for agent := range ib.open {
+		if ad, ok := o.Agents.AdapterFor(id, agent); ok && ad.Status() == domain.AgentStateWorking {
+			continue
+		}
+		for rec := ib.popOpen(agent); rec != nil; rec = ib.popOpen(agent) {
+			o.endTurn(ctx, ib, rec, domain.TurnCompleted, "")
+		}
+	}
+}
+
+// killTurns ends every open turn as the run stops. One the agent answered
+// and finished is completed. Any other was killed -- by the stop, or by the
+// pause or cancel that ended the run -- or its answer is dropped with the
+// run, unread: what it carried goes back to the queue.
+func (o *Orchestrator) killTurns(ctx context.Context, id domain.TaskID) {
+	ib := o.inbox(id)
+	if ib == nil {
+		return
+	}
+	ib.tmu.Lock()
+	defer ib.tmu.Unlock()
+	for agent := range ib.open {
+		working := false
+		if ad, ok := o.Agents.AdapterFor(id, agent); ok && ad.Status() == domain.AgentStateWorking {
+			working = true
+		}
+		for rec := ib.popOpen(agent); rec != nil; rec = ib.popOpen(agent) {
+			outcome := domain.TurnKilled
+			if rec.replied && !working {
+				outcome = domain.TurnCompleted
+			}
+			o.endTurn(ctx, ib, rec, outcome, "")
+		}
+	}
+}
+

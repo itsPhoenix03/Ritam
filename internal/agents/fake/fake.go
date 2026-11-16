@@ -43,6 +43,10 @@ type Turn struct {
 	RetryAfter time.Duration
 	// Usage is what the turn reports it cost; nil reports a small default.
 	Usage *ports.Usage
+	// KilledUsage is what the turn reports if it is ended before it
+	// finishes, as the Claude adapter reports the tokens streamed before
+	// its CLI was killed; nil reports nothing, as Codex does.
+	KilledUsage *ports.Usage
 }
 
 // Script decides each turn: n counts the adapter's turns from 1, in is what
@@ -105,6 +109,7 @@ type Agent struct {
 	lifetime  context.Context
 	cancelAll context.CancelFunc
 	turns     int
+	killed    int
 	received  []domain.Message
 }
 
@@ -218,7 +223,13 @@ func (a *Agent) run(ctx context.Context, t *domain.Task, m domain.Message) {
 	select {
 	case <-ctx.Done():
 		// Cancelled: nobody is waiting for the answer, so nothing is sent.
+		a.mu.Lock()
+		a.killed++
+		a.mu.Unlock()
 		a.activity.Emit(ports.ActivityStatus, "cancelled")
+		if turn.KilledUsage != nil {
+			a.emit(ports.Outbound{AgentID: a.id, Usage: turn.KilledUsage})
+		}
 		return
 	case <-time.After(wait):
 	}
@@ -237,7 +248,9 @@ func (a *Agent) run(ctx context.Context, t *domain.Task, m domain.Message) {
 		a.emit(ports.Outbound{AgentID: a.id, Err: f})
 		return
 	}
-	if turn.Reply == "" {
+	// NO_REPLY is the silence the briefs ask for; the real adapters take it
+	// as saying nothing, so the fake must not report it as a malformed reply.
+	if core.NothingToSay(turn.Reply) {
 		a.activity.Emit(ports.ActivityStatus, "nothing to reply")
 		return
 	}
@@ -308,6 +321,14 @@ func (a *Agent) Turns() int {
 	return a.turns
 }
 
+// Killed is how many turns were ended before they finished: by Stop, or by
+// the delivery's context being cancelled.
+func (a *Agent) Killed() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.killed
+}
+
 func (a *Agent) setState(s domain.AgentState) {
 	a.mu.Lock()
 	a.state = s
@@ -318,7 +339,9 @@ func (a *Agent) emit(o ports.Outbound) {
 	a.mu.Lock()
 	stopped := a.stopped
 	a.mu.Unlock()
-	if stopped {
+	if stopped && !o.IsUsageOnly() {
+		// Like the real adapters: a stopped agent's messages are dropped,
+		// its usage is still reported.
 		return
 	}
 	select {

@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -376,8 +377,10 @@ func TestSpendingIsRecordedAndTheBudgetEnforced(t *testing.T) {
 	}
 }
 
-// usageAgent answers like the slow agent, instantly, and reports a fixed
-// usage after every turn.
+// usageAgent answers like the slow agent, at once, and reports a fixed usage
+// after every turn -- after the turn's message, as the real adapters do. It
+// used to report the usage first, so no test saw what happens to the usage
+// of a turn whose message ends the run.
 type usageAgent struct {
 	*slowAgent
 	usage ports.Usage
@@ -387,13 +390,26 @@ func newUsageAgent(id domain.AgentID, u ports.Usage) *usageAgent {
 	return &usageAgent{slowAgent: newSlowAgent(id, 0, false), usage: u}
 }
 
-func (u *usageAgent) SendMessage(ctx context.Context, t *domain.Task, m domain.Message) error {
+func (u *usageAgent) SendMessage(_ context.Context, _ *domain.Task, m domain.Message) error {
+	var reply domain.MessageType
+	switch m.Type {
+	case domain.MsgDelegate:
+		reply = domain.MsgAnswer
+	case domain.MsgImplement, domain.MsgRequestChange:
+		reply = domain.MsgImplementationResult
+	}
 	u.mu.Lock()
-	out := u.out
-	u.mu.Unlock()
+	defer u.mu.Unlock()
+	if u.state == domain.AgentStateStopped {
+		return errors.New("usage agent: not running")
+	}
+	if reply != "" {
+		u.out <- ports.Outbound{AgentID: u.id, Message: domain.Message{
+			ToAgent: m.FromAgent, Type: reply, InReplyTo: m.ID, Content: "result of " + string(m.ID)}}
+	}
 	usage := u.usage
-	out <- ports.Outbound{AgentID: u.id, Usage: &usage}
-	return u.slowAgent.SendMessage(ctx, t, m)
+	u.out <- ports.Outbound{AgentID: u.id, Usage: &usage}
+	return nil
 }
 
 func (u *usageAgent) SendTask(ctx context.Context, t *domain.Task, m domain.Message) error {

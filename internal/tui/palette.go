@@ -3,8 +3,10 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +45,7 @@ var commands = []command{
 	{name: "pause", usage: "pause [reason]", help: "stop the task's agents mid-turn; r resumes from the current round"},
 	{name: "resume", usage: "resume", help: "continue from the current round"},
 	{name: "retry", usage: "retry", help: "bring a FAILED task back: same agents, their sessions kept (R)"},
+	{name: "raise", usage: "raise <messages N | budget $N>", help: "allow N more messages over the task's life, or $N more spending, then resume (r)"},
 	{name: "cancel", usage: "cancel [reason]", help: "end the task for good (asks first), terminate child CLIs"},
 	{name: "approve", usage: "approve [note]", help: "accept the pending FINAL_DECISION"},
 	{name: "reject", usage: "reject [note]", help: "refuse the pending FINAL_DECISION, saying what must change"},
@@ -216,6 +219,12 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 
 	case "retry":
 		return m.retry()
+
+	case "raise":
+		if !needTask() {
+			return m, nil
+		}
+		return m.raiseLimits(t, rest)
 
 	// The typed forms of the keys follow the same rules: cancel asks first,
 	// approve and reject act only on a pending decision, and a rejection
@@ -416,6 +425,41 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 
 	m.setStatus("unknown command: %s", verb)
 	return m, nil
+}
+
+// raiseLimits handles ":raise messages N" and ":raise budget $N". The new
+// limit is counted from what the task has already used, when that is past
+// the old one: a task paused at its ceiling then has N more, not fewer.
+func (m Model) raiseLimits(t *domain.Task, args string) (Model, tea.Cmd) {
+	const usage = "usage: raise messages <N> | raise budget <$N>"
+	what, amount := splitVerb(args)
+	amount = strings.TrimPrefix(strings.TrimSpace(amount), "$")
+	n, err := strconv.ParseFloat(amount, 64)
+	if err != nil || n <= 0 {
+		m.setStatus(usage)
+		return m, nil
+	}
+	var more domain.TaskLimits
+	switch what {
+	case "messages":
+		if t.Limits.MaxTotalMessages == 0 || n != float64(int(n)) {
+			m.setStatus("%s has no message ceiling to raise, or N is not a whole number", t.ID)
+			return m, nil
+		}
+		more.MaxTotalMessages = maxInt(t.Limits.MaxTotalMessages, t.MessageCount) + int(n)
+		m.setStatus("raising %s's message ceiling to %d...", t.ID, more.MaxTotalMessages)
+	case "budget":
+		if t.Limits.MaxCostUSD == 0 {
+			m.setStatus("%s has no budget to raise", t.ID)
+			return m, nil
+		}
+		more.MaxCostUSD = math.Max(t.Limits.MaxCostUSD, t.CostUSD) + n
+		m.setStatus("raising %s's budget to $%.2f...", t.ID, more.MaxCostUSD)
+	default:
+		m.setStatus(usage)
+		return m, nil
+	}
+	return m, raiseLimitsCmd(m.ctx, m.svc, t.ID, more)
 }
 
 // parseToggle reads "on"/"off"/"true"/"false", defaulting to def (which

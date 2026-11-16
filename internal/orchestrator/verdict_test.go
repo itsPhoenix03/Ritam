@@ -81,8 +81,33 @@ func TestAllowedTypesMatchWhatTheOrchestratorEnforces(t *testing.T) {
 			t.Errorf("supporting agents are offered %s, which the orchestrator refuses from them", mt)
 		}
 	}
-	if len(domain.AllowedTypes(true)) != len(domain.AllMessageTypes()) {
-		t.Error("the authority may send every type")
+	// The authority is offered every type but ERROR, which is the
+	// orchestrator's own way of reporting a refused or unreadable reply.
+	for _, mt := range domain.AllowedTypes(true) {
+		if mt == domain.MsgError {
+			t.Error("no agent should be offered ERROR")
+		}
+	}
+	if len(domain.AllowedTypes(true)) != len(domain.AllMessageTypes())-1 {
+		t.Error("the authority is offered every type but ERROR")
+	}
+}
+
+// TestASupportingAgentsTaskAssignmentIsRefused: from a supporting agent, a
+// TASK_ASSIGNMENT handed another agent work the authority never asked for,
+// a way round DELEGATE.
+func TestASupportingAgentsTaskAssignmentIsRefused(t *testing.T) {
+	auth := orchestrator.NewAuthorityManager()
+	err := auth.Authorize(verdictTask(), &domain.Message{FromAgent: "scout", ToAgent: "codex", Type: domain.MsgTaskAssignment})
+	var v *orchestrator.Violation
+	if !errors.As(err, &v) || v.Kind != orchestrator.ViolationAuthority {
+		t.Fatalf("want an authority violation, got %v", err)
+	}
+	if !strings.Contains(v.Reason, "send a QUESTION") {
+		t.Errorf("the refusal must say what to send instead, got %q", v.Reason)
+	}
+	if err := auth.Authorize(verdictTask(), &domain.Message{FromAgent: "opus", ToAgent: "codex", Type: domain.MsgTaskAssignment}); err != nil {
+		t.Errorf("the authority may still assign: %v", err)
 	}
 }
 

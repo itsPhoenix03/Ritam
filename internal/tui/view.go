@@ -135,7 +135,11 @@ func (m Model) headerLine(inner int) line {
 		cost = fmt.Sprintf("%.2f", t.CostUSD)
 	}
 	right = right.join(sep, st(itoa(t.MessageCount)+" msgs", dimStyle), sep,
-		st(tok+" tok", warnStyle), sep, st("$"+cost, warnStyle), txt(" "))
+		st(tok+" tok", warnStyle), sep, st("$"+cost, warnStyle))
+	if today := m.spendChip(); today != nil {
+		right = right.join(sep).join(today...)
+	}
+	right = right.join(txt(" "))
 
 	// The right-hand group wins: a truncated title costs nothing the task
 	// list does not also show; a truncated state is the header's one job.

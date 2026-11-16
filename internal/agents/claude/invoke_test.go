@@ -71,6 +71,13 @@ func runFakeCLI(mode string) {
 		_ = readAll(os.Stdin)
 		_, _ = os.Stdout.WriteString(killedStream)
 		os.Exit(1)
+	case "streamthenhang":
+		// A turn still working when it is stopped: it has streamed some
+		// calls and would go on for minutes.
+		_ = readAll(os.Stdin)
+		_, _ = os.Stdout.WriteString(killedStream)
+		fakeLog("streamed")
+		time.Sleep(2 * time.Minute)
 	case "overbudget":
 		// What the real CLI does when --max-budget-usd stops a turn: an
 		// error result that still carries the cost, and a non-zero exit.
@@ -82,6 +89,9 @@ func runFakeCLI(mode string) {
 	case "silent":
 		_ = readAll(os.Stdin)
 		_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":false,"result":""}` + "\n")
+	case "noreply":
+		_ = readAll(os.Stdin)
+		_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":false,"result":"NO_REPLY\n"}` + "\n")
 	case "warnthenoverloaded":
 		// A harmless warning on stderr, the real cause in the result event.
 		_ = readAll(os.Stdin)
@@ -129,6 +139,28 @@ func TestSayingNothingIsNotAFailure(t *testing.T) {
 			t.Fatalf("an empty reply must not be a failure: %v", o.Err)
 		}
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestANoReplyAnswerIsTakenAsSayingNothing: the brief offers NO_REPLY to an
+// agent with nothing to add. It goes the way an empty reply does: no message,
+// and no "replied without a header" failure costing a retry.
+func TestANoReplyAnswerIsTakenAsSayingNothing(t *testing.T) {
+	a, _, _ := fakeAdapter(t, "noreply")
+	if err := a.SendMessage(context.Background(), testTask(), msg("Thanks.")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the turn to finish", func() bool { return a.Status() == domain.AgentStateIdle })
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case o := <-a.Outbound():
+			if !o.IsUsageOnly() {
+				t.Fatalf("NO_REPLY must produce no message and no failure, got %+v", o)
+			}
+		case <-deadline:
+			return
+		}
 	}
 }
 
@@ -296,7 +328,7 @@ func TestPromptTravelsOnStdinAndNULIsStripped(t *testing.T) {
 func TestRenderPromptStripsControlCharacters(t *testing.T) {
 	task := testTask()
 	task.Title = "a\x00b\x1bc"
-	p := renderPrompt(task, msg("x\ty\r\nz"), false)
+	p := renderPrompt(task, msg("x\ty\r\nz"), "")
 	if strings.ContainsAny(p, "\x00\x1b") {
 		t.Error("control characters must be removed from the prompt")
 	}

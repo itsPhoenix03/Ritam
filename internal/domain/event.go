@@ -52,6 +52,11 @@ const (
 	// that says "rejected" for something that went through misleads whoever
 	// reads it.
 	EvtDecisionCaveat EventType = "DecisionCaveat"
+	// EvtDecisionDeferred records a FINAL_DECISION that was not taken up
+	// because another agent was still working, or an IMPLEMENT or
+	// REQUEST_CHANGE had not been reported on: taking it would have stopped
+	// that work part-way. The authority is told to send it again.
+	EvtDecisionDeferred EventType = "DecisionDeferred"
 	EvtLimitReached   EventType = "LimitReached"
 	// EvtCheckpoint marks another interval of autonomous agent work: the human
 	// is told where things stand, and the work carries on.

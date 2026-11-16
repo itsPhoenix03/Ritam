@@ -28,7 +28,7 @@ func WriteIncoming(b *strings.Builder, t *domain.Task, m domain.Message) {
 	} else {
 		WriteThreadNote(b, m)
 		WriteFollowUpNote(b, t, m)
-		b.WriteString(framingRule)
+		b.WriteString("\n" + framingRule)
 		if domain.FromOrchestrator(&m) {
 			// Shown as "INCOMING ERROR FROM human", a notice about an agent's
 			// own unreadable reply had it apologising to the human.

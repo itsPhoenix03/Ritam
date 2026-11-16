@@ -84,20 +84,7 @@ func openStorage(cfg *config.Config, log *logging.Logger) (*ports.Storage, *stor
 	case "", "memory":
 		return storage.NewInMemory(), nil, func() error { return nil }, nil
 	case "sqlite":
-		if cfg.Storage.Path == "" {
-			return nil, nil, nil, fmt.Errorf("storage: no database path")
-		}
-		var opts storage.Options
-		if cfg.Backups.Enabled && cfg.Runtime.BackupDir != "" {
-			opts.BeforeUpgrade = func(db *storage.SQLite, from, to int) error {
-				path, err := backup.Take(context.Background(), db, cfg.Runtime.BackupDir, fmt.Sprintf("before-upgrade-v%d", from))
-				if err == nil {
-					log.Info("backup taken before upgrading the database", "from", from, "to", to, "file", path)
-				}
-				return err
-			}
-		}
-		db, err := storage.OpenSQLiteWith(cfg.Storage.Path, opts)
+		db, err := OpenDatabase(cfg, log)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -105,6 +92,31 @@ func openStorage(cfg *config.Config, log *logging.Logger) (*ports.Storage, *stor
 	default:
 		return nil, nil, nil, fmt.Errorf("unknown storage backend %q", cfg.Storage.Backend)
 	}
+}
+
+// OpenDatabase opens the project's SQLite database, taking a backup before
+// it upgrades an older schema when backups are on. Every way of opening the
+// database goes through it: the data commands (backups now, restore,
+// archive) used to open it bare, and on an older database they applied the
+// schema migrations with no backup taken.
+func OpenDatabase(cfg *config.Config, log *logging.Logger) (*storage.SQLite, error) {
+	if log == nil {
+		log = logging.NewDiscard()
+	}
+	if cfg.Storage.Path == "" {
+		return nil, fmt.Errorf("storage: no database path")
+	}
+	var opts storage.Options
+	if cfg.Backups.Enabled && cfg.Runtime.BackupDir != "" {
+		opts.BeforeUpgrade = func(db *storage.SQLite, from, to int) error {
+			path, err := backup.Take(context.Background(), db, cfg.Runtime.BackupDir, fmt.Sprintf("before-upgrade-v%d", from))
+			if err == nil {
+				log.Info("backup taken before upgrading the database", "from", from, "to", to, "file", path)
+			}
+			return err
+		}
+	}
+	return storage.OpenSQLiteWith(cfg.Storage.Path, opts)
 }
 
 // Build wires the whole application from configuration.
@@ -228,6 +240,11 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		MaxDailyTokens:       cfg.Orchestrator.MaxDailyTokens,
 		RateLimitWait:        cfg.Orchestrator.MaxRateLimitWait,
 	})
+
+	// Who may write and build, for the team roster every delivery carries and
+	// for refusing a change asked of an agent that cannot make it.
+	agentMgr.UseAccess(acc)
+	orch.Authority.Rights = agentMgr
 
 	// The agent manager reports runtime state changes as events so the TUI can
 	// show an agent crashing without polling.

@@ -102,6 +102,39 @@ type ArtifactRepository interface {
 	ListByTask(ctx context.Context, id domain.TaskID) ([]*domain.Artifact, error)
 }
 
+// DeliveryRepository records each stored message's way to each recipient:
+// queued in its inbox, sent in a turn, acknowledged when that turn ended
+// well. It is what lets an inbox outlive the run, and the process, that
+// filled it.
+type DeliveryRepository interface {
+	// Enqueue records d as waiting. A message already recorded for that
+	// recipient is ErrAlreadyExists.
+	Enqueue(ctx context.Context, d *domain.Delivery) error
+	// MarkSent records that turn carried ids to recipient.
+	MarkSent(ctx context.Context, task domain.TaskID, recipient domain.AgentID, ids []domain.MessageID, turn domain.TurnID, at time.Time) error
+	// SettleTurn moves every delivery turn carried to status: acknowledged,
+	// or back to queued. One already back in the queue is left there: a
+	// later turn may carry it, and settling the old turn again must not
+	// mark it delivered.
+	SettleTurn(ctx context.Context, turn domain.TurnID, status domain.DeliveryStatus) error
+	// ListByTask returns a task's deliveries in the order they were queued.
+	ListByTask(ctx context.Context, task domain.TaskID) ([]*domain.Delivery, error)
+	// Discard forgets what still waits for recipient (not what it was given).
+	Discard(ctx context.Context, task domain.TaskID, recipient domain.AgentID) error
+	// Clear forgets every delivery of the task that was not acknowledged.
+	Clear(ctx context.Context, task domain.TaskID) error
+}
+
+// TurnRepository records every agent turn (domain.Turn).
+type TurnRepository interface {
+	// Create records a new turn. An id already recorded is ErrAlreadyExists.
+	Create(ctx context.Context, t *domain.Turn) error
+	// Update rewrites a recorded turn: its end, outcome and usage.
+	Update(ctx context.Context, t *domain.Turn) error
+	// ListByTask returns a task's turns in the order they started.
+	ListByTask(ctx context.Context, task domain.TaskID) ([]*domain.Turn, error)
+}
+
 // Storage bundles the repositories so wiring code can pass one value around.
 type Storage struct {
 	Tasks         TaskRepository
@@ -111,6 +144,8 @@ type Storage struct {
 	Disagreements DisagreementRepository
 	Knowledge     KnowledgeRepository
 	Artifacts     ArtifactRepository
+	Deliveries    DeliveryRepository
+	Turns         TurnRepository
 
 	// Tx runs a group of writes as one; the backend sets it. Callers use
 	// WithTx rather than this field.
@@ -202,6 +237,19 @@ func (o Outbound) IsUsageOnly() bool {
 type SpendLedger interface {
 	// Add records one turn's usage and returns today's totals with it.
 	Add(u Usage) (costUSD float64, tokens int64, err error)
+	// Today returns today's totals without adding to them. The orchestrator
+	// reads them before a turn starts, to cap it at what is left of the day;
+	// an error means the day's spending is not known, and no turn starts.
+	Today() (costUSD float64, tokens int64, err error)
+}
+
+// DailySpend is today's spending on this machine, over every task and
+// project, beside the daily limits (0: none set).
+type DailySpend struct {
+	CostUSD    float64
+	Tokens     int64
+	MaxCostUSD float64
+	MaxTokens  int64
 }
 
 // Usage is what one agent CLI turn consumed. CostUSD is zero when the CLI
@@ -293,6 +341,14 @@ const TeamMetadataKey = "team"
 // orchestrator records it and tells the agent.
 const ProtocolProblemsMetadataKey = "protocolProblems"
 
+// TurnBudgetMetadataKey carries, on a delivery, the most the turn it starts
+// may spend, in dollars ("0.2500"). The orchestrator sets it when the turn
+// is handed over, sharing what is left of the task's budget among the
+// agents that may be working at once; an adapter whose CLI takes a spending
+// cap passes it on. It is never shown to the agent. Absent, the task has no
+// cost limit or the delivery did not come through the orchestrator's inbox.
+const TurnBudgetMetadataKey = "turnBudgetUSD"
+
 // BatchCapable is implemented by adapters whose agent reads a prompt. When
 // several messages are waiting for such an agent they are combined into one
 // turn, so it answers all of them with everything in view rather than
@@ -314,6 +370,16 @@ type AgentActivity struct {
 	Kind    ActivityKind
 	Text    string
 	Time    time.Time
+}
+
+// AgentRights is what one agent may do on a task: the facts the team roster
+// shows each agent, and the bus checks before handing an agent work it
+// cannot do.
+type AgentRights struct {
+	// Writes says the agent may change files in the project.
+	Writes bool
+	// Builds says the agent may run builds and tests on this task.
+	Builds bool
 }
 
 // AgentAdapter normalises one concrete agent CLI into the internal protocol.
@@ -486,6 +552,9 @@ type Service interface {
 	TaskMessages(ctx context.Context, id domain.TaskID) ([]*domain.Message, error)
 	TaskEvents(ctx context.Context, id domain.TaskID) ([]domain.Event, error)
 	TaskDecisions(ctx context.Context, id domain.TaskID) ([]*domain.Decision, error)
+	// TaskTurns lists every agent turn of a task, in the order they
+	// started: what each was handed, how it ended and what it cost.
+	TaskTurns(ctx context.Context, id domain.TaskID) ([]*domain.Turn, error)
 
 	Agents(ctx context.Context) ([]domain.Agent, error)
 	// TaskAgents returns the agents as they stand on one task: each task
@@ -517,6 +586,12 @@ type Service interface {
 	// sessions kept, and runs it; the authority is told why it had failed.
 	Retry(ctx context.Context, id domain.TaskID) error
 	Cancel(ctx context.Context, id domain.TaskID, reason string) error
+	// RaiseLimits raises a task's message ceiling (MaxTotalMessages) or its
+	// spending limits (MaxCostUSD, MaxTokens) to the non-zero values in
+	// more. Nothing else resets the ceiling, so without this a task that
+	// reached it got one more message per resume. It raises only, and does
+	// not resume the task.
+	RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) error
 	Approve(ctx context.Context, id domain.TaskID, note string) error
 	Reject(ctx context.Context, id domain.TaskID, note string) error
 	SendInstruction(ctx context.Context, id domain.TaskID, to domain.AgentID, content string) error
@@ -529,6 +604,9 @@ type Service interface {
 	// Backlog reports how many messages wait undelivered for each agent of
 	// a running task.
 	Backlog(id domain.TaskID) map[domain.AgentID]int
+	// SpendToday reports today's spending over every task on this machine
+	// against the daily limits; with no daily limit set, the limits are 0.
+	SpendToday(ctx context.Context) (DailySpend, error)
 
 	SearchKnowledge(ctx context.Context, q domain.KnowledgeQuery) ([]domain.KnowledgeHit, error)
 

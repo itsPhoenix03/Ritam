@@ -71,7 +71,7 @@ func TestAllowedTransitionsIsACopy(t *testing.T) {
 
 func TestMessageTypeAuthority(t *testing.T) {
 	authorityOnly := []MessageType{
-		MsgFinalDecision, MsgApprove, MsgReject, MsgRequestChange, MsgImplement, MsgDelegate,
+		MsgFinalDecision, MsgApprove, MsgReject, MsgRequestChange, MsgImplement, MsgDelegate, MsgTaskAssignment,
 	}
 	for _, mt := range authorityOnly {
 		if !mt.RequiresAuthority() {

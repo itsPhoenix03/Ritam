@@ -215,6 +215,15 @@ func (s *Service) TaskDecisions(ctx context.Context, id domain.TaskID) ([]*domai
 	return s.storage.Decisions.ListByTask(ctx, id)
 }
 
+// TaskTurns lists every agent turn of a task: the messages each was handed,
+// how it ended and what it cost.
+func (s *Service) TaskTurns(ctx context.Context, id domain.TaskID) ([]*domain.Turn, error) {
+	if s.storage.Turns == nil {
+		return nil, nil
+	}
+	return s.storage.Turns.ListByTask(ctx, id)
+}
+
 // TaskDisagreements returns the explicit conflicts raised during a task,
 // resolved and unresolved. Disagreement is a first-class outcome: it is
 // recorded rather than smoothed away.
@@ -305,6 +314,11 @@ func (s *Service) Retry(ctx context.Context, id domain.TaskID) error {
 	return s.goRun(ctx, id, "retry")
 }
 
+// RaiseLimits raises a task's message ceiling or spending limits.
+func (s *Service) RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) error {
+	return s.orch.RaiseLimits(ctx, id, more)
+}
+
 // Cancel terminates a task.
 func (s *Service) Cancel(ctx context.Context, id domain.TaskID, reason string) error {
 	return s.orch.Cancel(ctx, id, reason)
@@ -366,6 +380,12 @@ func (s *Service) SetAuthority(ctx context.Context, id domain.TaskID, to domain.
 // Backlog reports how many messages wait undelivered for each agent.
 func (s *Service) Backlog(id domain.TaskID) map[domain.AgentID]int {
 	return s.orch.Backlog(id)
+}
+
+// SpendToday reports today's spending on this machine against the daily
+// limits.
+func (s *Service) SpendToday(context.Context) (ports.DailySpend, error) {
+	return s.orch.SpendToday()
 }
 
 func (s *Service) SearchKnowledge(ctx context.Context, q domain.KnowledgeQuery) ([]domain.KnowledgeHit, error) {

@@ -204,7 +204,7 @@ func (o *Orchestrator) retryTurn(ctx context.Context, t *domain.Task, agent doma
 				"no action is needed, its answer will follow.", agent, f.Kind, excerpt(f.Detail, 160), when, attempt, of))
 	}
 
-	last := o.lastDelivery(t.ID, agent)
+	last, carried := o.lastDelivery(t.ID, agent), o.lastDeliveredIDs(t.ID, agent)
 	o.setRetrying(t.ID, agent, 1)
 	go func() {
 		defer o.setRetrying(t.ID, agent, -1)
@@ -229,12 +229,27 @@ func (o *Orchestrator) retryTurn(ctx context.Context, t *domain.Task, agent doma
 			m.Metadata = map[string]string{}
 		}
 		m.Metadata["retry"] = fmt.Sprint(attempt)
-		if m.Type == domain.MsgTaskAssignment {
-			err = o.Agents.SendTask(ctx, cur, *m)
-		} else {
-			err = o.Agents.Send(ctx, cur, *m)
+		// A retry is a turn like any other and spends like one, so it takes
+		// its own share of the budget. It used to go out with the failed
+		// turn's allowance and no reservation, on top of whatever its
+		// co-workers had been given meanwhile. While a co-worker's turn
+		// holds the money, wait for it; a task paused for its budget sends
+		// nothing (the batch stays queued in the store for the next run).
+		delete(m.Metadata, ports.TurnBudgetMetadataKey)
+		for !o.admitTurn(ctx, t.ID, agent) {
+			if now, err := o.Tasks.Get(ctx, t.ID); err != nil || now.State.IsTerminal() || now.State == domain.TaskPaused {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(dispatchInterval):
+			}
 		}
-		if err != nil {
+		o.stampTurnBudget(t.ID, agent, m)
+		// The retry is a turn of its own carrying the same messages: they
+		// are sent again with it, not queued again beside it (see settle).
+		if err := o.sendTurn(ctx, cur, agent, m, carried); err != nil {
 			o.log.Warn("retry turn", "taskId", string(t.ID), "agentId", string(agent), "error", err)
 		}
 	}()

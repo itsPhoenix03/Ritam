@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ritam/internal/app"
 	"ritam/internal/backup"
 	"ritam/internal/brand"
 	"ritam/internal/config"
@@ -126,7 +127,7 @@ func cmdBackups(args []string, out io.Writer) error {
 			fmt.Fprintf(out, "  %s  %-16s %8s  %s\n", s.Taken.Format("2006-01-02 15:04:05"), s.Reason, size(s.Size), filepath.Base(s.Path))
 		}
 	case "now":
-		db, err := storage.OpenSQLite(cfg.Storage.Path)
+		db, err := openDatabase(cfg)
 		if err != nil {
 			return closeOrchFirst(err)
 		}
@@ -225,7 +226,7 @@ func cmdRestore(args []string, out io.Writer) error {
 
 	// What is about to be replaced is backed up first, so a restore can be
 	// undone. Opening the database also proves ritam is not using it.
-	db, err := storage.OpenSQLite(cfg.Storage.Path)
+	db, err := openDatabase(cfg)
 	if err != nil {
 		return closeOrchFirst(err)
 	}
@@ -259,7 +260,7 @@ func cmdArchive(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	db, err := storage.OpenSQLite(cfg.Storage.Path)
+	db, err := openDatabase(cfg)
 	if err != nil {
 		return closeOrchFirst(err)
 	}
@@ -402,6 +403,13 @@ func cmdConfig(args []string, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// openDatabase opens the project's database the way ritam itself does,
+// backing it up first if it is about to be upgraded: these commands used to
+// open it bare, and on an older database they migrated it with no backup.
+func openDatabase(cfg *config.Config) (*storage.SQLite, error) {
+	return app.OpenDatabase(cfg, nil)
 }
 
 func countTasks(db *storage.SQLite) (int, error) {

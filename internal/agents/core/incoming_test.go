@@ -17,7 +17,7 @@ func TestACombinedDeliveryAndTheTeamBoardReachThePrompt(t *testing.T) {
 			ports.BatchHumanMetadataKey: "true",
 			ports.TeamMetadataKey:       "- opus (authority): working\n- codex (you): idle",
 		}}
-	got := RenderTurn(task, m, false, "@@ORCH")
+	got := RenderTurn(task, m, testDialect, "")
 	for _, want := range []string{
 		"2 NEW MESSAGES SINCE YOUR LAST TURN",
 		"answer those first (to=human)",
@@ -36,7 +36,7 @@ func TestACombinedDeliveryAndTheTeamBoardReachThePrompt(t *testing.T) {
 	}
 
 	m.ToAgent = "opus"
-	if got := RenderTurn(task, m, false, "@@ORCH"); !strings.Contains(got, "You are the authority: act on this") {
+	if got := RenderTurn(task, m, testDialect, ""); !strings.Contains(got, "You are the authority: act on this") {
 		t.Errorf("the authority is told it may act on the board:\n%s", got)
 	}
 }
@@ -51,7 +51,7 @@ func TestANoticeIsShownAsTheOrchestratorsNotTheHumans(t *testing.T) {
 	for name, from := range map[string]domain.AgentID{"new": domain.OrchestratorID, "old": domain.HumanAgentID} {
 		m := domain.Message{FromAgent: from, ToAgent: "codex", Type: domain.MsgError,
 			Content: "Your last reply could not be read.", Metadata: map[string]string{domain.MetaReason: "malformed-reply"}}
-		got := RenderTurn(task, m, false, "@@ORCH")
+		got := RenderTurn(task, m, testDialect, "")
 		if !strings.Contains(got, "--- NOTICE FROM orchestrator ---") {
 			t.Errorf("%s: a notice must be shown as one:\n%s", name, got)
 		}
@@ -68,12 +68,12 @@ func TestANoticeIsShownAsTheOrchestratorsNotTheHumans(t *testing.T) {
 
 	// The human's own message is still the human's.
 	h := domain.Message{FromAgent: domain.HumanAgentID, ToAgent: "codex", Type: domain.MsgInformation, Content: "Status?"}
-	if got := RenderTurn(task, h, false, "@@ORCH"); !strings.Contains(got, "--- INCOMING INFORMATION FROM human ---") {
+	if got := RenderTurn(task, h, testDialect, ""); !strings.Contains(got, "--- INCOMING INFORMATION FROM human ---") {
 		t.Errorf("the human's message must be shown as the human's:\n%s", got)
 	}
 
 	var b strings.Builder
-	WriteRoleGuide(&b, false, "@@ORCH")
+	WriteRoleGuide(&b, false, testDialect)
 	if !strings.Contains(b.String(), NoticeRule) {
 		t.Errorf("the opening brief must say what a notice is for:\n%s", b.String())
 	}

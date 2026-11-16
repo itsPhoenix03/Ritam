@@ -81,12 +81,16 @@ type Orchestrator struct {
 	// on a task paused while it waited, and a second resume queued a
 	// second run.
 	running map[domain.TaskID]*taskRun
-	// queued holds the human's messages for a task with no run loop: a
-	// reopened task's follow-up, an answer or instruction sent while a
-	// decision waits for the human, a rejection. They are delivered by the
-	// next run once the participants are up: sent straight away, they would
-	// reach agents that are still stopped.
-	queued map[domain.TaskID][]*domain.Message
+	// queuing counts, per task, the human's messages being recorded for the
+	// next run while no run is live (deliverOrQueue): a reopened task's
+	// follow-up, an answer or instruction sent while a decision waits for the
+	// human, a rejection. They are queued deliveries in the store, which the
+	// next run hands over once its agents are up -- sent straight away they
+	// would reach agents that are still stopped. They used to wait in memory
+	// only, and a restart before the run started lost them. queued is
+	// signalled when a count drops, for a run going live to wait on.
+	queuing map[domain.TaskID]int
+	queued  *sync.Cond
 	// resumed holds, for a task just resumed, why it had been paused, so the
 	// run loop opens by telling the agents to carry on and what was lost.
 	resumed map[domain.TaskID]string
@@ -101,6 +105,10 @@ type Orchestrator struct {
 	failing       map[domain.TaskID]map[domain.AgentID]map[domain.FailureKind]int
 	lastTurn      map[domain.TaskID]map[domain.AgentID]*domain.Message
 	retrying      map[domain.TaskID]map[domain.AgentID]int
+
+	// turns holds the spending allowance of each turn in progress
+	// (turnbudget.go).
+	turns turnBudgets
 }
 
 // New wires an Orchestrator from its dependencies.
@@ -136,7 +144,7 @@ func New(d Deps) *Orchestrator {
 		requireHumanApproval: d.RequireHumanApproval,
 		sem:                  make(chan struct{}, d.MaxConcurrentTasks),
 		running:              map[domain.TaskID]*taskRun{},
-		queued:               map[domain.TaskID][]*domain.Message{},
+		queuing:              map[domain.TaskID]int{},
 		resumed:              map[domain.TaskID]string{},
 		inboxes:              map[domain.TaskID]*taskInbox{},
 		retryBackoff:         d.RetryBackoff,
@@ -151,6 +159,20 @@ func New(d Deps) *Orchestrator {
 	if o.rateLimitWait <= 0 {
 		o.rateLimitWait = defaultRateLimitWait
 	}
+	o.queued = sync.NewCond(&o.mu)
+	if o.durable() {
+		store := d.Storage
+		o.Bus.Store = &store
+		o.Bus.Holds = o.holds
+		// A task that ends, with or without a run, has nothing more to be
+		// handed: what still waits for it is cleared.
+		o.Events.Subscribe(func(e domain.Event) {
+			switch e.Type {
+			case domain.EvtTaskCompleted, domain.EvtTaskFailed, domain.EvtTaskCancelled:
+				o.clearDeliveries(context.Background(), e.TaskID)
+			}
+		})
+	}
 	o.Bus.Enrich = func(ctx context.Context, t *domain.Task, m *domain.Message) {
 		o.attachKnowledge(ctx, t, m)
 		o.attachRecap(ctx, t, m)
@@ -161,7 +183,8 @@ func New(d Deps) *Orchestrator {
 		// A closing note that needs no action is history, not a turn: waking
 		// an agent just to tell it a reply it no longer needs is not coming
 		// would cost a CLI call for nothing.
-		return o.decisionCompletesTask(t, m) || m.Metadata[domain.MetaOrchestrator] == "closed"
+		return o.decisionCompletesTask(t, m) || m.Metadata[domain.MetaOrchestrator] == "closed" ||
+			m.Metadata[metaDecisionDeferred] != ""
 	}
 	return o
 }
@@ -442,7 +465,7 @@ func (o *Orchestrator) CreateTask(ctx context.Context, in ports.CreateTaskInput)
 // There is no fixed number of rounds. The authority agent decides when enough
 // evidence exists; the configured limits only ever pause the task and ask for
 // a human, they never declare a winner.
-func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
+func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) (err error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// The run is entered before it waits for a slot, so a pause or a cancel
@@ -466,6 +489,9 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 		}
 		o.mu.Unlock()
 	}()
+	// Runs after the agents are stopped and billed (endRun), before the run
+	// is gone.
+	defer func() { o.pauseAfterError(context.WithoutCancel(ctx), id, err) }()
 
 	waited, err := o.acquireSlot(runCtx, id)
 	if err != nil {
@@ -523,14 +549,24 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 		if _, perr := o.Tasks.Pause(runCtx, id, domain.HumanAgentID, reason); perr != nil {
 			o.log.Error("pause task", "taskId", string(id), "error", perr)
 		}
+		// Those that did start are not left running with no run behind them.
+		stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(runCtx), stopDeadline)
+		o.stopParticipants(stopCtx, t)
+		stopCancel()
 		return err
 	}
-	defer o.stopParticipants(context.WithoutCancel(runCtx), t)
 	defer o.forgetRun(id)
 
 	o.openInbox(id)
 	defer o.closeInbox(id)
-	inbox := o.mergeOutbound(runCtx, t)
+	// The channels are taken now, not when the run ends: a task's own agent
+	// instance is discarded once it is stopped, and asking for its adapter
+	// then returns the shared one, whose channel holds none of this task's
+	// usage. enders are the agents whose outbound ended the loop.
+	merge := o.mergeOutbound(t)
+	var enders []domain.AgentID
+	defer func() { o.endRun(context.WithoutCancel(runCtx), t, merge, enders) }()
+	inbox := merge.out
 	alive := make(chan struct{}, 1)
 	o.streamActivity(runCtx, t, alive)
 
@@ -636,11 +672,9 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 			}
 
 			done, err := o.handleOutbound(runCtx, id, out)
-			if err != nil {
+			if err != nil || done {
+				enders = append(enders, out.AgentID)
 				return err
-			}
-			if done {
-				return nil
 			}
 			o.dispatch(runCtx, id)
 		}
@@ -653,11 +687,15 @@ func (o *Orchestrator) RunTask(ctx context.Context, id domain.TaskID) error {
 // loop continues rather than aborting the task.
 func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
 	if out.IsUsageOnly() {
+		o.turnUsage(ctx, id, out.AgentID, *out.Usage)
 		return o.recordUsage(ctx, id, out)
 	}
 	if out.Err != nil {
+		o.turnFailure(ctx, id, out.AgentID, domain.FailureOf(out.Err).Kind)
+		o.turnFailed(id, out.AgentID)
 		return o.handleFailure(ctx, id, out)
 	}
+	o.turnReplied(id, out.AgentID)
 
 	t, err := o.Tasks.Get(ctx, id)
 	if err != nil {
@@ -684,6 +722,22 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 			map[string]string{"kind": string(ViolationIdentity)})
 		return o.pauseIfOverTimeOrBudget(ctx, t, out.AgentID)
 	}
+
+	// Whether a FINAL_DECISION can be taken up is settled before it is
+	// routed: one that cannot is recorded but delivered to nobody, and it
+	// changes neither the task's state nor its decisions. The mark is the
+	// orchestrator's alone; an agent's reply cannot carry it in.
+	delete(m.Metadata, metaDecisionDeferred)
+	var outstanding []string
+	if m.Type == domain.MsgFinalDecision && m.FromAgent == t.AuthorityAgent {
+		if outstanding = o.outstandingWork(ctx, t); len(outstanding) > 0 {
+			if m.Metadata == nil {
+				m.Metadata = map[string]string{}
+			}
+			m.Metadata[metaDecisionDeferred] = "true"
+		}
+	}
+	deferred := len(outstanding) > 0
 
 	if err := o.Bus.Route(ctx, t, m); err != nil {
 		var v *Violation
@@ -719,7 +773,7 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		}
 	}
 
-	if next := StateForMessage(m.Type); next != "" && next != t.State {
+	if next := StateForMessage(m.Type); next != "" && next != t.State && !deferred {
 		if domain.CanTransition(t.State, next) {
 			if t, err = o.Tasks.Transition(ctx, id, next, m.FromAgent, string(m.Type)); err != nil {
 				return true, err
@@ -737,7 +791,12 @@ func (o *Orchestrator) handleOutbound(ctx context.Context, id domain.TaskID, out
 		o.recordDisagreement(ctx, t, m)
 	}
 
-	if m.Type == domain.MsgFinalDecision {
+	switch {
+	case deferred:
+		// Not taken up; the limits below still apply to it, so an authority
+		// sending the same decision again and again is caught as a stall.
+		o.deferDecision(ctx, t, m, outstanding)
+	case m.Type == domain.MsgFinalDecision:
 		return o.handleFinalDecision(ctx, t, m)
 	}
 
@@ -782,13 +841,12 @@ func (o *Orchestrator) overDailyLimit(u ports.Usage) (string, bool) {
 	return "", false
 }
 
-// recordUsage adds one CLI turn's reported usage to the task, and to the
-// day's spending, and pauses if a spending ceiling has been reached.
-func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+// addUsage adds one CLI turn's reported usage to the task and records it.
+func (o *Orchestrator) addUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (*domain.Task, error) {
 	u := *out.Usage
 	t, err := o.Tasks.AddUsage(ctx, id, out.AgentID, u)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	o.Events.emit(ctx, domain.EvtAgentUsage, id, out.AgentID, usageSummary(out.AgentID, u, t),
 		map[string]string{
@@ -798,6 +856,18 @@ func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out po
 			"cacheReadTokens": fmt.Sprint(u.CacheReadTokens),
 			"taskCostUSD":     fmt.Sprintf("%.6f", t.CostUSD),
 		})
+	return t, nil
+}
+
+// recordUsage adds one CLI turn's reported usage to the task, and to the
+// day's spending, and pauses if a spending ceiling has been reached.
+func (o *Orchestrator) recordUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) (bool, error) {
+	defer o.turnBilled(id, out.AgentID)
+	u := *out.Usage
+	t, err := o.addUsage(ctx, id, out)
+	if err != nil {
+		return false, err
+	}
 	reason, over := LimitExceeded(t)
 	over = over && strings.HasPrefix(reason, domain.PauseReasonBudget)
 	if r, ok := o.overDailyLimit(u); ok && !over {
@@ -1019,6 +1089,72 @@ func (o *Orchestrator) ledger(ctx context.Context, id domain.TaskID) ([]domain.R
 		return nil, err
 	}
 	return domain.BuildLedger(history), nil
+}
+
+// metaDecisionDeferred marks, on the recorded message, a FINAL_DECISION that
+// was not taken up because work was still outstanding (outstandingWork).
+const metaDecisionDeferred = "decisionDeferred"
+
+// outstandingWork lists what a decision taken now would cut short: a
+// participant other than the authority in the middle of a turn (or about to
+// retry one), and an IMPLEMENT or REQUEST_CHANGE not yet reported on.
+//
+// A decision accepted while another agent was implementing completed the
+// task, and ending the task stopped that agent in the middle of its turn: the
+// workspace was left half-changed with the decision ACCEPTED. The authority
+// sending IMPLEMENT and FINAL_DECISION in one reply did exactly that.
+//
+// Neither can hold a task for ever. A turn is bounded by the agent's response
+// timeout, after which the failure policy retries it and then drops the
+// agent; an IMPLEMENT to an idle agent is chased by a reminder and then closed
+// as unanswered (chaseOpenRequests). A dropped agent never counts. An open
+// DELEGATE or QUESTION does not either: deciding without its answer is the
+// authority's call, recorded as a caveat (handleFinalDecision).
+func (o *Orchestrator) outstandingWork(ctx context.Context, t *domain.Task) []string {
+	var out []string
+	for _, p := range t.Participants {
+		if p == t.AuthorityAgent || t.IsDropped(p) {
+			continue
+		}
+		if ad, ok := o.Agents.AdapterFor(t.ID, p); ok && ad.Status() == domain.AgentStateWorking {
+			out = append(out, fmt.Sprintf("%s is in the middle of a turn", p))
+		} else if o.isRetrying(t.ID, p) {
+			out = append(out, fmt.Sprintf("%s's failed turn is about to be tried again", p))
+		}
+	}
+	ledger, err := o.ledger(ctx, t.ID)
+	if err != nil {
+		o.log.Warn("check outstanding work", "taskId", string(t.ID), "error", err)
+		return out
+	}
+	for _, r := range domain.OpenRequests(ledger) {
+		q := r.Message
+		if q.Type != domain.MsgImplement && q.Type != domain.MsgRequestChange {
+			continue
+		}
+		if !t.HasParticipant(q.ToAgent) || q.ToAgent == t.AuthorityAgent || t.IsDropped(q.ToAgent) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s's %s to %s (%q) has not been reported on",
+			q.FromAgent, q.Type, q.ToAgent, excerpt(q.Content, 120)))
+	}
+	return out
+}
+
+// deferDecision tells the authority its FINAL_DECISION was not taken up and
+// what it is waiting for. There is no way to withdraw the work instead: the
+// adapters cannot interrupt a turn short of killing it, which is what this
+// exists to avoid.
+func (o *Orchestrator) deferDecision(ctx context.Context, t *domain.Task, m *domain.Message, outstanding []string) {
+	what := strings.Join(outstanding, "; ")
+	o.Events.emit(ctx, domain.EvtDecisionDeferred, t.ID, m.FromAgent,
+		"decision not taken up while work is outstanding: "+what,
+		map[string]string{"messageId": string(m.ID), "count": fmt.Sprint(len(outstanding))})
+	o.notice(ctx, t, t.AuthorityAgent, "decision-deferred", fmt.Sprintf(
+		"Note from the orchestrator: your FINAL_DECISION was not taken up, because work is still outstanding: %s. "+
+			"Completing the task now would stop that work part-way and could leave files half-changed. "+
+			"Wait until it has been reported to you, then send FINAL_DECISION again; if it cannot wait, "+
+			"ask the human (to=human).", what))
 }
 
 // handleFinalDecision records the authority agent's decision and, unless the
@@ -1874,32 +2010,37 @@ func (o *Orchestrator) settleFollowUp(ctx context.Context, id domain.TaskID) (bo
 
 // kickoff starts (or restarts) the conversation when the run loop comes up.
 //
-// Only a task with no history gets the opening assignment. Resuming a paused
-// task used to re-send it, re-briefing the authority as though nothing had
-// happened yet; with agents now keeping their own sessions that would also
-// contradict what they remember. A task the human sent something to while no
-// run was alive -- a follow-up, an answer, a rejection -- resumes with that
-// instead, and a resumed one is told to carry on (resumeAfterPause).
+// The inboxes are refilled first from what is queued in the store: what the
+// last run left undelivered or cut off mid-turn, and what the human sent
+// while no run was alive. Only a task with no history gets the opening
+// assignment. Resuming a paused task used to re-send it, re-briefing the
+// authority as though nothing had happened yet; with agents now keeping
+// their own sessions that would also contradict what they remember. A task
+// the human sent something to while no run was alive -- a follow-up, an
+// answer, a rejection -- resumes with that instead, and a resumed one is told
+// to carry on (resumeAfterPause), after what was queued for it.
 func (o *Orchestrator) kickoff(ctx context.Context, t *domain.Task) error {
 	// Starting (or restarting) a run is the human's doing.
 	if _, err := o.Tasks.NoteHumanInput(ctx, t.ID); err != nil {
 		return err
 	}
+	o.closeInterruptedTurns(ctx, t.ID)
 	o.mu.Lock()
+	// What the human is sending for this run is in the store before the run
+	// goes live and reads it; anything sent after is routed by the run. The
+	// read is under o.mu with going live, so no message falls in between.
+	for o.queuing[t.ID] > 0 {
+		o.queued.Wait()
+	}
+	rows := o.queuedRows(ctx, t.ID)
 	if r := o.running[t.ID]; r != nil {
 		r.live = true
 	}
-	queued := o.queued[t.ID]
-	delete(o.queued, t.ID)
 	pausedFor, resumed := o.resumed[t.ID]
 	delete(o.resumed, t.ID)
 	o.mu.Unlock()
-	if len(queued) > 0 {
-		for _, m := range queued {
-			if err := o.Bus.Route(ctx, t, m); err != nil {
-				return fmt.Errorf("deliver the human's %s for %s: %w", m.Type, t.ID, err)
-			}
-		}
+	defer o.dispatch(ctx, t.ID)
+	if o.refillInbox(ctx, t, rows) {
 		return nil
 	}
 
@@ -1935,29 +2076,50 @@ func (o *Orchestrator) Reopen(ctx context.Context, id domain.TaskID, to domain.A
 		return err
 	}
 	o.Events.emit(ctx, domain.EvtHumanOverride, id, domain.HumanAgentID, "REOPEN -> "+string(to), nil)
-	o.mu.Lock()
-	o.queued[id] = []*domain.Message{{
+	if t, err = o.Tasks.Get(ctx, id); err != nil {
+		return err
+	}
+	return o.deliverOrQueue(ctx, t, &domain.Message{
 		FromAgent:        domain.HumanAgentID,
 		ToAgent:          to,
 		Type:             domain.MsgInformation,
 		Content:          content,
 		RequiresResponse: true,
 		Metadata:         map[string]string{ports.FollowUpMetadataKey: "true"},
-	}}
-	o.mu.Unlock()
-	return nil
+	})
 }
 
-// queue holds msgs for delivery when the task's next run starts.
-func (o *Orchestrator) queue(id domain.TaskID, msgs ...*domain.Message) {
-	o.mu.Lock()
-	o.queued[id] = append(o.queued[id], msgs...)
-	o.mu.Unlock()
+// pauseAfterError pauses a task whose run ended on an error, with the error
+// as the reason. A storage or routing error returned from the run used to
+// leave the task PLANNING or DELIBERATING with nothing driving it, until a
+// restart found it. A run ended by its context -- a pause, a cancel, ritam
+// exiting -- is not an error here: whoever ended it set the task's state.
+func (o *Orchestrator) pauseAfterError(ctx context.Context, id domain.TaskID, err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t, gerr := o.Tasks.Get(ctx, id)
+	if gerr != nil {
+		o.log.Error("pause a task whose run failed", "taskId", string(id), "error", err, "readError", gerr)
+		return
+	}
+	if t.State.IsTerminal() || t.State == domain.TaskPaused {
+		return
+	}
+	reason := fmt.Sprintf("the run stopped on an error (%v); resume to try again", err)
+	o.Events.emit(ctx, domain.EvtLimitReached, id, "", reason, map[string]string{"kind": "RUN_ERROR"})
+	if _, perr := o.Tasks.Pause(ctx, id, domain.HumanAgentID, reason); perr != nil {
+		o.log.Error("pause a task whose run failed", "taskId", string(id), "error", err, "pauseError", perr)
+	}
 }
 
 // taskRun is one RunTask holding a task: queued for a slot, then live.
 type taskRun struct {
 	cancel context.CancelFunc
+	// stopping is set when the run is cancelled. Cancelling it ends its
+	// agents' turns at once, and an agent seen idle then has not finished
+	// its turn: it was cut off (see closeIdleTurns).
+	stopping bool
 	// live is set once the run's agents are up and it delivers messages
 	// itself. Until then what the human sends is queued for its kickoff
 	// (deliverOrQueue): routed straight away, it would reach agents that
@@ -2013,15 +2175,31 @@ func (o *Orchestrator) live(id domain.TaskID) bool {
 }
 
 // deliverOrQueue routes msgs on a task whose run is live, and otherwise
-// queues them for the next run's kickoff. Deciding and queueing are one step
-// under o.mu, as is the kickoff marking its run live and taking the queue:
-// a message queued a moment before the run went live is still delivered by
-// it, never left for a run that may not come.
+// records them now, queued in the store for the next run's kickoff. Deciding
+// is under o.mu, and a queuing in progress is counted there: the kickoff
+// marking its run live waits for it before it reads the queue, so a message
+// queued a moment before the run went live is still delivered by it, never
+// left for a run that may not come. The routing itself is not under o.mu: it
+// publishes events, whose handlers may call back in.
 func (o *Orchestrator) deliverOrQueue(ctx context.Context, t *domain.Task, msgs ...*domain.Message) error {
 	o.mu.Lock()
 	if r, ok := o.running[t.ID]; !ok || !r.live {
-		o.queued[t.ID] = append(o.queued[t.ID], msgs...)
+		o.queuing[t.ID]++
 		o.mu.Unlock()
+		defer func() {
+			o.mu.Lock()
+			if o.queuing[t.ID]--; o.queuing[t.ID] <= 0 {
+				delete(o.queuing, t.ID)
+			}
+			o.queued.Broadcast()
+			o.mu.Unlock()
+		}()
+		later := deferToNextRun(ctx)
+		for _, m := range msgs {
+			if err := o.Bus.Route(later, t, m); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	o.mu.Unlock()
@@ -2052,10 +2230,7 @@ func (o *Orchestrator) waitsOnlyOnTheHuman(ctx context.Context, t *domain.Task) 
 	if t.State != domain.TaskAwaitingDecision || t.Closing {
 		return false
 	}
-	o.mu.Lock()
-	pending := len(o.queued[t.ID])
-	o.mu.Unlock()
-	if pending > 0 {
+	if o.humanQueued(ctx, t.ID) {
 		return false
 	}
 	d := o.heldDecision(ctx, t)
@@ -2108,14 +2283,15 @@ func (o *Orchestrator) assign(ctx context.Context, t *domain.Task) error {
 		}
 	}
 
+	// The authority's role is stated in its brief; this message adds what
+	// only the start of the task needs: who is waiting for it, and how to
+	// choose among them from the roster on the team board that comes with it.
 	content := fmt.Sprintf(
-		"Task %s: %s\n\n%s\n\nYou are the authoritative agent for this task. "+
-			"Decide what investigation is required, delegate it, evaluate the responses, "+
-			"challenge conclusions you do not believe, and make the final decision. "+
-			"Authority is responsibility, not correctness: revise your position when the evidence warrants.\n\n"+
+		"Task %s: %s\n\n%s\n\n"+
 			"The other participants (%s) have NOT been briefed and are idle. "+
-			"They will not act until you delegate to them, so state what you want investigated or implemented.",
-		t.ID, t.Title, t.Description, strings.Join(supporting, ", "))
+			"They will not act until you delegate to them, so state what you want investigated or implemented.\n"+
+			"%s",
+		t.ID, t.Title, t.Description, strings.Join(supporting, ", "), o.rosterGuidance(t))
 
 	m := &domain.Message{
 		TaskID:           t.ID,
@@ -2166,20 +2342,58 @@ func (o *Orchestrator) startParticipants(ctx context.Context, t *domain.Task) er
 	return nil
 }
 
+// stopParticipants stops the task's agents all at once, waiting for them no
+// longer than ctx allows. They used to be stopped one after another, each
+// taking as long as its CLI took to die.
 func (o *Orchestrator) stopParticipants(ctx context.Context, t *domain.Task) {
+	var wg sync.WaitGroup
 	for _, p := range t.Participants {
-		if err := o.Agents.StopFor(ctx, t.ID, p); err != nil {
-			o.log.Warn("stop agent", "agentId", string(p), "error", err)
-		}
+		wg.Add(1)
+		go func(p domain.AgentID) {
+			defer wg.Done()
+			if err := o.Agents.StopFor(ctx, t.ID, p); err != nil {
+				o.log.Warn("stop agent", "agentId", string(p), "error", err)
+			}
+		}(p)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		o.log.Warn("agents still stopping after the deadline", "taskId", string(t.ID))
 	}
 }
 
-// mergeOutbound fans every participant's adapter channel into one inbox. The
-// merged channel closes once all participants have closed theirs.
-func (o *Orchestrator) mergeOutbound(ctx context.Context, t *domain.Task) <-chan ports.Outbound {
-	merged := make(chan ports.Outbound, 64)
-	var wg sync.WaitGroup
+// outboundMerge fans every participant's outbound channel into out, which
+// closes once every goroutine feeding it has finished: when its adapter
+// closed its channel, when flush is closed and what was left in the channel
+// has been handed on, or when abort is called.
+type outboundMerge struct {
+	out   chan ports.Outbound
+	flush chan struct{}
+	abort context.CancelFunc
+}
 
+// mergeOutbound takes every participant's outbound channel and starts
+// feeding them into one. It outlives the run loop: what the agents report
+// after the loop has ended is still read (endRun), which is why it is not
+// bound to the run's context.
+func (o *Orchestrator) mergeOutbound(t *domain.Task) *outboundMerge {
+	ctx, abort := context.WithCancel(context.Background())
+	mg := &outboundMerge{out: make(chan ports.Outbound, 64), flush: make(chan struct{}), abort: abort}
+	send := func(out ports.Outbound) bool {
+		select {
+		case mg.out <- out:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	var wg sync.WaitGroup
 	for _, p := range t.Participants {
 		ad, ok := o.Agents.AdapterFor(t.ID, p)
 		if !ok {
@@ -2192,25 +2406,131 @@ func (o *Orchestrator) mergeOutbound(ctx context.Context, t *domain.Task) <-chan
 				select {
 				case <-ctx.Done():
 					return
-				case out, ok := <-ch:
-					if !ok {
-						return
+				case <-mg.flush:
+					// The adapter has stopped: whatever it reported is in its
+					// channel by now.
+					for {
+						select {
+						case out, ok := <-ch:
+							if !ok || !send(out) {
+								return
+							}
+						default:
+							return
+						}
 					}
-					select {
-					case merged <- out:
-					case <-ctx.Done():
+				case out, ok := <-ch:
+					if !ok || !send(out) {
 						return
 					}
 				}
 			}
 		}(ad.Outbound())
 	}
-
 	go func() {
 		wg.Wait()
-		close(merged)
+		close(mg.out)
 	}()
-	return merged
+	return mg
+}
+
+// usageGrace bounds how long the agents whose outbound ended the run are
+// given to finish the turn it came from before they are stopped: their usage
+// is sent after their messages.
+var usageGrace = time.Second
+
+// stopDeadline bounds stopping a run's agents and collecting what they still
+// report.
+var stopDeadline = 15 * time.Second
+
+// endRun stops the task's agents and bills every turn they took.
+//
+// Usage is sent after a turn's messages, so the message that ended the run
+// -- the deciding FINAL_DECISION, a decision held for the human, the one that
+// crossed a limit, a failure -- always arrived before its turn's usage, and
+// nobody read the channels once the loop had returned: the deciding turn of
+// every task was never billed. Nor was any turn killed by the stop, whether
+// by a pause, a cancel, a completion or a co-worker crossing the budget.
+//
+// So, in order: the agents that ended the run get a short grace to finish
+// their turn; every agent is stopped at once; and what they report until
+// they have stopped is read, its usage added to the task and the day and
+// everything else ignored -- the run is over, nothing more is routed.
+func (o *Orchestrator) endRun(ctx context.Context, t *domain.Task, mg *outboundMerge, enders []domain.AgentID) {
+	defer mg.abort()
+	defer o.forgetTurns(t.ID)
+	in := mg.out
+	take := func(out ports.Outbound, ok bool) {
+		if !ok {
+			in = nil
+			return
+		}
+		if out.IsUsageOnly() {
+			o.turnUsage(ctx, t.ID, out.AgentID, *out.Usage)
+			o.recordLateUsage(ctx, t.ID, out)
+		}
+	}
+
+	if len(enders) > 0 {
+		grace := time.NewTimer(usageGrace)
+		tick := time.NewTicker(10 * time.Millisecond)
+	wait:
+		for in != nil && o.anyWorking(t.ID, enders) {
+			select {
+			case out, ok := <-in:
+				take(out, ok)
+			case <-tick.C:
+			case <-grace.C:
+				break wait
+			}
+		}
+		grace.Stop()
+		tick.Stop()
+	}
+	// Whoever is still working now has its turn killed by the stop: what it
+	// carried goes back to the queue for the next run.
+	o.killTurns(ctx, t.ID)
+
+	stopCtx, cancel := context.WithTimeout(ctx, stopDeadline)
+	defer cancel()
+	stopped := make(chan struct{})
+	go func() {
+		o.stopParticipants(stopCtx, t)
+		close(stopped)
+	}()
+	for in != nil || stopped != nil {
+		select {
+		case out, ok := <-in:
+			take(out, ok)
+		case <-stopped:
+			stopped = nil
+			close(mg.flush)
+		case <-stopCtx.Done():
+			o.log.Warn("stopped collecting the agents' last usage at the deadline", "taskId", string(t.ID))
+			return
+		}
+	}
+}
+
+// anyWorking reports whether any of agents is in the middle of a turn.
+func (o *Orchestrator) anyWorking(id domain.TaskID, agents []domain.AgentID) bool {
+	for _, a := range agents {
+		if ad, ok := o.Agents.AdapterFor(id, a); ok && ad.Status() == domain.AgentStateWorking {
+			return true
+		}
+	}
+	return false
+}
+
+// recordLateUsage adds the usage of a turn reported after the run ended to
+// the task and to the day's spending. Nothing else is done with it: the task
+// has already stopped.
+func (o *Orchestrator) recordLateUsage(ctx context.Context, id domain.TaskID, out ports.Outbound) {
+	if _, err := o.addUsage(ctx, id, out); err != nil {
+		o.log.Error("record the usage of a turn that ended with the run", "taskId", string(id), "error", err)
+		return
+	}
+	o.overDailyLimit(*out.Usage)
 }
 
 // streamActivity forwards each participant's live output to subscribers for
@@ -2269,6 +2589,32 @@ func (o *Orchestrator) Pause(ctx context.Context, id domain.TaskID, reason strin
 	o.cancelRun(id)
 	_, err := o.Tasks.Pause(ctx, id, domain.HumanAgentID, reason)
 	return err
+}
+
+// RaiseLimits raises a task's message ceiling or spending limits at the
+// human's request (see TaskManager.RaiseLimits). It does not resume the
+// task: a task paused at a limit is resumed as usual, and then has room.
+func (o *Orchestrator) RaiseLimits(ctx context.Context, id domain.TaskID, more domain.TaskLimits) error {
+	before, err := o.Tasks.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	after, err := o.Tasks.RaiseLimits(ctx, id, more)
+	if err != nil {
+		return err
+	}
+	var parts []string
+	if b, a := before.Limits.MaxTotalMessages, after.Limits.MaxTotalMessages; a != b {
+		parts = append(parts, fmt.Sprintf("messages %d -> %d (%d used)", b, a, after.MessageCount))
+	}
+	if b, a := before.Limits.MaxCostUSD, after.Limits.MaxCostUSD; a != b {
+		parts = append(parts, fmt.Sprintf("budget $%.2f -> $%.2f ($%.2f spent)", b, a, after.CostUSD))
+	}
+	if b, a := before.Limits.MaxTokens, after.Limits.MaxTokens; a != b {
+		parts = append(parts, fmt.Sprintf("tokens %d -> %d (%d used)", b, a, after.InputTokens+after.OutputTokens))
+	}
+	o.Events.emit(ctx, domain.EvtHumanOverride, id, domain.HumanAgentID, "LIMITS raised: "+strings.Join(parts, "; "), nil)
+	return nil
 }
 
 // Resume restores a paused task to the state it held before the pause. The
@@ -2695,7 +3041,16 @@ func (o *Orchestrator) cancelRun(id domain.TaskID) {
 	o.mu.Lock()
 	// A queued run is cancelled the same way: it never starts.
 	if r, ok := o.running[id]; ok {
+		r.stopping = true
 		r.cancel()
 	}
 	o.mu.Unlock()
+}
+
+// stopping reports whether the task's run is being cancelled.
+func (o *Orchestrator) stopping(id domain.TaskID) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	r, ok := o.running[id]
+	return ok && r.stopping
 }

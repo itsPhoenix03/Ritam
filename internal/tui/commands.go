@@ -79,6 +79,9 @@ const (
 	// produces it.
 	ActionFollowUp Action = "follow_up"
 	ActionFilter   Action = "filter"
+	// ActionRaiseLimits is the result action of the ":raise" command. It is
+	// never bound to a key.
+	ActionRaiseLimits Action = "raise_limits"
 	// ActionBack is esc: leave the zoomed inspector or the focused agent, or
 	// hand keyboard focus back to the conversation.
 	ActionBack Action = "back"
@@ -399,6 +402,13 @@ func sendInstructionCmd(ctx context.Context, svc ports.Service, id domain.TaskID
 	return func() tea.Msg {
 		err := svc.SendInstruction(ctx, id, to, content)
 		return actionResultMsg{action: ActionSendInstruction, taskID: id, err: err}
+	}
+}
+
+func raiseLimitsCmd(ctx context.Context, svc ports.Service, id domain.TaskID, more domain.TaskLimits) tea.Cmd {
+	return func() tea.Msg {
+		err := svc.RaiseLimits(ctx, id, more)
+		return actionResultMsg{action: ActionRaiseLimits, taskID: id, err: err}
 	}
 }
 

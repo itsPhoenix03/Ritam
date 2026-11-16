@@ -334,9 +334,10 @@ func (a *CodexAdapter) invoke(ctx context.Context, t *domain.Task, m domain.Mess
 			fmt.Sprintf("codex adapter: could not read agent %s's reply file: %v", a.id, readErr), readErr))
 		return
 	}
-	if strings.TrimSpace(reply) == "" {
-		// The CLI finished cleanly and the agent chose to say nothing --
-		// right when it was told no reply is needed. That is not a failure.
+	if core.NothingToSay(reply) {
+		// The CLI finished cleanly and the agent chose to say nothing (an
+		// empty reply, or NO_REPLY) -- right when it was told no reply is
+		// needed. That is not a failure.
 		a.activity.Emit(ports.ActivityStatus, "nothing to reply")
 		return
 	}
@@ -383,18 +384,21 @@ func (a *CodexAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Mes
 	defer cleanup()
 
 	runner := *a.runner
-	prompt := renderPrompt(t, m, a.cfg.AllowWrites)
+	// The write rules go inside the brief, before the reply format, which
+	// must be the last thing the model reads.
+	rules := ""
+	if a.cfg.AllowWrites {
+		rules = core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), a.access.GrantFor(t, a.id, a.cfg.AllowedCommands))
+	}
+	prompt := renderPrompt(t, m, rules)
 	args := a.buildArgs(lastMessage)
 	if resuming {
-		prompt = core.RenderTurn(t, m, a.cfg.AllowWrites, headerMarker)
+		prompt = renderTurn(t, m, rules)
 		args = a.buildResumeArgs(sess.ID, lastMessage)
 		// `exec resume` has no --cd, so the turn runs where the thread lives.
 		if sess.WorkingDir != "" {
 			runner.WorkingDir = sess.WorkingDir
 		}
-	}
-	if a.cfg.AllowWrites {
-		prompt += core.WriteRules(core.ResolveWorkingDir(a.cfg.WorkingDir), a.access.GrantFor(t, a.id, a.cfg.AllowedCommands))
 	}
 
 	res, runErr = runner.RunStreaming(ctx, args, prompt, func(line string) {
@@ -672,12 +676,15 @@ func (a *CodexAdapter) fail(err error) {
 	a.emit(ports.Outbound{AgentID: a.id, Err: err})
 }
 
-// emit publishes an outbound value, dropping it once the adapter has stopped.
+// emit publishes an outbound value without blocking. Once the adapter has
+// stopped, messages and failures are dropped, but a usage report is not:
+// the turn Stop killed still cost what it cost, and the orchestrator reads
+// the channel until its agents have stopped to bill it.
 func (a *CodexAdapter) emit(o ports.Outbound) {
 	a.mu.Lock()
 	stopped := a.stopped
 	a.mu.Unlock()
-	if stopped {
+	if stopped && !o.IsUsageOnly() {
 		return
 	}
 	select {

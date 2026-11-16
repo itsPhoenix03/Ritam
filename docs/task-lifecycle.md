@@ -2,139 +2,52 @@
 
 See also: [../README.md](../README.md), [architecture.md](architecture.md), [agent-protocol.md](agent-protocol.md).
 
-The task state machine lives in `internal/domain/task.go`. It is the authoritative, orchestrator-owned model of "where a task is" — no agent conversation state, message count, or adapter status is ever consulted to answer that question; only `Task.State`, set exclusively by `TaskManager.Transition`, is.
+The task state machine lives in `internal/domain/task.go`. `Task.State` is the only answer to "where is this task", and `TaskManager` (`internal/orchestrator/taskmanager.go`) is the only component that changes it. Every change goes through `TaskManager.change`: read the task, apply the change, write it back under a per-task lock, and if the stored row's version moved in between, read it again and redo the change (up to 8 attempts). The run loop and the UI therefore cannot undo each other's writes.
 
 ## 1. States
 
 | State | Meaning |
 |---|---|
-| `CREATED` | Task record exists; participants have not yet been started or assigned. |
-| `PLANNING` | Task has started; opening `TASK_ASSIGNMENT` messages are going out. |
-| `INVESTIGATING` | Someone has been delegated to, or asked a question, to gather information. |
-| `IMPLEMENTING` | An `IMPLEMENT` or `REQUEST_CHANGE` is in flight — code/content is being changed. |
-| `REVIEWING` | An implementation result or test result is being evaluated. |
-| `DELIBERATING` | Agents are exchanging answers, proposals or challenges without a concrete implementation action in flight. |
-| `AWAITING_DECISION` | The authority agent has issued a `FINAL_DECISION`; if `requireHumanApproval` is set, the task sits here until a human `Approve`/`Reject`s it. |
-| `PAUSED` | Halted — by a human, by loop-protection limits, or by an idle timeout — with `PreviousState` remembered so it can resume where it left off. |
-| `COMPLETED` | Terminal. A decision was accepted (by the orchestrator automatically, or by human approval) and the task is done. |
-| `FAILED` | Terminal. The task could not proceed (an agent runtime error, or a start failure). `FailureReason` records why. |
-| `CANCELLED` | Terminal. A human ended the task deliberately. |
+| `CREATED` | Recorded; no run has started yet. |
+| `PLANNING` | The run has started; the authority has its opening assignment. |
+| `INVESTIGATING` | A `DELEGATE` or `QUESTION` is being worked on. |
+| `IMPLEMENTING` | An `IMPLEMENT` or `REQUEST_CHANGE` is being worked on. |
+| `REVIEWING` | A result, test result or review came in. |
+| `DELIBERATING` | Answers, proposals, information or challenges are being exchanged. |
+| `AWAITING_DECISION` | The authority sent a `FINAL_DECISION` that was taken up. The task passes through on its way to `COMPLETED`, or stays here while the decision is held for the human. |
+| `PAUSED` | Waiting for the human, with `PauseReason` saying why and `PreviousState` remembered for resuming. |
+| `COMPLETED` | Terminal for the agents. The human can reopen it with a follow-up. |
+| `FAILED` | Terminal for the agents. Nothing in this version moves a task here; a task an older version failed can be retried by the human. |
+| `CANCELLED` | Terminal. The human ended it; it cannot be resumed or reopened. |
 
-`TaskState.IsTerminal()` is true only for `COMPLETED`, `FAILED`, `CANCELLED`.
+`PAUSED` and the terminal states are closed to agents: `AuthorityManager.Authorize` refuses any agent message with `STATE_VIOLATION`. The human and the orchestrator's own notes are not subject to this check.
 
-**`PAUSED` and every terminal state are closed to agents.** This is enforced one layer below the transition table, in `AuthorityManager.Authorize` (`internal/orchestrator/authority.go`): any message from an agent (`FromAgent != domain.HumanAgentID`) is rejected with `STATE_VIOLATION` ("task is `<STATE>`; only the human can act on it") whenever `t.State.IsTerminal()` or `t.State == domain.TaskPaused`. The human is checked first and is exempt from this rule entirely, so a paused task can still be driven forward — e.g. to `Resume` it — by the human, even though no agent's message will be accepted while it sits `PAUSED`. See [agent-protocol.md](agent-protocol.md#4-validation-and-the-five-violation-kinds) and `TestAgentsCannotActOnAStoppedTask`.
+## 2. Transition table
 
-## 2. Full transition table (corrected)
+From the `transitions` map in `internal/domain/task.go`. `CanTransition(from, to)` decides; `from == to` is never a transition, and `TaskManager.Transition` treats it as no change.
 
-Reproduced exactly from the `transitions` map in `internal/domain/task.go`. `CanTransition(from, to)` is the sole authority for whether a transition is legal; `from == to` is always rejected as a no-op-by-design (`TaskManager.Transition` short-circuits and returns the unchanged task rather than calling `CanTransition` in that case).
-
-| From | Legal To states |
+| From | Legal to |
 |---|---|
 | `CREATED` | `PLANNING`, `PAUSED`, `CANCELLED`, `FAILED` |
 | `PLANNING` | `INVESTIGATING`, `IMPLEMENTING`, `DELIBERATING`, `AWAITING_DECISION`, `PAUSED`, `CANCELLED`, `FAILED` |
 | `INVESTIGATING` | `PLANNING`, `IMPLEMENTING`, `DELIBERATING`, `REVIEWING`, `AWAITING_DECISION`, `PAUSED`, `CANCELLED`, `FAILED` |
 | `IMPLEMENTING` | `REVIEWING`, `INVESTIGATING`, `DELIBERATING`, `AWAITING_DECISION`, `PAUSED`, `CANCELLED`, `FAILED` |
-| `REVIEWING` | `IMPLEMENTING` (via `REQUEST_CHANGE`), `INVESTIGATING`, `DELIBERATING`, `AWAITING_DECISION`, `PAUSED`, `CANCELLED`, `FAILED` |
-| `DELIBERATING` | `INVESTIGATING` (via `CHALLENGE`), `IMPLEMENTING`, `REVIEWING`, `AWAITING_DECISION`, `PAUSED`, `CANCELLED`, `FAILED` |
+| `REVIEWING` | `IMPLEMENTING`, `INVESTIGATING`, `DELIBERATING`, `AWAITING_DECISION`, `PAUSED`, `CANCELLED`, `FAILED` |
+| `DELIBERATING` | `INVESTIGATING`, `IMPLEMENTING`, `REVIEWING`, `AWAITING_DECISION`, `PAUSED`, `CANCELLED`, `FAILED` |
 | `AWAITING_DECISION` | `COMPLETED`, `DELIBERATING`, `IMPLEMENTING`, `INVESTIGATING`, `PAUSED`, `CANCELLED`, `FAILED` |
 | `PAUSED` | `CREATED`, `PLANNING`, `INVESTIGATING`, `IMPLEMENTING`, `REVIEWING`, `DELIBERATING`, `AWAITING_DECISION`, `CANCELLED`, `FAILED` |
-| `COMPLETED` | *(none — terminal)* |
-| `FAILED` | *(none — terminal)* |
-| `CANCELLED` | *(none — terminal)* |
+| `COMPLETED`, `FAILED`, `CANCELLED` | none |
 
-### `AWAITING_DECISION` is reachable from every working state, not just `REVIEWING`/`DELIBERATING`
+`AWAITING_DECISION` is reachable from every working state, because a question can be settled without implementation or review; `COMPLETED` only from `AWAITING_DECISION`, so every completed task passed the point where the authority decided. `Orchestrator.completeAfterDecision` walks `<state> -> AWAITING_DECISION -> COMPLETED` explicitly (`TestDecisionFromAnyWorkingStateCompletes`, `TestImmediateFinalDecisionCompletesTheTask`). An illegal transition asked of `TaskManager.Transition` is an error (`TestInvalidTransitionRejected`).
 
-This changed from an earlier version of the table that only allowed `REVIEWING -> AWAITING_DECISION` and `DELIBERATING -> AWAITING_DECISION`. The current table adds `AWAITING_DECISION` as a legal successor of `PLANNING`, `INVESTIGATING` and `IMPLEMENTING` as well — i.e. every non-terminal, non-paused working state.
+Two moves are deliberately not in the table, because nothing an agent or the run loop does should cause them; only the human does, each through its own method:
 
-The reason is a real failure, not a hypothetical: the authority agent reached a conclusion and issued `FINAL_DECISION` while the task was still `INVESTIGATING` — a question answered in one round, with no implementation or review phase ever entered. The decision was recorded and accepted, and the run then died with `invalid task transition INVESTIGATING -> COMPLETED`, leaving an already-decided task stranded short of `COMPLETED`. The fix has two parts:
+- **Reopen** (`TaskManager.Reopen`): `COMPLETED -> DELIBERATING` for a follow-up. The accepted decision stays; a new `FINAL_DECISION` supersedes it.
+- **Retry** (`TaskManager.Retry`): `FAILED -> DELIBERATING`, with the failure reason cleared (it stays in the events), dropped agents and unreadable-reply counts cleared, and a fresh allowance. The authority is told the task had failed and why.
 
-1. The transition table itself now allows `AWAITING_DECISION` from `PLANNING`, `INVESTIGATING`, `IMPLEMENTING`, `REVIEWING` and `DELIBERATING` alike — the authority agent may issue `FINAL_DECISION` from any point in the working lifecycle, because real deliberations frequently resolve without ever touching implementation or review.
-2. `Orchestrator.completeAfterDecision` (see section 8 below) walks the task through `AWAITING_DECISION` explicitly rather than assuming the task is already there, so a decision reached mid-investigation still lands on `COMPLETED` instead of erroring out.
+## 3. What moves a task
 
-`COMPLETED` itself did **not** change: it remains reachable **only** from `AWAITING_DECISION`. This is structural, not incidental — the authority agent's decision point is mandatory, so the minimum possible path through the lifecycle is three hops: `CREATED -> PLANNING -> AWAITING_DECISION -> COMPLETED`. No task can complete without passing through a state that represents "the authority decided."
-
-Regression coverage: `TestDecisionFromAnyWorkingStateCompletes` and `TestImmediateFinalDecisionCompletesTheTask` (`internal/orchestrator/orchestrator_test.go`) — the latter is exactly the one-round, decide-from-`INVESTIGATING` case that used to crash.
-
-Two things worth noting directly from the code beyond the above: the lifecycle is "deliberately not a linear pipeline: review can send work back to implementation, and deliberation can send work back to investigation" (package comment), and an illegal transition is always a hard error (`domain.ErrInvalidTransition`) — `TaskManager.Transition` never silently no-ops on an illegal request. `TestInvalidTransitionRejected` asserts this directly (a task fresh out of `CREATED` cannot jump straight to `COMPLETED`).
-
-Also note: `Orchestrator.handleOutbound` does not always call `Transition` even when a message implies a new state — if `StateForMessage(m.Type)` maps to a state that `CanTransition` says is illegal from the task's current state, the orchestrator logs it at debug level and **keeps the current state** rather than erroring the whole task out. This is a defensive measure against a message arriving in an order the state machine doesn't expect (e.g. adapter timing), not a normal part of the lifecycle.
-
-## 3. Happy-path ASCII diagram
-
-This is exactly the sequence `go run ./cmd/ritam -headless` produces against the mock agents:
-
-```
-CREATED
-  |  (RunTask starts)
-  v
-PLANNING  <---------------------------------------------+
-  |  TASK_ASSIGNMENT to the AUTHORITY AGENT ONLY         |
-  |  DELEGATE (opus -> codex)                             |
-  v                                                       |
-INVESTIGATING                                             |
-  |  ANSWER (codex -> opus)                                |
-  v                                                        |
-DELIBERATING                                               |
-  |  IMPLEMENT (opus -> codex)                              |
-  v                                                         |
-IMPLEMENTING  <--------------------------+                  |
-  |  IMPLEMENTATION_RESULT (codex -> opus)|                  |
-  v                                       |                  |
-REVIEWING  --- REQUEST_CHANGE (opus)------+                  |
-  |                                                          |
-  |  FINAL_DECISION (opus -> *)                              |
-  v                                                          |
-AWAITING_DECISION                                            |
-  |  (orchestrator auto-accepts unless requireHumanApproval) |
-  v                                                          |
-COMPLETED
-```
-
-(The dashed loop back into `PLANNING` at the top is not part of the happy path — it illustrates that `PAUSED` can resume into any of these states; see section 5.)
-
-### Shortest real path: a decision reached in one round
-
-The mock happy path above exercises the full pipeline, but it is not the minimum. Since `AWAITING_DECISION` is now reachable from every working state (see the callout in section 2), a task can complete in exactly three hops when the authority agent has enough evidence immediately:
-
-```
-CREATED --(RunTask starts)--> PLANNING --(FINAL_DECISION)--> AWAITING_DECISION --> COMPLETED
-```
-
-This is not hypothetical: it is exactly what happened in a real verified run against live Claude Code agents (opus as AUTHORITY, a sonnet-backed "scout" as IMPLEMENTER) answering "Can a task ever go straight from CREATED to COMPLETED?" — the authority reached `FINAL_DECISION` after one delegated verification round without the task ever entering `IMPLEMENTING` or `REVIEWING`. See [future-integration.md](future-integration.md#7-a-verified-real-run).
-
-## 4. The two deliberate loops
-
-### `REVIEWING -> IMPLEMENTING -> REVIEWING` (revision loop)
-
-Driven by `REQUEST_CHANGE`, an authority-only message type. `StateForMessage(MsgRequestChange) = TaskImplementing`. In the mock end-to-end flow, this happens exactly once (`AuthorityBehavior` requests one change, then accepts on the second `IMPLEMENTATION_RESULT`), but nothing in the state machine or `AuthorityBehavior`'s design caps how many times this can repeat — `AuthorityBehavior` uses an internal `implResultCount` closure variable purely as its own scripted policy for *this* mock behavior, not a system-enforced limit. A real (or differently-scripted) authority agent could request changes any number of times.
-
-### `DELIBERATING -> INVESTIGATING -> DELIBERATING` (challenge loop)
-
-Driven by `CHALLENGE` (`StateForMessage(MsgChallenge) = TaskDeliberating`, and a subsequent `DELEGATE` back in response, `StateForMessage(MsgDelegate) = TaskInvestigating`). This is the disagreement path: a supporting agent disputes the authority agent's direction, the authority agent (in the mock scaffold) responds by delegating again and asking for evidence rather than overriding the objection, and the two states alternate for as long as the disagreement continues. `TestChallengeLoopHitsRoundLimit` exercises this with `ChallengingImplementerBehavior`, which always challenges a `DELEGATE` — the loop runs until `MaxDeliberationRounds` is hit and the task is `PAUSED`, never `COMPLETED`. See [agent-protocol.md](agent-protocol.md#6-challenge--disagreement-flow--worked-example) for the full worked message sequence.
-
-## 5. PAUSED: how the previous state is remembered and restored
-
-`TaskManager.Transition` records `t.PreviousState = from` **only** when transitioning *into* `PAUSED` (`if to == domain.TaskPaused { t.PreviousState = from }`) — the field is otherwise left untouched, so it always reflects the state the task was in immediately before its most recent pause.
-
-`TaskManager.Resume`:
-
-1. Requires the task to currently be `PAUSED` (else a plain error, not a state-machine violation).
-2. Reads `t.PreviousState`. If it is empty or itself terminal (defensive — should not normally happen), it falls back to `TaskDeliberating` rather than resuming into an invalid or already-finished state.
-3. Calls `Transition(ctx, id, prev, by, "resumed")` — this goes through the exact same legality check as every other transition (`PAUSED -> prev` must itself be a legal edge, which it always is per the table above, since `PAUSED` can transition to every non-terminal state).
-4. Emits `EvtTaskResumed` in addition to the standard `EvtTaskStateChanged`.
-
-Note `TaskManager.Resume` only restores the task's *state field* — it does not resume the `RunTask` deliberation loop by itself. `app.Service.Resume` is the layer that, after calling `orch.Resume`, separately kicks off a fresh `RunTask` goroutine so the task actually keeps deliberating (`TestPauseResumeRestoresPreviousState` in the orchestrator package tests the state-restoration in isolation, without re-running).
-
-Pauses can originate from four places, each with a distinct `PauseReason` constant:
-
-- `PauseReasonHuman = "paused by human"` — `Orchestrator.Pause`, human-initiated, also cancels the task's run context via `cancelRun`.
-- `PauseReasonMaxRounds`, `PauseReasonMaxMessages`, `PauseReasonMaxDuration` — loop protection, via `LimitExceeded` inside `Orchestrator.handleOutbound`.
-- The literal string `"TIMEOUT: no agent activity"` — the idle timer in `Orchestrator.RunTask`. (Not a named `domain` constant; used verbatim as the reason string.)
-- `"all agents stopped"` — every participant's adapter closed its outbound channel; the merged inbox itself closed.
-
-## 6. Which message types drive which transitions (`StateForMessage`)
-
-From `internal/orchestrator/taskmanager.go`:
+`StateForMessage` maps each routed message to the state it implies:
 
 | Message type | Implied state |
 |---|---|
@@ -143,21 +56,51 @@ From `internal/orchestrator/taskmanager.go`:
 | `ANSWER`, `INFORMATION`, `PROPOSAL`, `CHALLENGE` | `DELIBERATING` |
 | `IMPLEMENT`, `REQUEST_CHANGE` | `IMPLEMENTING` |
 | `IMPLEMENTATION_RESULT`, `TEST_RESULT`, `REVIEW` | `REVIEWING` |
-| `FINAL_DECISION` | `AWAITING_DECISION` |
-| `APPROVE`, `REJECT`, `STATUS_UPDATE`, `ERROR` | *(no mapping — returns `""`; these types do not by themselves move the task)* |
+| `FINAL_DECISION` | `AWAITING_DECISION` (not when the decision is deferred, section 5) |
+| `APPROVE`, `REJECT`, `STATUS_UPDATE`, `ERROR` | none |
 
-`Orchestrator.handleOutbound` only calls `Transition` when the mapped state differs from the task's current state **and** `domain.CanTransition` says the edge is legal (see the caveat about silently keeping state, above).
+`handleOutbound` makes the transition only when it differs from the current state and is legal; an illegal one is logged at debug level and the state kept. The loops are therefore unbounded by design: `REQUEST_CHANGE` sends review back to implementation, and a further `DELEGATE` sends deliberation back to investigation, as often as the authority wants.
 
-## 7. Multi-round deliberation: no fixed round count
+The mock flow `-headless` runs is: `CREATED -> PLANNING -> INVESTIGATING -> DELIBERATING -> IMPLEMENTING -> REVIEWING -> IMPLEMENTING -> REVIEWING -> AWAITING_DECISION -> COMPLETED`. The shortest is `CREATED -> PLANNING -> AWAITING_DECISION -> COMPLETED`.
 
-There is no hard-coded number of rounds anywhere in the domain or orchestrator layer. `Task.Round` is a simple counter (`TaskManager.NoteMessage` increments it whenever the message's sender is the task's `AuthorityAgent`, on the reasoning that "a round is one authority-led exchange"), and the *only* thing that ever forces a task to stop deliberating because of round count is the human-configured `TaskLimits.MaxDeliberationRounds` ceiling — checked by `LimitExceeded`, which pauses rather than concludes. `Orchestrator.RunTask`'s own doc comment states the design intent directly: "There is no fixed number of rounds. The authority agent decides when enough evidence exists; the configured limits only ever pause the task and ask for a human, they never declare a winner." The mock `AuthorityBehavior` happens to converge after a specific, small number of exchanges because that is how it was scripted, not because the orchestrator enforces any such count.
+## 4. Runs
 
-## 8. Terminal states
+A task makes progress only while a **run** (`Orchestrator.RunTask`) holds it. The app starts runs on its own goroutines: creating a task, resuming, retrying, a follow-up, and a rejection or an answer sent while no run is alive. At most `maxConcurrentTasks` (default 1) runs are live at once.
 
-- **`COMPLETED`** — reached only via `AWAITING_DECISION -> COMPLETED`, either automatically (`Orchestrator.handleFinalDecision`, when `requireHumanApproval` is false) or by a human calling `Approve` (`Orchestrator.Approve`). `Task.CompletedAt` is stamped at this transition.
+- **Queued.** A run is registered before it waits for a slot, so the UI marks the task `queued`, pause and cancel withdraw the run, and a second start for the same task returns at once. When the slot comes free the task is read again; a run on a task paused or ended meanwhile starts no agent.
+- **Kickoff.** The run starts the agents and refills their inboxes from the delivery queue; queued messages are delivered either way. If any of them is from the human, that is what the run opens with. Otherwise it sends the opening assignment if the task has no history, or, after a resume or a retry, tells each agent that owes a reply to send it (the authority to carry on, if nobody owes one).
+- **Ending.** When the run ends (a decision, a pause, a cancel, quitting), the agents whose message ended it get a second to finish their turn, every agent is stopped at once (a turn in progress is killed and its messages queued again), and the usage they still report is billed to the task and the day.
+- **A run that ends on an error** (storage, routing) pauses the task with the error as the reason. Agents that cannot start (a CLI not installed) pause it too.
+- **Quitting** stops every run and waits up to 15 seconds. The tasks keep their state; at the next start every task in a working state is paused as `INTERRUPTED`. `CREATED`, `PAUSED` and `AWAITING_DECISION` tasks are left as they are.
 
-  The automatic path goes through `Orchestrator.completeAfterDecision`, which performs the walk to `COMPLETED` explicitly rather than assuming the task is already sitting in `AWAITING_DECISION`: if the current state is anything else (e.g. `INVESTIGATING`, because the authority decided in the first round), it first transitions `<current> -> AWAITING_DECISION`, then `AWAITING_DECISION -> COMPLETED`. Both hops are checked against `domain.CanTransition` exactly like any other transition — nothing here bypasses the state machine. This two-step walk exists specifically because a one-hop `<working state> -> COMPLETED` transition is illegal by design (`COMPLETED` is only ever a legal successor of `AWAITING_DECISION`, per the table in section 2) — doing the walk in one hop used to fail outright whenever a decision was reached without passing through implementation or review, which stranded an already-decided, already-accepted task with no legal way to reach `COMPLETED`. See the `AWAITING_DECISION`-reachability callout in section 2 for the incident that prompted this.
-- **`FAILED`** — reached from most non-terminal states (every row in the table above lists `FAILED` as reachable) whenever `Orchestrator.handleOutbound` sees a runtime error on `ports.Outbound`, or when `startParticipants` cannot start every agent before the run loop begins. `Task.FailureReason` records why (e.g. `"AGENT_ERROR: codex: runtime exited unexpectedly"`).
-- **`CANCELLED`** — reached only via a human calling `Cancel` (`Orchestrator.Cancel`), which also cancels the task's run context first so `RunTask` stops promptly.
+## 5. Decisions
 
-No terminal state has any outgoing transition; reopening a completed/failed/cancelled task is not supported anywhere in the current code.
+When the authority's `FINAL_DECISION` arrives, in order:
+
+1. **Deferred while work is outstanding.** If another participant is in the middle of a turn or about to retry one, or an `IMPLEMENT` or `REQUEST_CHANGE` to another participant has not been reported on, the decision is not taken up: it is recorded with a mark, delivered to nobody, creates no decision record and does not move the task. The authority is told what is outstanding and to send it again. Dropped agents do not count; the response timeout and the reminder-then-close chase keep this from holding a task for ever. Test: `TestADecisionSentWithAnImplementWaitsForTheReport`.
+2. **Recorded.** A `Decision` is proposed (superseding, in one transaction, any earlier accepted or still-proposed one), open disagreements are resolved, and requests still open between agents become a `CAVEAT:` in its evidence. An open `DELEGATE` or `QUESTION` does not hold the decision.
+3. **Held for the human** when `requireHumanApproval` is on or an agent is waiting for the human's answer. The task stays `AWAITING_DECISION` and the run ends. The human then approves (the decision is accepted and the task completes; this also works on a task paused while its decision waited), rejects (the decision is marked rejected with the note, the disagreements it resolved reopen, the task returns to `DELIBERATING` with a fresh allowance, and the authority receives the note as a `REJECT`), or answers with an instruction (delivered with a note asking the authority to confirm or revise; its next `FINAL_DECISION` supersedes the held one). A run is started to deliver a rejection or an answer. A resume of a task that only waits on the human starts no run.
+4. **Accepted** otherwise. If the human still has a question open, the task is marked `Closing` (stored with the task, so a pause or restart keeps it) and completes once the question is answered, or after a reminder goes unanswered, with that recorded. Otherwise it completes at once.
+
+## 6. Pauses
+
+`TaskManager.Pause` records `PreviousState` and `PauseReason`. Pauses come from:
+
+- the human (`p`, `:pause`), which also cancels the run;
+- loop protection (`LimitExceeded`), checked as messages are routed: spending first (`maxTaskCostUSD`, `maxTaskTokens`), then `maxTaskDuration` since the human last spoke, then `maxTotalMessages`, a stall (`stallMessages` messages without progress), and `maxMessages` since the human last spoke. Duration and budget are also checked on replies that are refused or unreadable;
+- the day's spending (`maxDailyCostUSD`, `maxDailyTokens`), checked as each turn is billed and before each turn is handed over, failing closed when the record cannot be read;
+- a turn that cannot be given even the minimum spending allowance;
+- the idle timeout, only when no agent is working and no retry is waiting (the reason names the reply it waits for, if any);
+- the human's question still unanswered after a reminder;
+- agent failures that give up on the authority, and a usage limit that resets later than `maxRateLimitWait` (the reason says when);
+- the authority's replies unreadable twice in a row;
+- a run that ends on an error, or agents that cannot start;
+- a restart, for tasks that were running (`INTERRUPTED`).
+
+`maxDeliberationRounds` does not pause: every that many authority-led rounds without human input a checkpoint notifies the human and asks the authority for a status update, and work continues.
+
+`TaskManager.Resume` restores `PreviousState` (falling back to `DELIBERATING` if it is empty or terminal) and resets the allowance in the same write. `Orchestrator.Resume` also puts dropped agents back on the task and clears their failure counts, and `app.Service.Resume` starts the run. Limits can be raised before resuming (`:raise`, `TaskManager.RaiseLimits`): the message ceiling, the cost budget and the token budget, upward only.
+
+## 7. Agents leaving a task
+
+A supporting agent whose turns keep failing, whose replies cannot be read, or whose account cannot run its model is **dropped** (`Task.Dropped`, stored with the task): its queued messages are discarded, it receives nothing more, the requests it owed are closed, and the authority is told once to carry on without it. A message later sent to a dropped agent is recorded but not delivered, and its sender is told. The failure policy is in [architecture.md](architecture.md#5-failure-handling). The authority is never dropped; its failures pause the task. Resuming or retrying the task puts every dropped agent back.
