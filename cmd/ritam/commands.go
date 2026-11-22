@@ -39,6 +39,9 @@ func commandUsage() string {
 		"  " + n + " archive [-clear]           archive this project's tasks; -clear then starts it fresh",
 		"  " + n + " rename -from <old name>    rename folders made by a version with another name",
 		"  " + n + " config check               show the settings in force and where each came from",
+		"",
+		"Run by the agent CLIs, not by people:",
+		"  " + n + " hook pretool               check a tool call before it runs (the call on stdin)",
 	}, "\n")
 }
 

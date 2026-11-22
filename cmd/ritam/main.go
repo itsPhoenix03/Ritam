@@ -23,10 +23,18 @@ import (
 	"ritam/internal/domain"
 	"ritam/internal/logging"
 	"ritam/internal/ports"
+	"ritam/internal/review"
 	"ritam/internal/tui"
 )
 
 func main() {
+	// The agent CLIs run `ritam hook pretool` before every tool call. It is
+	// handled before anything else -- no settings are read, no log opened --
+	// because it runs once per call and the CLI waits for it; and it picks its
+	// own exit code, 2 being what blocks a call.
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		os.Exit(review.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, os.Getenv))
+	}
 	if ok, err := runCommand(os.Args[1:], os.Stdout); ok {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, brand.Name+":", err)
