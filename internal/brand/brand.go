@@ -3,7 +3,7 @@
 // environment variable that moves the app home. The CLI's final name is not
 // settled, so nothing else spells it out; renaming the app is a change to
 // Name here (with the old name added to FormerNames, so existing folders
-// are renamed on the next start).
+// that hold this program's files are renamed at start; see FormerNames).
 package brand
 
 import "strings"
@@ -11,8 +11,11 @@ import "strings"
 // Name is the application's name, as typed on the command line.
 const Name = "ritam"
 
-// FormerNames are names the app was released under before. On start, a
-// folder or file still carrying one of them is renamed to Name.
+// FormerNames are names the app was released under before. At start, an app
+// home or a project's hidden folder still carrying one of them is renamed to
+// Name, with the files inside named after the app, but only when it holds
+// this program's files, and each project only once (the project registry
+// records it). See layout.RenameHome and layout.MigrateFormerName.
 var FormerNames = []string{"orch"}
 
 // Title is the name as the TUI shows it.

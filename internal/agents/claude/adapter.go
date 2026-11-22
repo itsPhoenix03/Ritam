@@ -1,26 +1,27 @@
 // Package claude contains the Claude Code adapter.
 //
-// It drives the real `claude` CLI in one-shot headless mode: one process per
-// protocol message, `-p --output-format stream-json` with the prompt on stdin, read until exit, parse
-// the JSON envelope, pull the `@@ORCH` reply header out of the result text.
+// It drives the real `claude` CLI in headless print mode: one process per
+// agent turn, `-p --output-format stream-json` with the prompt on stdin,
+// output streamed to the UI as activity while it runs, and the reply taken
+// from the final result event, whose text carries the `@@ORCH` reply
+// headers.
 //
-// What is implemented and exercised against the real CLI: executable
-// resolution, invocation, the read-only tool policy, JSON envelope parsing,
-// prompt rendering and reply parsing.
+// Each (task, agent) keeps one Claude session: the first turn creates it
+// with an id ritam chooses (--session-id), later turns resume it (--resume),
+// so the agent remembers the deliberation. A lost session is replaced and
+// the agent re-briefed.
 //
-// TODO(phase-next): still missing for a richer integration:
-//   - Session continuity. Each message is an independent run, so Claude keeps
-//     no memory between them; continuity comes from the orchestrator injecting
-//     shared knowledge into each prompt. Using `--resume` with the session id
-//     returned in the JSON envelope would preserve native context and cut
-//     token use, at the cost of the isolation one-shot runs buy.
-//   - Streaming. `--output-format stream-json` would let the TUI show progress
-//     mid-turn instead of waiting for the process to exit.
-//   - Write access. Enabled by config (agents.<id>.allowWrites), but the
-//     IMPLEMENT flow has no patch review step yet, so writes should stay off
-//     until one exists.
-//   - Cost/token accounting. The envelope carries usage and total_cost_usd;
-//     they are logged but not yet aggregated per task.
+// The turn's usage is reported after its messages: its own token counts,
+// and the growth of the session's total_cost_usd. A failed turn is reported
+// as a domain.AgentFailure of a known kind, read from the result event.
+//
+// A write-enabled agent (allowWrites) edits files in acceptEdits mode, with
+// what it may run decided by the workspace's access level. Nothing reviews
+// its edits before they land.
+//
+// Not implemented: interrupting a turn short of killing it (Interrupt is a
+// no-op), and structured-output replies (the reply is free text with a
+// header line).
 //
 // Auth is the CLI's own (`claude /login`). This package never reads an API key
 // and never accepts one from configuration.

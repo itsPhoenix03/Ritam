@@ -1,26 +1,27 @@
 // Package codex contains the Codex CLI adapter.
 //
-// It drives the real `codex` CLI in one-shot headless mode:
-// `codex exec -s <sandbox> --skip-git-repo-check --color never -o <file> <prompt>`,
-// one process per protocol message. The agent's final message is read from the
-// `-o` file rather than scraped from stdout, because stdout also carries the
-// banner, reasoning summaries and progress output.
+// It drives the real `codex` CLI in headless mode: one process per agent
+// turn, `codex exec --json --sandbox <mode> --skip-git-repo-check --color never
+// --output-last-message <file> -` with the prompt on stdin. The agent's final
+// message is read from that file rather than scraped from stdout; stdout's
+// JSONL events are streamed to the UI as activity and carry the thread id and
+// the token usage.
 //
-// This is a SEPARATE implementation from the Claude Code adapter on purpose.
-// The two CLIs are different applications with different flags, different
-// sandbox models and different output shapes; sharing an assumed protocol
-// between them would be wrong the moment either changes.
+// Each (task, agent) keeps one Codex thread: the first turn starts it, later
+// turns continue it with `codex exec resume <thread>`, which has no --sandbox
+// flag, so the sandbox is forced there with `-c sandbox_mode=...`.
 //
-// TODO(phase-next): still missing for a richer integration:
-//   - Session continuity via `codex exec resume`, as with Claude's --resume.
-//   - Streaming progress via `--json` (JSONL events) so the TUI can show work
-//     in flight instead of waiting for process exit.
-//   - Structured replies via `--output-schema`, which would remove the need to
-//     parse a header out of free text entirely. This is the most promising
-//     next step for this adapter specifically.
-//   - Write access is config-gated (agents.<id>.allowWrites) and maps to the
-//     workspace-write sandbox; it should stay off until IMPLEMENT has a patch
-//     review step.
+// Invoking the CLI is this package's own: the two CLIs have different flags,
+// sandbox models and output shapes. Only the reply parser and the prompt
+// layout are shared with the Claude Code adapter (internal/agents/core), with
+// the header marker (##CODEX) as a parameter.
+//
+// A write-enabled agent (allowWrites) runs in the workspace-write sandbox
+// with temp folders and the network turned off. Nothing reviews its edits
+// before they land. Codex reports tokens but no cost.
+//
+// Not implemented: structured replies via `--output-schema` (the reply is
+// free text with a header line), and interrupting a turn short of killing it.
 //
 // Auth is the CLI's own (`codex login`). This package never reads an API key
 // and never accepts one from configuration.
