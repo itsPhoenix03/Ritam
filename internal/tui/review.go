@@ -230,6 +230,21 @@ func (m Model) reviewLines(inner int) []line {
 	if len(r.Hooks) > 0 {
 		para("your hooks: "+strings.Join(r.Hooks, ", "), bodyStyle)
 	}
+	switch r.CLIHooks {
+	case "on", "native":
+		what := "none found"
+		if len(r.CLIHookNames) > 0 {
+			what = strings.Join(r.CLIHookNames, ", ")
+		}
+		para("your Claude Code hooks (review.cliHooks: "+r.CLIHooks+"): "+what, bodyStyle)
+		if r.CLIHooks == "native" {
+			para("native: your pre-tool hooks run in the CLI, where one that answers allow, or rewrites the call, "+
+				"gets it past ritam's review", warnStyle)
+		}
+	}
+	if r.CLIHooksErr != "" {
+		para("your Claude Code hooks could not be read, so they stay out: "+r.CLIHooksErr, warnStyle)
+	}
 	if len(r.HeldHooks) > 0 {
 		para("this project's hooks, not run until you approve them on this machine (:hooks approve <name>); they "+
 			"run outside any sandbox, as you, so read the script first: "+strings.Join(r.HeldHooks, ", "), warnStyle)

@@ -26,6 +26,7 @@ type TurnScope struct {
 	// (build/<agent>), "" when it builds nowhere.
 	BuildDir string
 }
+
 // HookCommand is the program a CLI runs as its pre-tool hook.
 type HookCommand struct {
 	// Program is the absolute path of ritam's own executable, so no lookup on
@@ -36,6 +37,9 @@ type HookCommand struct {
 	// TimeoutSeconds is how long the CLI waits for the hook. The hook gives up
 	// sooner, so the CLI never times out a hook that is still deciding.
 	TimeoutSeconds int
+	// Native are the human's own hooks for this CLI, by event, in its own
+	// settings form, to run natively beside ritam's (review.cliHooks).
+	Native map[string][]any
 }
 
 // HookTurn is one CLI invocation as the hook monitor sees it.

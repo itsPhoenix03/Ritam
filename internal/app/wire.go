@@ -282,6 +282,13 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	asks := newApprovals(func(e domain.Event) { orch.Events.Publish(context.Background(), e) })
 	if reviewer != nil {
 		recordToolCalls(reviewer, orch, log)
+		// The human's own Claude Code hooks, if review.cliHooks brings them back.
+		ch := loadCLIHooks(cfg.Review.CLIHooks, claudeSettingsFile(), ws.Root)
+		if ch.err != nil {
+			log.Warn("your Claude Code hooks could not be read; they stay out", "error", ch.err)
+		}
+		reviewer.Native = map[domain.AgentKind]map[string][]any{domain.AgentKindClaudeCode: ch.native}
+		reviewCtl.cli = ch
 		pol, err := newPolicy(cfg, ws, reviewCtl, asks, orch, log)
 		if err != nil {
 			return nil, err

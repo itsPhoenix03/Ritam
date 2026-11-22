@@ -241,3 +241,23 @@ func TestTheHookIsInstalledToBlockWhenItFails(t *testing.T) {
 		t.Errorf("without hooks, no hook in the settings: %+v %v", s, err)
 	}
 }
+
+// TestYourOwnHooksRunAfterRitams: the human's hooks brought back by
+// review.cliHooks are written beside ritam's, which stays first.
+func TestYourOwnHooksRunAfterRitams(t *testing.T) {
+	theirs := map[string]any{"matcher": "Bash", "hooks": []any{map[string]any{"type": "command", "command": "guard"}}}
+	post := map[string]any{"matcher": "Edit", "hooks": []any{map[string]any{"type": "command", "command": "fmt"}}}
+	s := hookSettings(ports.HookCommand{Program: "/bin/ritam", Args: []string{"hook", "pretool"}, TimeoutSeconds: 30,
+		Native: map[string][]any{"PreToolUse": {theirs}, "PostToolUse": {post}}})
+	pre, _ := s["PreToolUse"].([]any)
+	if len(pre) != 2 || pre[1].(map[string]any)["matcher"] != "Bash" {
+		t.Fatalf("PreToolUse: %+v", pre)
+	}
+	first := pre[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if first["command"] != "/bin/ritam" || first["onFailure"] != "block" {
+		t.Errorf("ritam's hook comes first: %+v", first)
+	}
+	if p, _ := s["PostToolUse"].([]any); len(p) != 1 {
+		t.Errorf("PostToolUse: %+v", s["PostToolUse"])
+	}
+}

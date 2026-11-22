@@ -39,7 +39,9 @@ type reviewControl struct {
 	// approved are the fingerprints of the project's hooks as approved, by
 	// name; root is the folder their files are taken from; approvals is
 	// the app home's approvals file, "" when there is no app home.
-	approved  map[string]string
+	approved map[string]string
+	// cli is what review.cliHooks brought back of the human's CLI hooks.
+	cli       cliHooks
 	root      string
 	approvals string
 	guard     *core.FileGuard
@@ -81,6 +83,10 @@ func (c *reviewControl) info() ports.ReviewInfo {
 	}
 	for _, h := range c.heldHooks {
 		info.HeldHooks = append(info.HeldHooks, h.Name+" ("+strings.Join(h.Run, " ")+")")
+	}
+	info.CLIHooks, info.CLIHookNames = c.live.CLIHooks, c.cli.names
+	if c.cli.err != nil {
+		info.CLIHooksErr = c.cli.err.Error()
 	}
 	return info
 }
@@ -299,6 +305,7 @@ func (c *reviewControl) reviewHooks(dir string) []review.Hook {
 		}
 		out = append(out, rh)
 	}
+	out = append(out, c.cli.review...)
 	return out
 }
 

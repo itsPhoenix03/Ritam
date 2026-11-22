@@ -26,6 +26,13 @@ type ReviewConfig struct {
 	// tool call. They can refuse a call or put it to the human, never
 	// approve one.
 	Hooks []ReviewHook `yaml:"hooks"`
+	// CLIHooks says whether your own Claude Code hooks (in your user
+	// settings, which ritam otherwise keeps out) run too: off (the default),
+	// on (every event natively, except pre-tool hooks, which the review runs
+	// itself and whose "allow" it ignores) or native (all of them in the CLI,
+	// where a pre-tool hook's "allow" or rewrite gets past ritam). Only the
+	// global settings decide it.
+	CLIHooks string `yaml:"cliHooks"`
 }
 
 // ReviewRules are patterns added to ritam's rules. A command pattern is
@@ -136,6 +143,9 @@ func (r ReviewConfig) validate() []error {
 				bad("review.rules.%s has an empty pattern", list.name)
 			}
 		}
+	}
+	if r.CLIHooks != "" && r.CLIHooks != "off" && r.CLIHooks != "on" && r.CLIHooks != "native" {
+		bad("review.cliHooks must be off, on or native, got %q", r.CLIHooks)
 	}
 	names := map[string]bool{}
 	for i, h := range r.Hooks {

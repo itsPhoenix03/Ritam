@@ -776,7 +776,12 @@ func (a *ClaudeCodeAdapter) settings() map[string]any {
 //
 // The hook also runs for calls the CLI's own deny rules refuse, before them.
 func hookSettings(cmd ports.HookCommand) map[string]any {
-	return map[string]any{"PreToolUse": []any{map[string]any{
+	out := map[string]any{}
+	// The human's own hooks (review.cliHooks), natively; ritam's comes first.
+	for event, groups := range cmd.Native {
+		out[event] = append([]any(nil), groups...)
+	}
+	ours := map[string]any{
 		"matcher": "*",
 		"hooks": []any{map[string]any{
 			"type":      "command",
@@ -785,7 +790,10 @@ func hookSettings(cmd ports.HookCommand) map[string]any {
 			"timeout":   cmd.TimeoutSeconds,
 			"onFailure": "block",
 		}},
-	}}}
+	}
+	pre, _ := out["PreToolUse"].([]any)
+	out["PreToolUse"] = append([]any{ours}, pre...)
+	return out
 }
 
 // settingsArg is the --settings value: a file in the workspace's scratch

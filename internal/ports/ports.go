@@ -521,6 +521,12 @@ type ReviewInfo struct {
 	// Hooks are the human's hooks that run; HeldHooks the project's that
 	// wait for the human's approval on this machine.
 	Hooks, HeldHooks []string
+	// CLIHooks is review.cliHooks (off, on, native); CLIHookNames say what
+	// it brought back of the human's Claude Code hooks, CLIHooksErr why
+	// they could not be read.
+	CLIHooks     string
+	CLIHookNames []string
+	CLIHooksErr  string
 }
 
 // Approval is a tool call waiting for the human.

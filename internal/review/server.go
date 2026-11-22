@@ -50,6 +50,9 @@ type Server struct {
 	// Policy decides the calls; without one they are only recorded. Set it
 	// before the first turn begins.
 	Policy *Policy
+	// Native are the human's own hooks to run natively in each CLI, beside
+	// ritam's (review.cliHooks). Set it before the first turn begins.
+	Native map[domain.AgentKind]map[string][]any
 }
 
 // Start listens on a free port of 127.0.0.1 and serves the hook. program is
@@ -95,12 +98,13 @@ func (s *Server) URL() string { return s.base }
 // HookCommand implements ports.HookMonitor. With a policy the CLI waits as
 // long as the human may take to answer, and a little more, so the hook
 // always answers first.
-func (s *Server) HookCommand(domain.AgentKind) ports.HookCommand {
+func (s *Server) HookCommand(kind domain.AgentKind) ports.HookCommand {
 	timeout := cliTimeoutSeconds
 	if s.Policy != nil {
 		timeout = int(s.hookWait().Seconds()) + cliMargin
 	}
-	return ports.HookCommand{Program: s.program, Args: []string{"hook", preTool}, TimeoutSeconds: timeout}
+	return ports.HookCommand{Program: s.program, Args: []string{"hook", preTool}, TimeoutSeconds: timeout,
+		Native: s.Native[kind]}
 }
 
 // hookWait is how long the hook waits for the server: the time the human

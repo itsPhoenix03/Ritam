@@ -257,6 +257,14 @@ review:
   # (the default: a crash or timeout refuses the call) or ignore. timeout:
   # 10s by default, 15s at most. A project's hooks run only once you
   # approve them on this machine.
+  # Your own Claude Code hooks (in ~/.claude/settings.json), which ritam
+  # otherwise keeps out of the agents' turns: off, on (every event's hooks
+  # run in the CLI, except pre-tool hooks, which the review runs itself and
+  # whose "allow" it ignores) or native (all of them in the CLI, where a
+  # pre-tool hook that answers allow, or rewrites the call, gets it past the
+  # review). Only your global settings decide this. Codex's hooks are not
+  # brought back yet.
+  cliHooks: off
   hooks: []
   # for example:
   #  - name: no-push-to-main

@@ -171,6 +171,10 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		hold("review.mode")
 		c.Review.Mode = ReviewManual
 	}
+	if c.Review.CLIHooks != global.Review.CLIHooks {
+		hold("review.cliHooks")
+		c.Review.CLIHooks = global.Review.CLIHooks
+	}
 	// A project's rules add to the global ones (a list in a settings file
 	// replaces the one before it, which would let a project drop them).
 	r, gr := &c.Review.Rules, global.Review.Rules
