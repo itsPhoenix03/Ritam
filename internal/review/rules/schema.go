@@ -549,6 +549,9 @@ func (c *compiler) cond(raw *rawCond, on Target, keys []string) (*cond, error) {
 		if (len(out.steps) == 0) == (out.count == nil) {
 			try(errors.New("a sequence rule has either steps or a count"))
 		}
+		if len(out.steps) != 0 && len(out.steps) != 2 {
+			try(errors.New("a sequence rule has two steps: an earlier call, then the current one"))
+		}
 		if out.within < 1 {
 			try(errors.New("a sequence rule needs within_calls"))
 		}

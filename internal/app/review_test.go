@@ -39,7 +39,7 @@ func TestEveryToolCallIsRecordedInTheTasksEvents(t *testing.T) {
 		t.Fatal("real agents need the review server")
 	}
 
-	turn := sys.Review.BeginTurn("TASK-001", "opus", domain.AgentKindClaudeCode)
+	turn := sys.Review.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
 	env := turn.Env()
 	payload := `{"session_id":"s-1","cwd":"D:\\app","hook_event_name":"PreToolUse","tool_name":"Bash",` +
 		`"tool_input":{"command":"go build ./..."},"tool_use_id":"toolu_1"}`

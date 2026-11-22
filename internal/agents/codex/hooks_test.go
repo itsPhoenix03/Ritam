@@ -97,7 +97,7 @@ func (s stubHooks) HookCommand(domain.AgentKind) ports.HookCommand {
 	return ports.HookCommand{Program: s.program, Args: []string{"hook", "pretool"}, TimeoutSeconds: 30}
 }
 
-func (stubHooks) BeginTurn(domain.TaskID, domain.AgentID, domain.AgentKind) ports.HookTurn { return nil }
+func (stubHooks) BeginTurn(ports.TurnScope) ports.HookTurn { return nil }
 
 // overrideOf returns the -c value that installs the hook, or "".
 func overrideOf(args []string) string {

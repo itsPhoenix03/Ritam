@@ -513,7 +513,7 @@ func (a *ClaudeCodeAdapter) runTurn(ctx context.Context, t *domain.Task, m domai
 		if t != nil {
 			task = t.ID
 		}
-		hook = a.hooks.BeginTurn(task, a.id, domain.AgentKindClaudeCode)
+		hook = a.hooks.BeginTurn(ports.TurnScope{Task: task, Agent: a.id, Kind: domain.AgentKindClaudeCode, BuildDir: g.BuildDir})
 		env := maps.Clone(runner.Env)
 		if env == nil {
 			env = map[string]string{}

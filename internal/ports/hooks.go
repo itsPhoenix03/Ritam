@@ -12,10 +12,20 @@ type HookMonitor interface {
 	// tool call.
 	HookCommand(kind domain.AgentKind) HookCommand
 	// BeginTurn opens a turn: the hook calls the CLI makes until End carry
-	// its credentials (HookTurn.Env) and are recorded against it.
-	BeginTurn(task domain.TaskID, agent domain.AgentID, kind domain.AgentKind) HookTurn
+	// its credentials (HookTurn.Env) and are reviewed and recorded against
+	// it.
+	BeginTurn(scope TurnScope) HookTurn
 }
 
+// TurnScope is what the review needs to know about a turn.
+type TurnScope struct {
+	Task  domain.TaskID
+	Agent domain.AgentID
+	Kind  domain.AgentKind
+	// BuildDir is the agent's own build folder, relative to the workspace
+	// (build/<agent>), "" when it builds nowhere.
+	BuildDir string
+}
 // HookCommand is the program a CLI runs as its pre-tool hook.
 type HookCommand struct {
 	// Program is the absolute path of ritam's own executable, so no lookup on

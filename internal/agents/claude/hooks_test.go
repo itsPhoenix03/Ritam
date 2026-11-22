@@ -211,7 +211,7 @@ func (stubHooks) HookCommand(domain.AgentKind) ports.HookCommand {
 	return ports.HookCommand{Program: `C:\Program Files\ritam\ritam.exe`, Args: []string{"hook", "pretool"}, TimeoutSeconds: 30}
 }
 
-func (stubHooks) BeginTurn(domain.TaskID, domain.AgentID, domain.AgentKind) ports.HookTurn { return nil }
+func (stubHooks) BeginTurn(ports.TurnScope) ports.HookTurn { return nil }
 
 // TestTheHookIsInstalledToBlockWhenItFails: before every tool, run directly
 // (no shell, no PATH lookup), and blocking the call if it cannot run.

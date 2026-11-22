@@ -33,6 +33,17 @@ type Call struct {
 	Decision Decision
 	// Note says why a call was refused.
 	Note string
+	// Severity is the worst finding's, "none" when no rule fired; empty
+	// when the call was not reviewed (no policy, or unreadable).
+	Severity string
+	// Findings are the rules that fired.
+	Findings []Finding
+	// Asked: the human was asked; Answer is what came of it: approved,
+	// refused, timed out, nobody.
+	Asked  bool
+	Answer string
+	// Stopped: a critical call stopped the turn.
+	Stopped bool
 }
 
 // payload is what both CLIs send their pre-tool hook on stdin. Claude Code

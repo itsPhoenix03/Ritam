@@ -61,7 +61,7 @@ func runHook(env map[string]string, stdin string, args ...string) (int, string, 
 
 func TestACallInATurnIsRecordedAgainstItAndPassed(t *testing.T) {
 	r := startRecorder(t)
-	turn := r.BeginTurn("TASK-001", "opus", domain.AgentKindClaudeCode)
+	turn := r.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
 	code, out, errOut := runHook(turn.Env(), payloadOf("Bash", "toolu_1", map[string]any{"command": "go test ./...", "description": "Run tests"}))
 	if code != 0 || out != "" || errOut != "" {
 		t.Fatalf("a passed call exits 0 and says nothing: code=%d stdout=%q stderr=%q", code, out, errOut)
@@ -91,7 +91,7 @@ func TestACallFromNoRunningTurnIsBlocked(t *testing.T) {
 
 func TestAnEndedTurnsTokenNoLongerWorks(t *testing.T) {
 	r := startRecorder(t)
-	turn := r.BeginTurn("TASK-001", "opus", domain.AgentKindClaudeCode)
+	turn := r.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
 	env := turn.Env()
 	turn.End(ports.ToolCalls{})
 	if code, _, _ := runHook(env, payloadOf("Bash", "toolu_1", map[string]any{"command": "ls"})); code != blockExit {
@@ -101,14 +101,14 @@ func TestAnEndedTurnsTokenNoLongerWorks(t *testing.T) {
 
 func TestTheHookBlocksWhenItCannotCheck(t *testing.T) {
 	r := startRecorder(t)
-	turn := r.BeginTurn("TASK-001", "opus", domain.AgentKindClaudeCode)
+	turn := r.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
 	good := payloadOf("Read", "toolu_1", map[string]any{"file_path": "main.go"})
 
 	stopped, err := Start(`C:\tools\ritam.exe`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone := stopped.BeginTurn("TASK-001", "opus", domain.AgentKindClaudeCode).Env()
+	gone := stopped.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode}).Env()
 	_ = stopped.Close()
 
 	for _, tc := range []struct {
@@ -141,7 +141,7 @@ func TestTheHookBlocksWhenItCannotCheck(t *testing.T) {
 
 func TestTheServerRefusesRequestsThatDoNotNameIt(t *testing.T) {
 	r := startRecorder(t)
-	turn := r.BeginTurn("TASK-001", "opus", domain.AgentKindClaudeCode)
+	turn := r.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
 	req, _ := http.NewRequest(http.MethodPost, r.URL()+hookPath+preTool,
 		strings.NewReader(payloadOf("Bash", "toolu_1", map[string]any{"command": "ls"})))
 	req.Host = "evil.example:80"
@@ -158,7 +158,7 @@ func TestTheServerRefusesRequestsThatDoNotNameIt(t *testing.T) {
 
 func TestEveryCallTheCLIReportedMustHaveReachedTheHook(t *testing.T) {
 	r := startRecorder(t)
-	turn := r.BeginTurn("TASK-001", "opus", domain.AgentKindClaudeCode)
+	turn := r.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
 	runHook(turn.Env(), payloadOf("Read", "toolu_1", map[string]any{"file_path": "a.go"}))
 	turn.End(ports.ToolCalls{Calls: []ports.ToolCall{{ID: "toolu_1", Tool: "Read"}, {ID: "toolu_2", Tool: "Bash"}}})
 	turn.End(ports.ToolCalls{}) // a second End changes nothing
