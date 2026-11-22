@@ -79,43 +79,86 @@ func SaveAccess(path string, ac AccessConfig) error {
 // creating the file if needed and keeping everything else, the section's
 // own comment included, as it was. what prefixes the errors.
 func saveSection(path, section string, v any, comment, what string) error {
+	doc, root, err := readSettingsDoc(path, what)
+	if err != nil {
+		return err
+	}
+	var value yaml.Node
+	if err := value.Encode(v); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	setMapKey(root, section, &value, comment)
+	return writeSettingsDoc(path, doc, what)
+}
+
+// saveKey sets one key inside a top-level section of the settings file at
+// path, keeping the rest of the section and of the file as it was.
+func saveKey(path, section, key string, v any, comment, what string) error {
+	doc, root, err := readSettingsDoc(path, what)
+	if err != nil {
+		return err
+	}
+	var sec *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == section && root.Content[i+1].Kind == yaml.MappingNode {
+			sec = root.Content[i+1]
+		}
+	}
+	if sec == nil {
+		sec = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		setMapKey(root, section, sec, comment)
+	}
+	var value yaml.Node
+	if err := value.Encode(v); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	setMapKey(sec, key, &value, "")
+	return writeSettingsDoc(path, doc, what)
+}
+
+// setMapKey puts value under key in a mapping, keeping an existing key's
+// comment.
+func setMapKey(m *yaml.Node, key string, value *yaml.Node, comment string) {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			value.HeadComment = m.Content[i+1].HeadComment
+			m.Content[i+1] = value
+			return
+		}
+	}
+	k := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key, HeadComment: comment}
+	m.Content = append(m.Content, k, value)
+}
+
+// readSettingsDoc reads the settings file at path as a YAML document, an
+// empty mapping when it does not exist yet.
+func readSettingsDoc(path, what string) (*yaml.Node, *yaml.Node, error) {
 	var doc yaml.Node
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil && len(bytes.TrimSpace(data)) > 0:
 		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return fmt.Errorf("%s: parse %s: %w", what, path, err)
+			return nil, nil, fmt.Errorf("%s: parse %s: %w", what, path, err)
 		}
 	case err != nil && !os.IsNotExist(err):
-		return fmt.Errorf("%s: %w", what, err)
+		return nil, nil, fmt.Errorf("%s: %w", what, err)
 	}
 	if doc.Kind == 0 {
 		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return fmt.Errorf("%s: %s is not a settings mapping", what, path)
+		return nil, nil, fmt.Errorf("%s: %s is not a settings mapping", what, path)
 	}
-	var value yaml.Node
-	if err := value.Encode(v); err != nil {
-		return fmt.Errorf("%s: %w", what, err)
-	}
-	replaced := false
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == section {
-			value.HeadComment = root.Content[i+1].HeadComment
-			root.Content[i+1] = &value
-			replaced = true
-		}
-	}
-	if !replaced {
-		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: section, HeadComment: comment}
-		root.Content = append(root.Content, key, &value)
-	}
+	return &doc, root, nil
+}
+
+// writeSettingsDoc writes a settings document to path, atomically.
+func writeSettingsDoc(path string, doc *yaml.Node, what string) error {
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
+	if err := enc.Encode(doc); err != nil {
 		return fmt.Errorf("%s: %w", what, err)
 	}
 	if err := enc.Close(); err != nil {

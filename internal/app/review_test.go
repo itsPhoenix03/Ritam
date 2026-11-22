@@ -229,3 +229,28 @@ func TestTheReviewSeesThisMachine(t *testing.T) {
 		t.Errorf("protected: %v", e.Protected)
 	}
 }
+
+// TestYourOwnRulesApply: a deny pattern in the settings refuses the
+// command, however it is written.
+func TestYourOwnRulesApply(t *testing.T) {
+	cfg := config.Default()
+	cfg.TUI.UseMockAgents = false
+	cfg.Storage.Backend = "memory"
+	cfg.Workspace.Root = t.TempDir()
+	cfg.Review.Rules.Deny = []string{"go generate"}
+	sys, err := Build(cfg, logging.NewDiscard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sys.Close() })
+	turn := sys.Review.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
+	defer turn.End(ports.ToolCalls{})
+	if code, msg := hookRun(t, turn, "Bash", `{"command":"cd pkg && go -C . generate ./..."}`); code != 2 ||
+		!strings.Contains(msg, "Your settings deny `go generate`") {
+		t.Errorf("exit %d: %s", code, msg)
+	}
+	info, _ := sys.Service.Review(context.Background())
+	if len(info.Deny) != 1 {
+		t.Errorf("the settings tab shows your rules: %+v", info)
+	}
+}

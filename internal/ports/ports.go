@@ -516,6 +516,11 @@ type ReviewInfo struct {
 	HeldBack string
 	// File is where a change is saved, "" when it is kept in memory.
 	File string
+	// Deny, Ask and Protect are the human's own rules (review.rules).
+	Deny, Ask, Protect []string
+	// Hooks are the human's hooks that run; HeldHooks the project's that
+	// wait for the human's approval on this machine.
+	Hooks, HeldHooks []string
 }
 
 // Approval is a tool call waiting for the human.

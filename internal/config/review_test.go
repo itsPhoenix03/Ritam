@@ -41,23 +41,63 @@ func TestAProjectMayAskForManualApprovalButNeverDropIt(t *testing.T) {
 	}
 }
 
-func TestSaveReviewKeepsTheRestOfTheFile(t *testing.T) {
+func TestSaveReviewModeKeepsTheRestOfTheFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ritam.yaml")
-	if err := os.WriteFile(path, []byte("# mine\naccess:\n  level: 2\n  commands: [go]\n"), 0o600); err != nil {
+	body := "# mine\naccess:\n  level: 2\n  commands: [go]\nreview:\n  askTimeout: 2m\n  rules:\n    deny: [terraform apply]\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveReview(path, ReviewConfig{Mode: ReviewManual, AskTimeout: 2 * time.Minute}); err != nil {
+	if err := SaveReviewMode(path, ReviewManual); err != nil {
 		t.Fatal(err)
 	}
 	c, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Review.Mode != ReviewManual || c.Review.AskTimeout != 2*time.Minute || c.Access.Level != 2 {
-		t.Errorf("loaded: %+v %+v", c.Review, c.Access)
+	if c.Review.Mode != ReviewManual || c.Access.Level != 2 || c.Review.AskTimeout != 2*time.Minute ||
+		len(c.Review.Rules.Deny) != 1 {
+		t.Errorf("only the mode changes: %+v %+v", c.Review, c.Access)
 	}
 	data, _ := os.ReadFile(path)
 	if !strings.Contains(string(data), "# mine") {
 		t.Errorf("the file's comment was lost:\n%s", data)
+	}
+}
+
+// TestAProjectAddsRulesButItsHooksWaitForApproval: a project's rules join
+// the human's own (they only tighten); its hooks are programs it would
+// have ritam run, so they wait for the human's approval on this machine.
+func TestAProjectAddsRulesButItsHooksWaitForApproval(t *testing.T) {
+	global := Default()
+	global.Review.Rules.Deny = []string{"terraform apply"}
+	mine := ReviewHook{Name: "mine", Run: []string{"python", "mine.py"}}
+	global.Review.Hooks = []ReviewHook{mine}
+	project := Default()
+	project.Review.Rules.Deny = []string{"npm publish"} // replaced the global list when layered
+	theirs := ReviewHook{Name: "theirs", Run: []string{"sh", "hooks/check.sh"}}
+	project.Review.Hooks = []ReviewHook{theirs}
+	held := project.RestrictProject(global, t.TempDir())
+	if d := project.Review.Rules.Deny; len(d) != 2 || d[0] != "terraform apply" {
+		t.Errorf("deny: %v", d)
+	}
+	if len(project.Review.Hooks) != 1 || project.Review.Hooks[0].Name != "mine" ||
+		len(project.Runtime.HeldHooks) != 1 || !strings.Contains(strings.Join(held, ","), "review.hooks.theirs") {
+		t.Errorf("hooks %+v, held %+v %v", project.Review.Hooks, project.Runtime.HeldHooks, held)
+	}
+	project.Review.Hooks = []ReviewHook{theirs}
+	project.Runtime.HookApproved = func(h ReviewHook, root string) bool { return h.Name == "theirs" }
+	project.RestrictProject(global, t.TempDir())
+	if len(project.Review.Hooks) != 2 || len(project.Runtime.HeldHooks) != 0 {
+		t.Errorf("approved: %+v held %+v", project.Review.Hooks, project.Runtime.HeldHooks)
+	}
+}
+
+func TestAHookIsChecked(t *testing.T) {
+	c := Default()
+	c.Review.Hooks = []ReviewHook{{Name: "a", Run: []string{"x"}, Input: "weird"}, {Name: "a"}}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "input must be") || !strings.Contains(err.Error(), "used twice") ||
+		!strings.Contains(err.Error(), "needs run") {
+		t.Errorf("err: %v", err)
 	}
 }

@@ -38,6 +38,9 @@ type Policy struct {
 	// Env describes the machine for a turn: the workspace, the home folder,
 	// the protected files, the turn's build folder.
 	Env func(ports.TurnScope) facts.Env
+	// Hooks are the human's own programs to run on each call, read on every
+	// call; nil or empty: none.
+	Hooks func() []Hook
 	// Asker asks the human; nil when nobody can be asked.
 	Asker Asker
 	// OnStop is told when a critical call stops a turn, after its hook has
@@ -151,7 +154,7 @@ func decide(findings []rules.Finding, s Settings, kind facts.ToolKind) decision 
 // review decides a call: its facts, the rules, the turn's history, and the
 // human when asked. It fills in the record and returns the reason shown to
 // the agent on a refusal.
-func (s *Server) review(ctx context.Context, t *Turn, p payload, call *Call) string {
+func (s *Server) review(ctx context.Context, t *Turn, p payload, raw []byte, call *Call) string {
 	pol := s.Policy
 	in := facts.Input{Provider: string(t.kind), Tool: p.ToolName, ToolInput: p.ToolInput, Cwd: p.Cwd}
 	fc := facts.Build(in, t.env)
@@ -166,22 +169,33 @@ func (s *Server) review(ctx context.Context, t *Turn, p payload, call *Call) str
 		d = decide(append(findings, seq...), set, fc.Kind)
 	}
 
-	call.Severity = d.severity.String()
 	for _, f := range d.findings {
 		call.Findings = append(call.Findings, Finding{Rule: f.Rule.ID, Severity: f.Rule.Severity.String(),
 			Category: f.Rule.Category, Reason: f.Rule.Reason, Evidence: logging.Redact(f.Evidence)})
 	}
+	// The human's own hooks, on what ritam has not already refused.
+	var hookRefusal string
+	var hookAsks []string
+	if d.decision != Deny && pol.Hooks != nil {
+		if hooks := pol.Hooks(); len(hooks) > 0 {
+			hookRefusal, hookAsks = applyHooks(&d, runHooks(ctx, hooks, t, call, fc, raw, d), call)
+		}
+	}
+	call.Severity = d.severity.String()
 	reason := ""
 	switch d.decision {
 	case Deny:
-		reason = refusal(d.findings)
+		reason = hookRefusal
+		if reason == "" {
+			reason = refusal(d.findings)
+		}
 		if d.stop {
 			call.Stopped = true
 			reason += fmt.Sprintf(" %s has stopped this turn and paused the task for the human.", brand.Name)
 		}
 	case Ask:
 		call.Asked = true
-		reason = s.ask(ctx, t, call, d, set)
+		reason = s.ask(ctx, t, call, d, set, hookAsks)
 		if reason == "" {
 			d.decision = Pass
 		} else {
@@ -222,7 +236,7 @@ func refusal(findings []rules.Finding) string {
 
 // ask puts the call to the human and waits. It returns "" when the human
 // approved, otherwise why the call is refused.
-func (s *Server) ask(parent context.Context, t *Turn, call *Call, d decision, set Settings) string {
+func (s *Server) ask(parent context.Context, t *Turn, call *Call, d decision, set Settings, extra []string) string {
 	q := Question{ID: newToken()[:16], Task: t.task, Agent: t.agent, Kind: t.kind, Tool: call.Tool,
 		Summary: call.Summary, Severity: d.severity.String(), Manual: d.manual,
 		Deadline: time.Now().Add(set.AskTimeout)}
@@ -231,6 +245,7 @@ func (s *Server) ask(parent context.Context, t *Turn, call *Call, d decision, se
 			q.Reasons = append(q.Reasons, f.Rule.Reason)
 		}
 	}
+	q.Reasons = append(q.Reasons, extra...)
 	if d.manual {
 		q.Reasons = append(q.Reasons, "manual mode: every command waits for your approval")
 	}

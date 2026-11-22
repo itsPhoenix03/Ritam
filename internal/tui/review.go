@@ -215,6 +215,24 @@ func (m Model) reviewLines(inner int) []line {
 	if r.HeldBack != "" {
 		para("held back: "+r.HeldBack, warnStyle)
 	}
+	var yours []string
+	for _, l := range []struct {
+		verb string
+		list []string
+	}{{"deny", r.Deny}, {"ask", r.Ask}, {"protect", r.Protect}} {
+		for _, p := range l.list {
+			yours = append(yours, l.verb+" "+p)
+		}
+	}
+	if len(yours) > 0 {
+		para("your rules: "+strings.Join(yours, "  "+dot()+"  "), bodyStyle)
+	}
+	if len(r.Hooks) > 0 {
+		para("your hooks: "+strings.Join(r.Hooks, ", "), bodyStyle)
+	}
+	if len(r.HeldHooks) > 0 {
+		para("this project's hooks, not run until you approve them on this machine: "+strings.Join(r.HeldHooks, ", "), warnStyle)
+	}
 	out = append(out, line{st(fmt.Sprintf("  :review auto | :review manual "+dot()+" a call waits %s for your answer", r.AskTimeout), dimStyle)})
 	return append(out, blank())
 }

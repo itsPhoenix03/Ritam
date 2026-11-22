@@ -201,6 +201,12 @@ type Runtime struct {
 	// folder, nil when none was. SaveGrant records a new approval.
 	Grant     *AccessConfig
 	SaveGrant func(AccessConfig) error
+	// HookApproved reports whether the human approved a project's review hook
+	// on this machine for the project at root, as it stands now (its entry
+	// and the script it runs); nil approves none. HeldHooks are the
+	// project's hooks not approved, which do not run.
+	HookApproved func(h ReviewHook, root string) bool
+	HeldHooks    []ReviewHook
 }
 
 // ProxyConfig configures the future local LLM proxy. The proxy is not the

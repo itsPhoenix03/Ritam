@@ -232,3 +232,37 @@ review:
   mode: auto
   # How long a call waits for your answer before it is refused.
   askTimeout: 5m
+  # Your own rules, added to ritam's. They run nothing and can only make the
+  # review stricter, so a project's rules join yours rather than replace
+  # them. A command pattern is read like a command: "git push --force"
+  # matches any git command whose subcommand starts with push and that has
+  # --force, however it is written (git -C repo push --force origin); it
+  # does not match git push -f, so list both. protect is a path glob,
+  # relative to the workspace unless absolute: changing, deleting or
+  # linking a match is refused.
+  rules:
+    deny: []
+    ask: []
+    protect: []
+    # for example:
+    #  deny: [terraform apply, terraform destroy]
+    #  ask: [npm publish]
+    #  protect: [infra/prod/**]
+  # Programs of your own run on every tool call, with the call as JSON on
+  # stdin. Exit 2 refuses it (stderr is the reason); exit 0 has no
+  # objection unless stdout says {"decision": "deny"} or {"decision": "ask"}
+  # (Claude Code's hookSpecificOutput form works too). A hook never
+  # approves a call. input: ritam (the same JSON for every CLI, with what
+  # ritam found) or native (the CLI's own hook payload). onFailure: block
+  # (the default: a crash or timeout refuses the call) or ignore. timeout:
+  # 10s by default, 15s at most. A project's hooks run only once you
+  # approve them on this machine.
+  hooks: []
+  # for example:
+  #  - name: no-push-to-main
+  #    run: [python, C:/hooks/no_push.py]
+  #    tools: [Bash, shell]
+  #    agents: [claude-code, codex]
+  #    input: ritam
+  #    timeout: 10s
+  #    onFailure: block

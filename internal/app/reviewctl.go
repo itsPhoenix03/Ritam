@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -32,7 +33,10 @@ type reviewControl struct {
 	// held is what the project asked for that the global settings decide.
 	held   string
 	active bool
-	guard  *core.FileGuard
+	// hooks are the human's hooks that run: the global ones and the
+	// project's approved here; held are the project's not approved.
+	hooks, heldHooks []config.ReviewHook
+	guard            *core.FileGuard
 	// publish records an event; openTasks lists the unfinished tasks.
 	publish   func(domain.Event)
 	openTasks func(context.Context) []domain.TaskID
@@ -40,6 +44,7 @@ type reviewControl struct {
 
 func newReviewControl(cfg *config.Config, active bool) *reviewControl {
 	c := &reviewControl{live: cfg.Review, file: cfg.Runtime.ProjectConfig, active: active}
+	c.hooks, c.heldHooks = cfg.Review.Hooks, cfg.Runtime.HeldHooks
 	if c.live.Mode == "" {
 		c.live.Mode = config.ReviewAuto
 	}
@@ -55,8 +60,16 @@ func (c *reviewControl) settings() review.Settings {
 func (c *reviewControl) info() ports.ReviewInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return ports.ReviewInfo{Mode: c.live.Mode, AskTimeout: c.live.Wait(), Active: c.active,
-		Warning: config.AutoModeWarning, HeldBack: c.held, File: c.file}
+	info := ports.ReviewInfo{Mode: c.live.Mode, AskTimeout: c.live.Wait(), Active: c.active,
+		Warning: config.AutoModeWarning, HeldBack: c.held, File: c.file,
+		Deny: c.live.Rules.Deny, Ask: c.live.Rules.Ask, Protect: c.live.Rules.Protect}
+	for _, h := range c.hooks {
+		info.Hooks = append(info.Hooks, h.Name)
+	}
+	for _, h := range c.heldHooks {
+		info.HeldHooks = append(info.HeldHooks, h.Name)
+	}
+	return info
 }
 
 // setMode switches the mode, saves it and records it in the open tasks.
@@ -74,7 +87,7 @@ func (c *reviewControl) setMode(ctx context.Context, mode string) (ports.ReviewI
 	next := c.live
 	next.Mode = mode
 	if c.file != "" {
-		save := func() error { return config.SaveReview(c.file, next) }
+		save := func() error { return config.SaveReviewMode(c.file, mode) }
 		var err error
 		if c.guard != nil {
 			err = c.guard.Write(c.file, save)
@@ -113,6 +126,10 @@ func newPolicy(cfg *config.Config, ws config.Workspace, ctl *reviewControl, aske
 	if err != nil {
 		return nil, fmt.Errorf("%s's review rules: %w", brand.Name, err)
 	}
+	r := cfg.Review.Rules
+	if err := set.Extend(rules.Custom{Deny: r.Deny, Ask: r.Ask, Protect: r.Protect}); err != nil {
+		return nil, err
+	}
 	base := reviewEnv(cfg, ws)
 	return &review.Policy{
 		Rules:    set,
@@ -125,6 +142,7 @@ func newPolicy(cfg *config.Config, ws config.Workspace, ctl *reviewControl, aske
 			return e
 		},
 		Asker: asker,
+		Hooks: func() []review.Hook { return ctl.reviewHooks(ws.Root) },
 		OnStop: func(s review.Stop) {
 			if s.Task == "" {
 				return
@@ -240,4 +258,36 @@ func (s *Service) AnswerApproval(_ context.Context, id string, allow bool, note 
 		return fmt.Errorf("no tool call is waiting as %s", id)
 	}
 	return s.approvals.answer(id, review.Answer{Allow: allow, Note: strings.TrimSpace(note)})
+}
+
+// reviewHooks are the human's hooks as the review runs them.
+func (c *reviewControl) reviewHooks(dir string) []review.Hook {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]review.Hook, 0, len(c.hooks))
+	for _, h := range c.hooks {
+		out = append(out, toReviewHook(h, dir))
+	}
+	return out
+}
+
+// toReviewHook turns a hook from the settings into one the review runs, in
+// the workspace, for the tools and CLIs it names.
+func toReviewHook(h config.ReviewHook, dir string) review.Hook {
+	tools, agents := h.Tools, h.Agents
+	return review.Hook{Name: h.Name, Run: h.Run, Native: h.Native(), Timeout: h.Wait(), Block: h.Blocks(), Dir: dir,
+		Wants: func(tool string, kind facts.ToolKind, cli domain.AgentKind) bool {
+			if len(agents) > 0 && !slices.Contains(agents, string(cli)) {
+				return false
+			}
+			if len(tools) == 0 {
+				return true
+			}
+			for _, t := range tools {
+				if strings.EqualFold(t, tool) || strings.EqualFold(t, string(kind)) {
+					return true
+				}
+			}
+			return false
+		}}
 }
