@@ -16,8 +16,9 @@
 // as a domain.AgentFailure of a known kind, read from the result event.
 //
 // A write-enabled agent (allowWrites) edits files in acceptEdits mode, with
-// what it may run decided by the workspace's access level. Nothing reviews
-// its edits before they land.
+// what it may run decided by the workspace's access level. With hooks on,
+// every tool call first goes through ritam's hook (internal/review), which
+// records it; nothing reviews an edit's content before it lands.
 //
 // Not implemented: interrupting a turn short of killing it (Interrupt is a
 // no-op), and structured-output replies (the reply is free text with a
@@ -32,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -158,6 +160,9 @@ type ClaudeCodeAdapter struct {
 	// access is the workspace's access policy; nil means the agent's own
 	// command list (see core.Access.GrantFor).
 	access *core.Access
+	// hooks is ritam's review of tool calls: when set, the CLI runs ritam's
+	// hook before every tool call, and each turn is opened with it.
+	hooks ports.HookMonitor
 }
 
 // New builds an adapter for id using cfg. When cfg.Executable is empty, the
@@ -209,6 +214,10 @@ func New(id domain.AgentID, cfg config.AgentConfig, log *logging.Logger) *Claude
 // UseGuard has ritam's own files checked after every CLI invocation, and
 // put back if the agent changed them (see core.FileGuard).
 func (a *ClaudeCodeAdapter) UseGuard(g *core.FileGuard) { a.runner.Guard = g }
+
+// UseHooks has every tool call the agent makes go through ritam's hook
+// first (see hookSettings), and records each call against its turn.
+func (a *ClaudeCodeAdapter) UseHooks(h ports.HookMonitor) { a.hooks = h }
 
 // UseSessions points the adapter at the shared, persistent session registry.
 func (a *ClaudeCodeAdapter) UseSessions(r *core.SessionRegistry) {
@@ -495,17 +504,46 @@ func (a *ClaudeCodeAdapter) runTurn(ctx context.Context, t *domain.Task, m domai
 		runner.WorkingDir = sess.WorkingDir
 	}
 
+	// The turn's credentials for ritam's hook go into the CLI's environment,
+	// which its hook inherits. The runner is a copy; its Env map is not, so
+	// it is replaced rather than written to.
+	var hook ports.HookTurn
+	if a.hooks != nil {
+		var task domain.TaskID
+		if t != nil {
+			task = t.ID
+		}
+		hook = a.hooks.BeginTurn(task, a.id, domain.AgentKindClaudeCode)
+		env := maps.Clone(runner.Env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		maps.Copy(env, hook.Env())
+		runner.Env = env
+	}
+
 	var (
 		streamed  string
 		streamErr error
+		calls     toolCallLog
 	)
 	res, err := runner.RunStreaming(ctx, args, prompt, func(line string) {
+		calls.observe(line)
 		result, done, lineErr := consumeStreamLine(line, a.activity)
 		if done {
 			streamed, streamErr = result, lineErr
 		}
 	})
 	a.activity.Flush()
+	if hook != nil {
+		// Only a turn that finished is checked against the hook: one cut off
+		// may have announced a call it never got to make.
+		var reported ports.ToolCalls
+		if err == nil && streamErr == nil {
+			reported = calls.list()
+		}
+		hook.End(reported)
+	}
 	return res, streamed, streamErr, err
 }
 
@@ -694,10 +732,19 @@ func rulePath(p string) string {
 }
 
 // settings is what ritam sets through --settings: Claude Code's sandbox for
-// the agent's commands where the platform has one, and the file tools held
-// to the working folder when reads are confined.
+// the agent's commands where the platform has one, the file tools held to
+// the working folder when reads are confined, and ritam's hook before every
+// tool call when hooks are on.
+//
+// Checked live (claude 2.1.330, 2026-11-22): hooks in this file run although
+// --setting-sources is empty. A settings file the CLI cannot parse is dropped
+// without a word, hooks and all -- the reason every turn checks that its
+// calls reached the hook.
 func (a *ClaudeCodeAdapter) settings() map[string]any {
 	out := map[string]any{}
+	if a.hooks != nil {
+		out["hooks"] = hookSettings(a.hooks.HookCommand(domain.AgentKindClaudeCode))
+	}
 	if a.RunsInSandbox() {
 		out["sandbox"] = map[string]any{
 			"enabled": true,
@@ -714,6 +761,31 @@ func (a *ClaudeCodeAdapter) settings() map[string]any {
 		out["permissions"] = map[string]any{"blockReadsOutsideWorkingDirectories": true}
 	}
 	return out
+}
+
+// hookSettings is ritam's hook in Claude Code's settings, checked live on
+// claude 2.1.330:
+//   - before every tool: matcher "*", so a tool a later CLI version adds is
+//     covered too, and so is the PowerShell tool on a Windows without Git
+//     Bash, where there is no Bash tool;
+//   - in exec form, the program and its arguments with no shell: nothing in
+//     the command is reinterpreted, and no PATH lookup can find a program of
+//     the same name the agent put in the workspace;
+//   - with onFailure "block": by default Claude Code runs the call anyway
+//     when the hook cannot start, crashes or times out.
+//
+// The hook also runs for calls the CLI's own deny rules refuse, before them.
+func hookSettings(cmd ports.HookCommand) map[string]any {
+	return map[string]any{"PreToolUse": []any{map[string]any{
+		"matcher": "*",
+		"hooks": []any{map[string]any{
+			"type":      "command",
+			"command":   cmd.Program,
+			"args":      cmd.Args,
+			"timeout":   cmd.TimeoutSeconds,
+			"onFailure": "block",
+		}},
+	}}}
 }
 
 // settingsArg is the --settings value: a file in the workspace's scratch

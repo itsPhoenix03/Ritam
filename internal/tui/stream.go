@@ -138,10 +138,13 @@ func (m Model) streamTail(limit int) (rows []streamRow, total int) {
 //
 // Message-sent/received events are dropped because the messages themselves are
 // already merged in above; showing both would double-report every exchange and
-// make a two-turn conversation look like four.
+// make a two-turn conversation look like four. Tool calls are dropped for the
+// same reason: the agent's activity already shows each tool as it starts, and
+// the events tab keeps the record of every call with what it ran.
 func streamShowsEvent(e domain.Event) bool {
 	switch e.Type {
-	case domain.EvtAgentActivity, domain.EvtAgentMessageSent, domain.EvtAgentMessageReceived:
+	case domain.EvtAgentActivity, domain.EvtAgentMessageSent, domain.EvtAgentMessageReceived,
+		domain.EvtToolCall:
 		return false
 	}
 	return true
@@ -152,7 +155,8 @@ func streamShowsEvent(e domain.Event) bool {
 func isFailureEvent(t domain.EventType) bool {
 	switch t {
 	case domain.EvtTaskFailed, domain.EvtAgentFailed, domain.EvtAuthorityViolation,
-		domain.EvtValidationRejected, domain.EvtDecisionRejected, domain.EvtProtectedFileRestored:
+		domain.EvtValidationRejected, domain.EvtDecisionRejected, domain.EvtProtectedFileRestored,
+		domain.EvtHookMissed:
 		return true
 	}
 	return false

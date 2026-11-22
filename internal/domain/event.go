@@ -91,6 +91,15 @@ const (
 	// one that runs code later (a git hook, an editor task) -- and ritam put
 	// it back. Details: file, kept (where the agent's version was kept).
 	EvtProtectedFileRestored EventType = "ProtectedFileRestored"
+	// EvtToolCall records a tool call an agent's CLI was about to make, as
+	// ritam's hook saw it before the call ran: the tool, what it does (the
+	// summary: a command, a file, an address) and what ritam answered.
+	// Details: tool, toolUseId, cwd, session, subagent, decision, note.
+	EvtToolCall EventType = "ToolCall"
+	// EvtHookMissed records a turn whose CLI reported tool calls that never
+	// went through ritam's hook: the hook is not running for that agent, or
+	// some calls got past it. Details: seen, reported, missed.
+	EvtHookMissed EventType = "HookMissed"
 	// EvtAgentActivity carries live agent output for display. It is published
 	// ephemerally: never stored, never logged, never acted on.
 	EvtAgentActivity    EventType = "AgentActivity"

@@ -28,6 +28,11 @@ const fakeReply = `{"type":"result","subtype":"success","is_error":false,` +
 	`"result":"@@ORCH type=ANSWER to=human\nok"}` + "\n"
 
 func TestMain(m *testing.M) {
+	// Checked first: the fake CLI runs the hook with its own environment,
+	// fake mode included.
+	if os.Getenv(hookModeEnv) == "1" {
+		os.Exit(runHookMode())
+	}
 	if os.Getenv(sleepHelperEnv) == "1" {
 		time.Sleep(2 * time.Minute)
 		os.Exit(0)
@@ -64,6 +69,8 @@ func runFakeCLI(mode string) {
 		os.Exit(3)
 	case "session":
 		runFakeSessionCLI()
+	case "hooked", "hookskips":
+		runFakeHookedCLI(mode == "hookskips")
 	case "costly":
 		runFakeCostlyCLI()
 	case "killedmidway":

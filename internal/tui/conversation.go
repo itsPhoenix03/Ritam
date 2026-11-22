@@ -79,7 +79,7 @@ func convShowsEvent(e domain.Event) bool {
 	case domain.EvtCheckpoint, domain.EvtDecisionCaveat, domain.EvtRequestAbandoned,
 		domain.EvtDecisionCreated, domain.EvtDecisionAccepted, domain.EvtDecisionRejected,
 		domain.EvtAuthorityViolation, domain.EvtValidationRejected, domain.EvtAgentFailed,
-		domain.EvtProtectedFileRestored:
+		domain.EvtProtectedFileRestored, domain.EvtHookMissed:
 		return true
 	}
 	return false
