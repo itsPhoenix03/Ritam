@@ -499,6 +499,41 @@ type RecruitInput struct {
 	AllowWrites bool
 }
 
+// ReviewInfo is how the agents' tool calls are approved, as the settings
+// tab shows it.
+type ReviewInfo struct {
+	// Mode is auto or manual.
+	Mode string
+	// AskTimeout is how long a call waits for the human.
+	AskTimeout time.Duration
+	// Active: the review runs (real agents); with the scripted agents no
+	// tool is ever called.
+	Active bool
+	// Warning is what auto mode does not promise.
+	Warning string
+	// HeldBack says what the project's settings asked for that only the
+	// global settings may decide, "" when nothing was held back.
+	HeldBack string
+	// File is where a change is saved, "" when it is kept in memory.
+	File string
+}
+
+// Approval is a tool call waiting for the human.
+type Approval struct {
+	ID    string
+	Task  domain.TaskID
+	Agent domain.AgentID
+	Tool  string
+	// Summary says what the call does, secrets redacted.
+	Summary string
+	// Reasons are why it is asked: the rules that fired, or manual mode.
+	Reasons  []string
+	Severity string
+	Manual   bool
+	// Deadline is when it is refused if unanswered.
+	Deadline time.Time
+}
+
 // AccessInfo is the workspace's access level as the settings tab shows it.
 type AccessInfo struct {
 	Level domain.AccessLevel
@@ -578,6 +613,19 @@ type Service interface {
 	// records the change in the events of every open task. It applies from
 	// each agent's next turn.
 	SetAccess(ctx context.Context, in AccessChange) (AccessInfo, error)
+
+	// Review reports how the agents' tool calls are approved.
+	Review(ctx context.Context) (ReviewInfo, error)
+	// SetReviewMode switches between auto and manual, saves the choice to
+	// the project's settings, and records it in every open task's events.
+	// It applies from the next tool call.
+	SetReviewMode(ctx context.Context, mode string) (ReviewInfo, error)
+	// PendingApprovals lists the tool calls waiting for the human, oldest
+	// first.
+	PendingApprovals(ctx context.Context) []Approval
+	// AnswerApproval approves or refuses a waiting tool call; a refusal's
+	// note reaches the agent.
+	AnswerApproval(ctx context.Context, id string, allow bool, note string) error
 
 	// Human override surface. The human is always able to intervene.
 	Pause(ctx context.Context, id domain.TaskID, reason string) error

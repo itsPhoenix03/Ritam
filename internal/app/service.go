@@ -28,6 +28,8 @@ type Service struct {
 	knowledge *knowledge.Store
 	team      *Team
 	access    *accessControl
+	review    *reviewControl
+	approvals *approvals
 
 	runs runSet
 }

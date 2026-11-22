@@ -151,7 +151,7 @@ func decide(findings []rules.Finding, s Settings, kind facts.ToolKind) decision 
 // review decides a call: its facts, the rules, the turn's history, and the
 // human when asked. It fills in the record and returns the reason shown to
 // the agent on a refusal.
-func (s *Server) review(t *Turn, p payload, call *Call) string {
+func (s *Server) review(ctx context.Context, t *Turn, p payload, call *Call) string {
 	pol := s.Policy
 	in := facts.Input{Provider: string(t.kind), Tool: p.ToolName, ToolInput: p.ToolInput, Cwd: p.Cwd}
 	fc := facts.Build(in, t.env)
@@ -181,7 +181,7 @@ func (s *Server) review(t *Turn, p payload, call *Call) string {
 		}
 	case Ask:
 		call.Asked = true
-		reason = s.ask(t, call, d, set)
+		reason = s.ask(ctx, t, call, d, set)
 		if reason == "" {
 			d.decision = Pass
 		} else {
@@ -222,7 +222,7 @@ func refusal(findings []rules.Finding) string {
 
 // ask puts the call to the human and waits. It returns "" when the human
 // approved, otherwise why the call is refused.
-func (s *Server) ask(t *Turn, call *Call, d decision, set Settings) string {
+func (s *Server) ask(parent context.Context, t *Turn, call *Call, d decision, set Settings) string {
 	q := Question{ID: newToken()[:16], Task: t.task, Agent: t.agent, Kind: t.kind, Tool: call.Tool,
 		Summary: call.Summary, Severity: d.severity.String(), Manual: d.manual,
 		Deadline: time.Now().Add(set.AskTimeout)}
@@ -238,13 +238,19 @@ func (s *Server) ask(t *Turn, call *Call, d decision, set Settings) string {
 		call.Answer = "nobody"
 		return "this call needs the human's approval, and nobody is there to give it; " + why(q)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), set.AskTimeout)
+	call.Question = q.ID
+	// The question goes when the hook does: a CLI killed mid-question (the
+	// task paused, ritam closing) leaves nothing to answer.
+	ctx, cancel := context.WithTimeout(parent, set.AskTimeout)
 	defer cancel()
 	ans, err := s.Policy.Asker.Ask(ctx, q)
 	switch {
 	case errors.Is(err, ErrNobody):
 		call.Answer = "nobody"
 		return "this call needs the human's approval, and nobody is there to give it; " + why(q)
+	case errors.Is(err, context.Canceled) || parent.Err() != nil:
+		call.Answer = "withdrawn"
+		return "the call was withdrawn: its turn ended while the human was asked"
 	case err != nil:
 		call.Answer = "timed out"
 		return fmt.Sprintf("this call needs the human's approval, and nobody answered within %s; %s", set.AskTimeout, why(q))

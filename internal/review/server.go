@@ -173,7 +173,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 			p.SessionID, p.Cwd, p.ToolName, p.ToolUseID, p.AgentID
 		call.Summary = summarize(p.ToolInput)
 		if s.Policy != nil && s.Policy.Rules != nil {
-			s.review(turn, p, &call)
+			s.review(r.Context(), turn, p, &call)
 		}
 	}
 	turn.record(call)

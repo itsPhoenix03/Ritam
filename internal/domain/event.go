@@ -57,7 +57,7 @@ const (
 	// REQUEST_CHANGE had not been reported on: taking it would have stopped
 	// that work part-way. The authority is told to send it again.
 	EvtDecisionDeferred EventType = "DecisionDeferred"
-	EvtLimitReached   EventType = "LimitReached"
+	EvtLimitReached     EventType = "LimitReached"
 	// EvtCheckpoint marks another interval of autonomous agent work: the human
 	// is told where things stand, and the work carries on.
 	EvtCheckpoint EventType = "Checkpoint"
@@ -94,8 +94,20 @@ const (
 	// EvtToolCall records a tool call an agent's CLI was about to make, as
 	// ritam's hook saw it before the call ran: the tool, what it does (the
 	// summary: a command, a file, an address) and what ritam answered.
-	// Details: tool, toolUseId, cwd, session, subagent, decision, note.
+	// Details: tool, toolUseId, cwd, session, subagent, decision, note,
+	// severity, rules, answer, approval.
 	EvtToolCall EventType = "ToolCall"
+	// EvtToolBlocked records a tool call ritam refused: a rule, the human,
+	// or nobody answering in time. The same details as EvtToolCall; stopped
+	// is set when the call also stopped the turn.
+	EvtToolBlocked EventType = "ToolBlocked"
+	// EvtToolApproval records a tool call waiting for the human's approval.
+	// The call's own ToolCall or ToolBlocked event (approval = the same id)
+	// says how it ended. Details: approval, tool, severity, reasons,
+	// deadline.
+	EvtToolApproval EventType = "ToolApproval"
+	// EvtReviewMode records a change of the review mode (auto, manual).
+	EvtReviewMode EventType = "ReviewMode"
 	// EvtHookMissed records a turn whose CLI reported tool calls that never
 	// went through ritam's hook: the hook is not running for that agent, or
 	// some calls got past it. Details: seen, reported, missed.

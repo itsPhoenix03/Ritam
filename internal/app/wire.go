@@ -275,8 +275,18 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	agentMgr.UseAccess(acc)
 	orch.Authority.Rights = agentMgr
 
+	// The review decides every call of a real agent: ritam's rules, the
+	// mode from the settings, and the human for what they leave open.
+	reviewCtl := newReviewControl(cfg, reviewer != nil)
+	reviewCtl.guard = guard
+	asks := newApprovals(func(e domain.Event) { orch.Events.Publish(context.Background(), e) })
 	if reviewer != nil {
 		recordToolCalls(reviewer, orch, log)
+		pol, err := newPolicy(cfg, ws, reviewCtl, asks, orch, log)
+		if err != nil {
+			return nil, err
+		}
+		reviewer.Policy = pol
 	}
 
 	// The agent manager reports runtime state changes as events so the TUI can
@@ -364,6 +374,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		}
 		return ids
 	}
+	reviewCtl.publish, reviewCtl.openTasks = access.publish, access.openTasks
 
 	recovered, err := orch.RecoverInterrupted(context.Background())
 	if err != nil {
@@ -374,11 +385,12 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	}
 
 	sys := &System{
-		Recovered:    recovered,
-		Workspace:    ws,
-		Access:       acc,
-		closeStore:   closeStore,
-		Service:      &Service{orch: orch, storage: *store, knowledge: know, team: team, access: access},
+		Recovered:  recovered,
+		Workspace:  ws,
+		Access:     acc,
+		closeStore: closeStore,
+		Service: &Service{orch: orch, storage: *store, knowledge: know, team: team, access: access,
+			review: reviewCtl, approvals: asks},
 		Orchestrator: orch,
 		Agents:       agentMgr,
 		Storage:      *store,
@@ -607,7 +619,8 @@ func recordToolCalls(r *review.Server, orch *orchestrator.Orchestrator, log *log
 }
 
 // toolCallEvent is the event recording one tool call, e.g. "opus Bash: go
-// test ./...", or "opus: refused, the call is too large to check".
+// test ./...", or "opus Bash refused: rm -rf ~ (refused: Recursive delete
+// ...)". A refused call is a ToolBlocked event, so it shows as one.
 func toolCallEvent(c review.Call) domain.Event {
 	who := string(c.Agent)
 	if c.Tool != "" {
@@ -617,20 +630,47 @@ func toolCallEvent(c review.Call) domain.Event {
 		who += " (subagent)"
 	}
 	summary := who
+	typ := domain.EvtToolCall
 	switch {
 	case c.Decision == review.Deny:
-		summary += ": refused, " + c.Note
+		typ = domain.EvtToolBlocked
+		summary += " refused"
+		if c.Summary != "" {
+			summary += ": " + c.Summary
+		}
+		if c.Note != "" {
+			summary += " (" + c.Note + ")"
+		}
 	case c.Summary != "":
 		summary += ": " + c.Summary
+		if c.Answer == "approved" {
+			summary += " (approved by you)"
+		}
+	}
+	var ruleIDs []string
+	for _, f := range c.Findings {
+		ruleIDs = append(ruleIDs, f.Rule)
 	}
 	details := map[string]string{"decision": string(c.Decision)}
 	for k, v := range map[string]string{"tool": c.Tool, "toolUseId": c.ToolUseID, "cwd": c.Cwd,
-		"session": c.SessionID, "subagent": c.Subagent, "note": c.Note} {
+		"session": c.SessionID, "subagent": c.Subagent, "note": c.Note, "severity": c.Severity,
+		"rules": strings.Join(ruleIDs, ","), "answer": c.Answer, "approval": c.Question} {
 		if v != "" {
 			details[k] = v
 		}
 	}
-	return domain.Event{Type: domain.EvtToolCall, TaskID: c.Task, AgentID: c.Agent, Summary: summary, Details: details}
+	if c.Stopped {
+		details["stopped"] = "true"
+	}
+	return domain.Event{Type: typ, TaskID: c.Task, AgentID: c.Agent, Summary: summary, Details: details}
+}
+
+// Attend says a human is at the TUI to answer the review's questions.
+// Without it (a headless run) a call that needs approval is refused at once.
+func (s *System) Attend() {
+	if s.Service != nil && s.Service.approvals != nil {
+		s.Service.approvals.attend(true)
+	}
 }
 
 // agentFactory makes a fresh adapter for agent id, one per task it works on.

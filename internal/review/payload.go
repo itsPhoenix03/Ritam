@@ -39,9 +39,10 @@ type Call struct {
 	// Findings are the rules that fired.
 	Findings []Finding
 	// Asked: the human was asked; Answer is what came of it: approved,
-	// refused, timed out, nobody.
-	Asked  bool
-	Answer string
+	// refused, timed out, withdrawn, nobody. Question is the question's id.
+	Asked    bool
+	Answer   string
+	Question string
 	// Stopped: a critical call stopped the turn.
 	Stopped bool
 }
