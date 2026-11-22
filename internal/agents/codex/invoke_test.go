@@ -24,6 +24,11 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// Checked first: the fake CLI runs the hook with its own environment,
+	// fake mode included.
+	if os.Getenv(hookModeEnv) == "1" {
+		os.Exit(runHookMode())
+	}
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		runFakeCLI(mode)
 		os.Exit(0)
@@ -56,6 +61,8 @@ func runFakeCLI(mode string) {
 		os.Exit(3)
 	case "session":
 		runFakeSessionCLI()
+	case "hooked":
+		runFakeHookedCLI()
 	case "costly":
 		runFakeCostlyCLI()
 	case "silent":

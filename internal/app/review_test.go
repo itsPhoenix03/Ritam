@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -68,6 +70,17 @@ func TestEveryToolCallIsRecordedInTheTasksEvents(t *testing.T) {
 	}
 	if missed == nil || !strings.Contains(missed.Summary, "1 of the 2") || missed.Details["missed"] != "Write" {
 		t.Errorf("hook missed event: %+v", missed)
+	}
+}
+
+// TestCodexHooksInTheWorkspaceAreGuarded: Codex runs .codex/hooks.json
+// outside its sandbox, so an agent may not write it: Claude's file tools are
+// denied it and the guard takes away one an agent's commands write.
+func TestCodexHooksInTheWorkspaceAreGuarded(t *testing.T) {
+	root := t.TempDir()
+	want := filepath.Join(root, ".codex", "hooks.json")
+	if !slices.Contains(sensitivePaths(root), want) {
+		t.Errorf("%s must be denied to the file tools: %v", want, sensitivePaths(root))
 	}
 }
 

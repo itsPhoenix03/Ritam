@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 
 	"ritam/internal/agents/core"
 	"ritam/internal/ports"
@@ -22,6 +23,44 @@ type streamEvent struct {
 		Text    string `json:"text"`
 		Command string `json:"command"`
 	} `json:"item"`
+}
+
+// toolItems counts the tool calls a turn's stream reports, each once:
+// command executions, file changes and MCP tool calls, the calls Codex runs
+// its pre-tool hook for. Web searches are left out: they run on OpenAI's
+// side, with no hook. Codex's item ids are its own, not the tool_use_id its
+// hook gets, so only how many calls there were can be compared.
+type toolItems struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// observe notes the tool call a streamed line starts or finishes, if any.
+func (c *toolItems) observe(line string) {
+	if !strings.Contains(line, `"item.`) {
+		return
+	}
+	var ev streamEvent
+	if json.Unmarshal([]byte(strings.TrimSpace(line)), &ev) != nil || ev.Item.ID == "" ||
+		(ev.Type != "item.started" && ev.Type != "item.completed") {
+		return
+	}
+	switch ev.Item.Type {
+	case "command_execution", "file_change", "mcp_tool_call":
+		c.mu.Lock()
+		if c.seen == nil {
+			c.seen = map[string]bool{}
+		}
+		c.seen[ev.Item.ID] = true
+		c.mu.Unlock()
+	}
+}
+
+// count is how many tool calls the stream reported.
+func (c *toolItems) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.seen)
 }
 
 // threadStarted reports the thread id when line is the `thread.started` event

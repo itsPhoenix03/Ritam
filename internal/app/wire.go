@@ -497,11 +497,14 @@ func protectedPaths(cfg *config.Config, ws config.Workspace) []string {
 // tools load, and environment files a shell loads on entering the folder.
 // An agent has no business writing them: Claude's file tools are denied
 // them, and the guard puts back what an agent's commands change.
+// .codex/hooks.json also matters to ritam's own hook: Codex runs it outside
+// its sandbox, and the Codex adapter withholds the hook-trust bypass while
+// one exists (codex/hooks.go).
 var (
 	sensitiveFiles = []string{
 		".git/config", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json",
-		".codex/config.toml", ".vscode/tasks.json", ".vscode/settings.json", ".vscode/launch.json",
-		".envrc", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
+		".codex/config.toml", ".codex/hooks.json", ".vscode/tasks.json", ".vscode/settings.json",
+		".vscode/launch.json", ".envrc", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
 	}
 	sensitiveDirs = []string{".git/hooks", ".github/workflows", ".husky"}
 )
@@ -669,6 +672,7 @@ func buildAdapter(id domain.AgentID, ac config.AgentConfig, role domain.AgentRol
 		a.UseSessions(sessions)
 		a.UseAccess(acc)
 		a.UseGuard(guard)
+		a.UseHooks(hooks)
 		return a, domain.AgentKindCodex, nil
 	default:
 		return nil, "", fmt.Errorf("agent %s: unknown type %q", id, ac.Type)
