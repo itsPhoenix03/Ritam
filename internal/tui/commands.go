@@ -31,6 +31,7 @@ const (
 	ActionRetryTask        Action = "retry_task"
 	ActionCancelTask       Action = "cancel_task"
 	ActionApprove          Action = "approve"
+	ActionApprovals        Action = "approvals"
 	ActionReject           Action = "reject"
 	ActionSendInstruction  Action = "send_instruction"
 	ActionInspectDecisions Action = "inspect_decisions"
@@ -120,6 +121,7 @@ var keymap = []keyBinding{
 	{Key: "c", Action: ActionCancelTask, Help: "cancel"},
 	{Key: "a", Action: ActionApprove, Help: "approve"},
 	{Key: "x", Action: ActionReject, Help: "reject"},
+	{Key: "A", Action: ActionApprovals, Help: "tool calls waiting for your approval (y allow, n refuse)"},
 	{Key: "i", Action: ActionSendInstruction, Help: "instruct"},
 	{Key: "tab", Action: ActionNextTab, Help: "next view: conversation, activity, events, decisions (shift+tab back)"},
 	{Key: "shift+tab", Action: ActionPrevTab},

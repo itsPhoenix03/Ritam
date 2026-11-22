@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"ritam/internal/brand"
 )
@@ -49,7 +51,7 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 			brand.Name, URLEnv(), TokenEnv()))
 	}
 
-	v, err := ask(base, token, body)
+	v, err := ask(base, token, body, waitFrom(getenv(WaitEnv())))
 	if err != nil {
 		return block(stderr, fmt.Sprintf("could not check the tool call with %s: %v", brand.Name, err))
 	}
@@ -66,8 +68,8 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv fu
 // ask sends the call to the review server and returns its verdict. A refusal
 // the server explains (no running turn, say) comes back as a Deny verdict
 // whatever its HTTP status.
-func ask(base, token string, body []byte) (Verdict, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+func ask(base, token string, body []byte, wait time.Duration) (Verdict, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+hookPath+preTool, bytes.NewReader(body))
 	if err != nil {
@@ -107,4 +109,15 @@ func block(stderr io.Writer, reason string) int {
 	}
 	fmt.Fprintf(stderr, "%s: %s\n", brand.Name, reason)
 	return blockExit
+}
+
+// waitFrom reads how long to wait for the server, in seconds, as the turn
+// set it; a missing or odd value means the default, and the bound holds
+// whatever the environment says.
+func waitFrom(v string) time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return hookTimeout
+	}
+	return min(time.Duration(n)*time.Second, maxHookWait)
 }

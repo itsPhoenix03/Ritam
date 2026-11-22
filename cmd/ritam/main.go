@@ -120,6 +120,8 @@ func run(configPath string, demo, headless, useReal, useMock bool, taskTitle str
 		return runHeadlessDemo(ctx, sys, taskTitle)
 	}
 
+	// A human is at the screen to answer the review's questions.
+	sys.Attend()
 	return tui.Run(ctx, sys.Service, tui.Options{
 		DemoOnStart:      demo || cfg.TUI.DemoOnStart,
 		DefaultAuthority: domain.AgentID(cfg.Orchestrator.DefaultAuthority),

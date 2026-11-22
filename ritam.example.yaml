@@ -217,3 +217,60 @@ access:
   # commands at any level unless this is true; they ask an agent that has a
   # sandbox, or you. Only honoured in the global settings in the app home.
   # allowUnsandboxed: false
+
+# Every tool call an agent makes goes through ritam's review before it runs:
+# its command is parsed and checked against ritam's rules. A harmful call is
+# refused, a critical one also stops the agent's turn and pauses the task.
+# The mode says who approves the rest:
+#   auto    ritam's rules decide, asking you about suspicious calls. Rules
+#           cannot foresee everything: a destructive command can still get
+#           through.
+#   manual  you approve every command as well.
+# The access level above still bounds what may be attempted. A project's
+# settings may choose manual, never auto over your global manual.
+review:
+  mode: auto
+  # How long a call waits for your answer before it is refused.
+  askTimeout: 5m
+  # Your own rules, added to ritam's. They run nothing and can only make the
+  # review stricter, so a project's rules join yours rather than replace
+  # them. A command pattern is read like a command: "git push --force"
+  # matches any git command whose subcommand starts with push and that has
+  # --force, however it is written (git -C repo push --force origin); it
+  # does not match git push -f, so list both. protect is a path glob,
+  # relative to the workspace unless absolute: changing, deleting or
+  # linking a match is refused.
+  rules:
+    deny: []
+    ask: []
+    protect: []
+    # for example:
+    #  deny: [terraform apply, terraform destroy]
+    #  ask: [npm publish]
+    #  protect: [infra/prod/**]
+  # Programs of your own run on every tool call, with the call as JSON on
+  # stdin. Exit 2 refuses it (stderr is the reason); exit 0 has no
+  # objection unless stdout says {"decision": "deny"} or {"decision": "ask"}
+  # (Claude Code's hookSpecificOutput form works too). A hook never
+  # approves a call. input: ritam (the same JSON for every CLI, with what
+  # ritam found) or native (the CLI's own hook payload). onFailure: block
+  # (the default: a crash or timeout refuses the call) or ignore. timeout:
+  # 10s by default, 15s at most. A project's hooks run only once you
+  # approve them on this machine.
+  # Your own Claude Code hooks (in ~/.claude/settings.json), which ritam
+  # otherwise keeps out of the agents' turns: off, on (every event's hooks
+  # run in the CLI, except pre-tool hooks, which the review runs itself and
+  # whose "allow" it ignores) or native (all of them in the CLI, where a
+  # pre-tool hook that answers allow, or rewrites the call, gets it past the
+  # review). Only your global settings decide this. Codex's hooks are not
+  # brought back yet.
+  cliHooks: off
+  hooks: []
+  # for example:
+  #  - name: no-push-to-main
+  #    run: [python, C:/hooks/no_push.py]
+  #    tools: [Bash, shell]
+  #    agents: [claude-code, codex]
+  #    input: ritam
+  #    timeout: 10s
+  #    onFailure: block

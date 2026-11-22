@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"ritam/internal/domain"
 	"ritam/internal/logging"
 	"ritam/internal/ports"
+	"ritam/internal/review/facts"
+	"ritam/internal/review/rules"
 )
 
 // Server is the review server: the hook's other end, inside ritam. It
@@ -44,6 +47,12 @@ type Server struct {
 	// OnTurnEnd is told how each turn's calls compared with what its CLI
 	// reported. Set it before the first turn begins.
 	OnTurnEnd func(Report)
+	// Policy decides the calls; without one they are only recorded. Set it
+	// before the first turn begins.
+	Policy *Policy
+	// Native are the human's own hooks to run natively in each CLI, beside
+	// ritam's (review.cliHooks). Set it before the first turn begins.
+	Native map[domain.AgentKind]map[string][]any
 }
 
 // Start listens on a free port of 127.0.0.1 and serves the hook. program is
@@ -86,14 +95,34 @@ func (s *Server) Close() error {
 // URL is the address the hook calls.
 func (s *Server) URL() string { return s.base }
 
-// HookCommand implements ports.HookMonitor.
-func (s *Server) HookCommand(domain.AgentKind) ports.HookCommand {
-	return ports.HookCommand{Program: s.program, Args: []string{"hook", preTool}, TimeoutSeconds: cliTimeoutSeconds}
+// HookCommand implements ports.HookMonitor. With a policy the CLI waits as
+// long as the human may take to answer, and a little more, so the hook
+// always answers first.
+func (s *Server) HookCommand(kind domain.AgentKind) ports.HookCommand {
+	timeout := cliTimeoutSeconds
+	if s.Policy != nil {
+		timeout = int(s.hookWait().Seconds()) + cliMargin
+	}
+	return ports.HookCommand{Program: s.program, Args: []string{"hook", preTool}, TimeoutSeconds: timeout,
+		Native: s.Native[kind]}
+}
+
+// hookWait is how long the hook waits for the server: the time the human
+// has to answer, and a margin for the review itself.
+func (s *Server) hookWait() time.Duration {
+	if s.Policy == nil {
+		return hookTimeout
+	}
+	return s.Policy.settings().AskTimeout + hookTimeout
 }
 
 // BeginTurn implements ports.HookMonitor.
-func (s *Server) BeginTurn(task domain.TaskID, agent domain.AgentID, kind domain.AgentKind) ports.HookTurn {
-	t := &Turn{s: s, token: newToken(), task: task, agent: agent, kind: kind, seen: map[string]bool{}}
+func (s *Server) BeginTurn(scope ports.TurnScope) ports.HookTurn {
+	t := &Turn{s: s, token: newToken(), task: scope.Task, agent: scope.Agent, kind: scope.Kind,
+		seen: map[string]bool{}, history: &rules.History{}}
+	if s.Policy != nil && s.Policy.Env != nil {
+		t.env = s.Policy.Env(scope)
+	}
 	s.mu.Lock()
 	s.turns[t.token] = t
 	s.mu.Unlock()
@@ -147,12 +176,18 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		call.SessionID, call.Cwd, call.Tool, call.ToolUseID, call.Subagent =
 			p.SessionID, p.Cwd, p.ToolName, p.ToolUseID, p.AgentID
 		call.Summary = summarize(p.ToolInput)
+		if s.Policy != nil && s.Policy.Rules != nil {
+			s.review(r.Context(), turn, p, body, &call)
+		}
 	}
 	turn.record(call)
 	if s.OnCall != nil {
 		s.OnCall(call)
 	}
 	writeVerdict(w, http.StatusOK, call.Decision, call.Note)
+	if call.Stopped && s.Policy.OnStop != nil {
+		go s.Policy.OnStop(Stop{Task: call.Task, Agent: call.Agent, Reason: call.Note})
+	}
 }
 
 func writeVerdict(w http.ResponseWriter, status int, d Decision, reason string) {
@@ -180,6 +215,11 @@ type Turn struct {
 	agent domain.AgentID
 	kind  domain.AgentKind
 
+	// env describes the machine for the turn's review; history is what the
+	// turn did so far.
+	env     facts.Env
+	history *rules.History
+
 	mu    sync.Mutex
 	seen  map[string]bool // tool_use ids the hook reported
 	calls int
@@ -188,7 +228,23 @@ type Turn struct {
 
 // Env implements ports.HookTurn.
 func (t *Turn) Env() map[string]string {
-	return map[string]string{URLEnv(): t.s.base, TokenEnv(): t.token}
+	return map[string]string{URLEnv(): t.s.base, TokenEnv(): t.token,
+		WaitEnv(): strconv.Itoa(int(t.s.hookWait().Seconds()))}
+}
+
+// addWritten treats a script the turn wrote, now run, as code to check:
+// write a script, then run it, is how a command gets past a check of the
+// command line alone.
+func (t *Turn) addWritten(c *facts.Call) {
+	fold := t.env.OS == "windows" || t.env.OS == "macos"
+	for _, p := range c.Paths {
+		if p.Access != facts.Exec {
+			continue
+		}
+		if text, ok := t.history.Written(p.Path, fold); ok {
+			c.Contents = append(c.Contents, facts.Content{Scope: facts.ScopeInline, Path: p.Path, Text: text})
+		}
+	}
 }
 
 func (t *Turn) record(c Call) {

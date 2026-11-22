@@ -201,6 +201,16 @@ type Runtime struct {
 	// folder, nil when none was. SaveGrant records a new approval.
 	Grant     *AccessConfig
 	SaveGrant func(AccessConfig) error
+	// HookApproved reports whether the human approved a project's review hook
+	// on this machine for the project at root, as it stands now (its entry
+	// and the script it runs); nil approves none. HeldHooks are the
+	// project's hooks not approved, which do not run.
+	HookApproved func(h ReviewHook, root string) bool
+	HeldHooks    []ReviewHook
+	// ProjectHooks are the project's hooks that were approved and run;
+	// HookRoot is the project's folder their files are taken from.
+	ProjectHooks []ReviewHook
+	HookRoot     string
 }
 
 // ProxyConfig configures the future local LLM proxy. The proxy is not the
@@ -274,6 +284,7 @@ type Config struct {
 	Storage      StorageConfig          `yaml:"storage"`
 	Workspace    WorkspaceConfig        `yaml:"workspace"`
 	Access       AccessConfig           `yaml:"access"`
+	Review       ReviewConfig           `yaml:"review"`
 	Backups      BackupConfig           `yaml:"backups"`
 
 	// Runtime is filled in at start, not configured.
@@ -323,6 +334,7 @@ func Default() *Config {
 		TUI:       TUIConfig{DemoOnStart: false, UseMockAgents: true},
 		Backups: BackupConfig{Enabled: true, Keep: 5, Interval: 10 * time.Minute,
 			WhenProjectDeleted: "ask", DeleteAfterDays: 30},
+		Review: ReviewConfig{Mode: ReviewAuto, AskTimeout: DefaultAskTimeout},
 	}
 }
 
@@ -580,6 +592,7 @@ func (c *Config) Validate() error {
 	if c.Proxy.Enabled && (c.Proxy.Port <= 0 || c.Proxy.Port > 65535) {
 		bad("proxy.port must be 1 to 65535, got %d", c.Proxy.Port)
 	}
+	errs = append(errs, c.Review.validate()...)
 	return errors.Join(errs...)
 }
 

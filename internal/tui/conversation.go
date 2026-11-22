@@ -79,7 +79,8 @@ func convShowsEvent(e domain.Event) bool {
 	case domain.EvtCheckpoint, domain.EvtDecisionCaveat, domain.EvtRequestAbandoned,
 		domain.EvtDecisionCreated, domain.EvtDecisionAccepted, domain.EvtDecisionRejected,
 		domain.EvtAuthorityViolation, domain.EvtValidationRejected, domain.EvtAgentFailed,
-		domain.EvtProtectedFileRestored, domain.EvtHookMissed:
+		domain.EvtProtectedFileRestored, domain.EvtHookMissed, domain.EvtToolBlocked, domain.EvtToolApproval,
+		domain.EvtReviewMode:
 		return true
 	}
 	return false

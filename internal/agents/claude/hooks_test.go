@@ -211,7 +211,7 @@ func (stubHooks) HookCommand(domain.AgentKind) ports.HookCommand {
 	return ports.HookCommand{Program: `C:\Program Files\ritam\ritam.exe`, Args: []string{"hook", "pretool"}, TimeoutSeconds: 30}
 }
 
-func (stubHooks) BeginTurn(domain.TaskID, domain.AgentID, domain.AgentKind) ports.HookTurn { return nil }
+func (stubHooks) BeginTurn(ports.TurnScope) ports.HookTurn { return nil }
 
 // TestTheHookIsInstalledToBlockWhenItFails: before every tool, run directly
 // (no shell, no PATH lookup), and blocking the call if it cannot run.
@@ -239,5 +239,25 @@ func TestTheHookIsInstalledToBlockWhenItFails(t *testing.T) {
 	a = New("opus", config.AgentConfig{AllowWrites: true, ScratchDir: t.TempDir(), ConfineReads: true}, nil)
 	if s, err := readSettings(a.buildArgs()); err != nil || len(s.Hooks.PreToolUse) != 0 {
 		t.Errorf("without hooks, no hook in the settings: %+v %v", s, err)
+	}
+}
+
+// TestYourOwnHooksRunAfterRitams: the human's hooks brought back by
+// review.cliHooks are written beside ritam's, which stays first.
+func TestYourOwnHooksRunAfterRitams(t *testing.T) {
+	theirs := map[string]any{"matcher": "Bash", "hooks": []any{map[string]any{"type": "command", "command": "guard"}}}
+	post := map[string]any{"matcher": "Edit", "hooks": []any{map[string]any{"type": "command", "command": "fmt"}}}
+	s := hookSettings(ports.HookCommand{Program: "/bin/ritam", Args: []string{"hook", "pretool"}, TimeoutSeconds: 30,
+		Native: map[string][]any{"PreToolUse": {theirs}, "PostToolUse": {post}}})
+	pre, _ := s["PreToolUse"].([]any)
+	if len(pre) != 2 || pre[1].(map[string]any)["matcher"] != "Bash" {
+		t.Fatalf("PreToolUse: %+v", pre)
+	}
+	first := pre[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if first["command"] != "/bin/ritam" || first["onFailure"] != "block" {
+		t.Errorf("ritam's hook comes first: %+v", first)
+	}
+	if p, _ := s["PostToolUse"].([]any); len(p) != 1 {
+		t.Errorf("PostToolUse: %+v", s["PostToolUse"])
 	}
 }

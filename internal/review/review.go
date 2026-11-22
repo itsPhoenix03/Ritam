@@ -7,11 +7,14 @@
 // task and agent a call belongs to from the turn's token, which the CLI
 // passes on to its hook in the environment.
 //
-// For now the review only monitors: every call is recorded and passed on to
-// the CLI's own permission rules, which still decide. A call is refused only
-// when it cannot be reviewed at all -- the hook cannot reach ritam, the call
-// is unreadable or too large, or it comes from no running turn -- because a
-// check that cannot happen must not let the call through (fail closed).
+// With a Policy, every call is decided: parsed into facts (package facts),
+// checked against ritam's rules (package rules) and the turn's history, and
+// refused, stopped, put to the human or passed (see Policy). Without one,
+// calls are only recorded. Either way a passed call still meets the CLI's
+// own permission rules, and a call is refused when it cannot be reviewed at
+// all -- the hook cannot reach ritam, the call is unreadable or too large,
+// or it comes from no running turn -- because a check that cannot happen
+// must not let the call through (fail closed).
 //
 // After each turn the calls the CLI reported in its output are compared with
 // the calls the hook saw, so a hook the CLI never ran is noticed: a CLI drops
@@ -30,12 +33,17 @@ const (
 	// part of a call says nothing about the rest.
 	MaxPayload = 1 << 20
 
-	// cliTimeoutSeconds is how long the CLI waits for the hook.
+	// cliTimeoutSeconds is how long the CLI waits for the hook when calls
+	// are only recorded.
 	cliTimeoutSeconds = 30
-	// hookTimeout is how long the hook waits for the server: less than the
-	// CLI waits for the hook, so a slow answer is the hook's refusal rather
-	// than the CLI's timeout, which may let the call run.
+	// hookTimeout is how long the hook waits for the server, beyond the
+	// time the human has to answer: less than the CLI waits for the hook
+	// (cliMargin more), so a slow answer is the hook's refusal rather than
+	// the CLI's timeout, which may let the call run.
 	hookTimeout = 20 * time.Second
+	cliMargin   = 40
+	// maxHookWait bounds what the hook accepts from its environment.
+	maxHookWait = 40 * time.Minute
 
 	// preTool is the hook event checked before a tool runs, as it appears in
 	// the hook's arguments and the server's path.
@@ -49,6 +57,10 @@ func URLEnv() string { return brand.Title() + "_HOOK_URL" }
 
 // TokenEnv names the environment variable holding the turn's token.
 func TokenEnv() string { return brand.Title() + "_HOOK_TOKEN" }
+
+// WaitEnv names the environment variable holding how long, in seconds, the
+// hook waits for the server: long enough for the human to answer.
+func WaitEnv() string { return brand.Title() + "_HOOK_WAIT" }
 
 // Decision is the server's answer to a call.
 type Decision string

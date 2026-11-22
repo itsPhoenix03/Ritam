@@ -113,6 +113,13 @@ func prepare(configPath string) (*config.Config, place, error) {
 	if cfg, err = config.LoadLayers(home.ConfigPath(), visible, pl.proj.ConfigPath()); err != nil {
 		return nil, pl, err
 	}
+	// A project's review hooks run only once approved on this machine.
+	approvals, err := config.LoadHookApprovals(filepath.Join(home.Root, config.HookApprovalsFile))
+	if err != nil {
+		pl.notices = append(pl.notices, fmt.Sprintf("the review's hook approvals could not be read (%v): this project's hooks are held", err))
+		approvals = config.HookApprovals{}
+	}
+	cfg.Runtime.HookApproved, cfg.Runtime.HookRoot = approvals.Approved, root
 	if msg := config.HeldNotice(cfg.RestrictProject(global, root), home.ConfigPath()); msg != "" {
 		pl.notices = append(pl.notices, msg)
 	}

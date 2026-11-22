@@ -416,7 +416,11 @@ func (a *CodexAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Mes
 		if t != nil {
 			task = t.ID
 		}
-		hook = a.hooks.BeginTurn(task, a.id, domain.AgentKindCodex)
+		scope := ports.TurnScope{Task: task, Agent: a.id, Kind: domain.AgentKindCodex}
+		if a.cfg.AllowWrites {
+			scope.BuildDir = a.access.GrantFor(t, a.id, a.cfg.AllowedCommands).BuildDir
+		}
+		hook = a.hooks.BeginTurn(scope)
 		env := maps.Clone(runner.Env)
 		if env == nil {
 			env = map[string]string{}

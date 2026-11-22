@@ -166,6 +166,39 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		o.RequireHumanApproval = true
 	}
 
+	// A project may ask for manual approval, never take it away.
+	if global.Review.Manual() && !c.Review.Manual() {
+		hold("review.mode")
+		c.Review.Mode = ReviewManual
+	}
+	if c.Review.CLIHooks != global.Review.CLIHooks {
+		hold("review.cliHooks")
+		c.Review.CLIHooks = global.Review.CLIHooks
+	}
+	// A project's rules add to the global ones (a list in a settings file
+	// replaces the one before it, which would let a project drop them).
+	r, gr := &c.Review.Rules, global.Review.Rules
+	r.Deny = unionStrings(gr.Deny, r.Deny)
+	r.Ask = unionStrings(gr.Ask, r.Ask)
+	r.Protect = unionStrings(gr.Protect, r.Protect)
+	// A project's hooks are programs it would have ritam run: held until
+	// the human approves each on this machine (Runtime.HookApproved), and
+	// asked again when one changes. The global hooks always run.
+	hooks := append([]ReviewHook(nil), global.Review.Hooks...)
+	c.Runtime.HeldHooks, c.Runtime.ProjectHooks = nil, nil
+	for _, h := range c.Review.Hooks {
+		if slices.ContainsFunc(global.Review.Hooks, h.Same) {
+			continue
+		}
+		if c.Runtime.HookApproved != nil && c.Runtime.HookApproved(h, root) {
+			hooks = append(hooks, h)
+			c.Runtime.ProjectHooks = append(c.Runtime.ProjectHooks, h)
+			continue
+		}
+		hold("review.hooks." + h.Name)
+		c.Runtime.HeldHooks = append(c.Runtime.HeldHooks, h)
+	}
+	c.Review.Hooks = hooks
 	if c.Access.AllowUnsandboxed && !global.Access.AllowUnsandboxed {
 		hold("access.allowUnsandboxed")
 		c.Access.AllowUnsandboxed = false

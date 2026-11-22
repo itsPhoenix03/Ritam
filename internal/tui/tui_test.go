@@ -34,6 +34,9 @@ type fakeService struct {
 	recruits    []ports.RecruitInput
 	checkResult *ports.ModelInfo
 	access      ports.AccessInfo
+	review      ports.ReviewInfo
+	pending     []ports.Approval
+	answers     map[string]bool
 
 	handlers []domain.EventHandler
 
@@ -1024,4 +1027,52 @@ func TestViewDoesNotPanicAcrossSizesAndAgentCounts(t *testing.T) {
 			_ = m.View()
 		})
 	}
+}
+
+func (f *fakeService) Review(ctx context.Context) (ports.ReviewInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.review.Mode == "" {
+		f.review.Mode = "auto"
+	}
+	return f.review, nil
+}
+
+func (f *fakeService) SetReviewMode(ctx context.Context, mode string) (ports.ReviewInfo, error) {
+	f.record("SetReviewMode")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.review.Mode = mode
+	return f.review, nil
+}
+
+func (f *fakeService) PendingApprovals(ctx context.Context) []ports.Approval {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ports.Approval(nil), f.pending...)
+}
+
+func (f *fakeService) AnswerApproval(ctx context.Context, id string, allow bool, note string) error {
+	f.record("AnswerApproval")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.answers == nil {
+		f.answers = map[string]bool{}
+	}
+	f.answers[id] = allow
+	for i, a := range f.pending {
+		if a.ID == id {
+			f.pending = append(f.pending[:i], f.pending[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+func (f *fakeService) ApproveHook(ctx context.Context, name string) (ports.ReviewInfo, error) {
+	f.record("ApproveHook")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.review.Hooks = append(f.review.Hooks, name)
+	return f.review, nil
 }

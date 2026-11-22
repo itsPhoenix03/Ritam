@@ -224,6 +224,9 @@ func (m Model) settingsLines(inner int) ([]line, []int) {
 			add(line{txt("  "), st(w, style)}, -1)
 		}
 	}
+	for _, l := range m.reviewLines(inner) {
+		add(l, -1)
+	}
 	a := m.access
 	where := ""
 	if a.File != "" {
