@@ -207,6 +207,10 @@ type Runtime struct {
 	// project's hooks not approved, which do not run.
 	HookApproved func(h ReviewHook, root string) bool
 	HeldHooks    []ReviewHook
+	// ProjectHooks are the project's hooks that were approved and run;
+	// HookRoot is the project's folder their files are taken from.
+	ProjectHooks []ReviewHook
+	HookRoot     string
 }
 
 // ProxyConfig configures the future local LLM proxy. The proxy is not the

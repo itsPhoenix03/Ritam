@@ -61,6 +61,7 @@ var commands = []command{
 	{name: "dismiss", usage: "dismiss <agent>", help: "remove a recruited agent from the team", argHint: "agent"},
 	{name: "check", usage: "check [provider model]", help: "check a model runs on your account (one short paid call)"},
 	{name: "settings", usage: "settings", help: "the workspace's access level and command list"},
+	{name: "hooks", usage: "hooks [approve <name>]", help: "approve one of this project's review hooks on this machine (the settings tab lists them)"},
 	{name: "review", usage: "review [auto|manual]", help: "who approves the agents' tool calls: auto (ritam's rules decide) or manual (you approve every command)"},
 	{name: "access", usage: "access <0-3>", help: "set the access level: 0 files only .. 3 any command (raising asks first)"},
 	{name: "allow", usage: "allow <command>", help: "let agents run a command at access levels 1 and 2 (e.g. allow cmake)"},
@@ -331,6 +332,9 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 
 	case "review":
 		return m.reviewCommand(rest)
+
+	case "hooks":
+		return m.hooksCommand(rest)
 
 	case "settings":
 		m.center, m.activePane, m.zoom = tabSettings, paneConversation, false

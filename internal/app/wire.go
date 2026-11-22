@@ -555,7 +555,7 @@ func newGuard(cfg *config.Config, ws config.Workspace) *core.FileGuard {
 	keep := ""
 	if h := cfg.Runtime.HomeDir; h != "" {
 		home := layout.Home{Root: h}
-		shared = append(shared, home.ConfigPath(), home.ProjectsFile())
+		shared = append(shared, home.ConfigPath(), home.ProjectsFile(), filepath.Join(h, config.HookApprovalsFile))
 		keep = home.RejectedDir()
 	}
 	if cfg.Runtime.ProjectConfig != "" {

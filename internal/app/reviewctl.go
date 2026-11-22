@@ -36,7 +36,13 @@ type reviewControl struct {
 	// hooks are the human's hooks that run: the global ones and the
 	// project's approved here; held are the project's not approved.
 	hooks, heldHooks []config.ReviewHook
-	guard            *core.FileGuard
+	// approved are the fingerprints of the project's hooks as approved, by
+	// name; root is the folder their files are taken from; approvals is
+	// the app home's approvals file, "" when there is no app home.
+	approved  map[string]string
+	root      string
+	approvals string
+	guard     *core.FileGuard
 	// publish records an event; openTasks lists the unfinished tasks.
 	publish   func(domain.Event)
 	openTasks func(context.Context) []domain.TaskID
@@ -44,7 +50,14 @@ type reviewControl struct {
 
 func newReviewControl(cfg *config.Config, active bool) *reviewControl {
 	c := &reviewControl{live: cfg.Review, file: cfg.Runtime.ProjectConfig, active: active}
-	c.hooks, c.heldHooks = cfg.Review.Hooks, cfg.Runtime.HeldHooks
+	c.hooks, c.heldHooks = slices.Clone(cfg.Review.Hooks), slices.Clone(cfg.Runtime.HeldHooks)
+	c.root, c.approved = cfg.Runtime.HookRoot, map[string]string{}
+	if cfg.Runtime.HomeDir != "" {
+		c.approvals = filepath.Join(cfg.Runtime.HomeDir, config.HookApprovalsFile)
+	}
+	for _, h := range cfg.Runtime.ProjectHooks {
+		c.approved[h.Name] = config.HookFingerprint(h, c.root)
+	}
 	if c.live.Mode == "" {
 		c.live.Mode = config.ReviewAuto
 	}
@@ -67,7 +80,7 @@ func (c *reviewControl) info() ports.ReviewInfo {
 		info.Hooks = append(info.Hooks, h.Name)
 	}
 	for _, h := range c.heldHooks {
-		info.HeldHooks = append(info.HeldHooks, h.Name)
+		info.HeldHooks = append(info.HeldHooks, h.Name+" ("+strings.Join(h.Run, " ")+")")
 	}
 	return info
 }
@@ -191,6 +204,11 @@ func reviewEnv(cfg *config.Config, ws config.Workspace) facts.Env {
 	if ws.Root != "" {
 		e.Protected = append(e.Protected, protectedPaths(cfg, ws)...)
 	}
+	// A project's hook scripts run outside any sandbox once approved: no
+	// agent may change them (and a changed one is held again anyway).
+	for _, h := range append(append([]config.ReviewHook(nil), cfg.Runtime.HeldHooks...), cfg.Runtime.ProjectHooks...) {
+		e.Protected = append(e.Protected, config.HookFiles(h, cfg.Runtime.HookRoot)...)
+	}
 	e.Resolve = resolveExisting
 	return e
 }
@@ -266,9 +284,61 @@ func (c *reviewControl) reviewHooks(dir string) []review.Hook {
 	defer c.mu.Unlock()
 	out := make([]review.Hook, 0, len(c.hooks))
 	for _, h := range c.hooks {
-		out = append(out, toReviewHook(h, dir))
+		rh := toReviewHook(h, dir)
+		if fp, ok := c.approved[h.Name]; ok {
+			// A project's hook runs only as it was approved.
+			h, root, name := h, c.root, h.Name
+			rh.Dir = root
+			rh.Check = func() error {
+				if config.HookFingerprint(h, root) != fp {
+					return fmt.Errorf("this project's hook %s changed since you approved it; approve it again "+
+						"in the settings tab (:hooks approve %s)", name, name)
+				}
+				return nil
+			}
+		}
+		out = append(out, rh)
 	}
 	return out
+}
+
+// approveHook approves one of the project's held hooks on this machine,
+// as it stands now, and lets it run from the next tool call.
+func (c *reviewControl) approveHook(ctx context.Context, name string) (ports.ReviewInfo, error) {
+	c.mu.Lock()
+	i := slices.IndexFunc(c.heldHooks, func(h config.ReviewHook) bool { return h.Name == name })
+	if i < 0 {
+		c.mu.Unlock()
+		return c.info(), fmt.Errorf("no hook of this project waits for approval as %q", name)
+	}
+	h := c.heldHooks[i]
+	if c.approvals != "" {
+		save := func() error { return config.SaveHookApproval(c.approvals, h, c.root) }
+		var err error
+		if c.guard != nil {
+			err = c.guard.Write(c.approvals, save)
+		} else {
+			err = save()
+		}
+		if err != nil {
+			c.mu.Unlock()
+			return c.info(), err
+		}
+	}
+	c.heldHooks = slices.Delete(c.heldHooks, i, i+1)
+	c.hooks = append(c.hooks, h)
+	c.approved[h.Name] = config.HookFingerprint(h, c.root)
+	c.mu.Unlock()
+
+	summary := fmt.Sprintf("approved this project's review hook %s (%s); it runs on every tool call from now on",
+		h.Name, strings.Join(h.Run, " "))
+	if c.publish != nil && c.openTasks != nil {
+		for _, id := range c.openTasks(ctx) {
+			c.publish(domain.Event{Type: domain.EvtReviewMode, TaskID: id, AgentID: domain.HumanAgentID,
+				Summary: summary, Details: map[string]string{"hook": h.Name}})
+		}
+	}
+	return c.info(), nil
 }
 
 // toReviewHook turns a hook from the settings into one the review runs, in
@@ -290,4 +360,12 @@ func toReviewHook(h config.ReviewHook, dir string) review.Hook {
 			}
 			return false
 		}}
+}
+
+// ApproveHook approves one of the project's held review hooks.
+func (s *Service) ApproveHook(ctx context.Context, name string) (ports.ReviewInfo, error) {
+	if s.review == nil {
+		return ports.ReviewInfo{}, ports.ErrNotImplemented
+	}
+	return s.review.approveHook(ctx, strings.TrimSpace(name))
 }

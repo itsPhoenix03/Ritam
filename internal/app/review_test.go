@@ -3,7 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -252,5 +254,80 @@ func TestYourOwnRulesApply(t *testing.T) {
 	info, _ := sys.Service.Review(context.Background())
 	if len(info.Deny) != 1 {
 		t.Errorf("the settings tab shows your rules: %+v", info)
+	}
+}
+
+// TestAppHelperHook is not a test: run with "-- deny", the test binary is a
+// hook that refuses every call.
+func TestAppHelperHook(t *testing.T) {
+	i := slices.Index(os.Args, "--")
+	if i < 0 || i+1 >= len(os.Args) {
+		return
+	}
+	_, _ = io.ReadAll(os.Stdin)
+	if os.Args[i+1] == "deny" {
+		fmt.Fprintln(os.Stderr, "this project allows no calls")
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+// TestAProjectHookRunsOnceApprovedAndOnlyAsApproved: a project's hook is
+// held until approved; approved, it runs; edited, the call is refused until
+// it is approved again; and an agent may not write its script.
+func TestAProjectHookRunsOnceApprovedAndOnlyAsApproved(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	script := filepath.Join(root, "hooks", "guard.txt")
+	_ = os.MkdirAll(filepath.Dir(script), 0o700)
+	if err := os.WriteFile(script, []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := config.ReviewHook{Name: "guard", Run: []string{os.Args[0], "-test.run=^TestAppHelperHook$", "--", "deny",
+		"hooks/guard.txt"}}
+	cfg := config.Default()
+	cfg.TUI.UseMockAgents = false
+	cfg.Storage.Backend = "memory"
+	cfg.Workspace.Root = root
+	cfg.Runtime.HomeDir = home
+	cfg.Runtime.HookRoot = root
+	cfg.Runtime.HeldHooks = []config.ReviewHook{hook}
+	sys, err := Build(cfg, logging.NewDiscard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sys.Close() })
+	turn := sys.Review.BeginTurn(ports.TurnScope{Task: "TASK-001", Agent: "opus", Kind: domain.AgentKindClaudeCode})
+	defer turn.End(ports.ToolCalls{})
+
+	if code, msg := hookRun(t, turn, "Bash", `{"command":"go build ./..."}`); code != 0 {
+		t.Fatalf("a held hook does not run: exit %d: %s", code, msg)
+	}
+	info, _ := sys.Service.Review(context.Background())
+	if len(info.HeldHooks) != 1 || !strings.Contains(info.HeldHooks[0], "guard") {
+		t.Fatalf("held: %+v", info.HeldHooks)
+	}
+	if _, err := sys.Service.ApproveHook(context.Background(), "guard"); err != nil {
+		t.Fatal(err)
+	}
+	if code, msg := hookRun(t, turn, "Bash", `{"command":"go build ./..."}`); code != 2 ||
+		!strings.Contains(msg, "refused by your hook guard: this project allows no calls") {
+		t.Errorf("approved, it runs: exit %d: %s", code, msg)
+	}
+	if _, err := os.Stat(filepath.Join(home, config.HookApprovalsFile)); err != nil {
+		t.Errorf("the approval is kept on this machine: %v", err)
+	}
+
+	if err := os.WriteFile(script, []byte("v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := sys.Review.BeginTurn(ports.TurnScope{Task: "TASK-002", Agent: "opus", Kind: domain.AgentKindClaudeCode})
+	defer fresh.End(ports.ToolCalls{})
+	if code, msg := hookRun(t, fresh, "Bash", `{"command":"go build ./..."}`); code != 2 ||
+		!strings.Contains(msg, "changed since you approved it") {
+		t.Errorf("edited, it does not run and the call is refused: exit %d: %s", code, msg)
+	}
+	e := reviewEnv(cfg, config.Workspace{Root: root})
+	if !slices.Contains(e.Protected, script) {
+		t.Errorf("the script is protected from agents: %v", e.Protected)
 	}
 }

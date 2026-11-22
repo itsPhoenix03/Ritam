@@ -1068,3 +1068,11 @@ func (f *fakeService) AnswerApproval(ctx context.Context, id string, allow bool,
 	}
 	return nil
 }
+
+func (f *fakeService) ApproveHook(ctx context.Context, name string) (ports.ReviewInfo, error) {
+	f.record("ApproveHook")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.review.Hooks = append(f.review.Hooks, name)
+	return f.review, nil
+}

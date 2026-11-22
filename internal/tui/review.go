@@ -231,7 +231,8 @@ func (m Model) reviewLines(inner int) []line {
 		para("your hooks: "+strings.Join(r.Hooks, ", "), bodyStyle)
 	}
 	if len(r.HeldHooks) > 0 {
-		para("this project's hooks, not run until you approve them on this machine: "+strings.Join(r.HeldHooks, ", "), warnStyle)
+		para("this project's hooks, not run until you approve them on this machine (:hooks approve <name>); they "+
+			"run outside any sandbox, as you, so read the script first: "+strings.Join(r.HeldHooks, ", "), warnStyle)
 	}
 	out = append(out, line{st(fmt.Sprintf("  :review auto | :review manual "+dot()+" a call waits %s for your answer", r.AskTimeout), dimStyle)})
 	return append(out, blank())
@@ -253,4 +254,27 @@ func (m Model) reviewCommand(rest string) (Model, tea.Cmd) {
 	}
 	m.setStatus("switching the review to %s...", mode)
 	return m, setReviewModeCmd(m.ctx, m.svc, mode)
+}
+
+// hooksCommand runs :hooks [approve <name>].
+func (m Model) hooksCommand(rest string) (Model, tea.Cmd) {
+	verb, name, _ := strings.Cut(strings.TrimSpace(rest), " ")
+	name = strings.TrimSpace(name)
+	switch {
+	case verb == "" || verb == "list":
+		m.center, m.activePane, m.zoom = tabSettings, paneConversation, false
+		return m, loadReviewCmd(m.ctx, m.svc)
+	case verb == "approve" && name != "":
+		m.setStatus("approving the hook %s...", name)
+		return m, approveHookCmd(m.ctx, m.svc, name)
+	}
+	m.setStatus("usage: :hooks approve <name> (the settings tab lists this project's held hooks)")
+	return m, nil
+}
+
+func approveHookCmd(ctx context.Context, svc ports.Service, name string) tea.Cmd {
+	return func() tea.Msg {
+		info, err := svc.ApproveHook(ctx, name)
+		return reviewChangedMsg{info: info, err: err}
+	}
 }

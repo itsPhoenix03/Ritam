@@ -625,6 +625,9 @@ type Service interface {
 	// the project's settings, and records it in every open task's events.
 	// It applies from the next tool call.
 	SetReviewMode(ctx context.Context, mode string) (ReviewInfo, error)
+	// ApproveHook approves one of the project's review hooks on this
+	// machine, as it stands now; it runs from the next tool call.
+	ApproveHook(ctx context.Context, name string) (ReviewInfo, error)
 	// PendingApprovals lists the tool calls waiting for the human, oldest
 	// first.
 	PendingApprovals(ctx context.Context) []Approval

@@ -41,6 +41,10 @@ type Hook struct {
 	Block bool
 	// Dir is where it runs (the workspace).
 	Dir string
+	// Check, when set, runs before the hook: an error refuses the call, and
+	// the hook does not run (a project's hook changed since the human
+	// approved it).
+	Check func() error
 }
 
 // hookPayload is what a hook with ritam's input reads on stdin: the call
@@ -123,6 +127,12 @@ func runHooks(ctx context.Context, hooks []Hook, t *Turn, call *Call, fc *facts.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if h.Check != nil {
+				if err := h.Check(); err != nil {
+					results[i] = hookResult{name: h.Name, deny: true, reason: err.Error()}
+					return
+				}
+			}
 			in := oursJSON
 			if h.Native {
 				in = raw

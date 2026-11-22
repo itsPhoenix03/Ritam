@@ -181,13 +181,14 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 	// the human approves each on this machine (Runtime.HookApproved), and
 	// asked again when one changes. The global hooks always run.
 	hooks := append([]ReviewHook(nil), global.Review.Hooks...)
-	c.Runtime.HeldHooks = nil
+	c.Runtime.HeldHooks, c.Runtime.ProjectHooks = nil, nil
 	for _, h := range c.Review.Hooks {
 		if slices.ContainsFunc(global.Review.Hooks, h.Same) {
 			continue
 		}
 		if c.Runtime.HookApproved != nil && c.Runtime.HookApproved(h, root) {
 			hooks = append(hooks, h)
+			c.Runtime.ProjectHooks = append(c.Runtime.ProjectHooks, h)
 			continue
 		}
 		hold("review.hooks." + h.Name)
