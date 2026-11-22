@@ -694,6 +694,19 @@ rules:
       hit: ['find . -name "*.go" -delete', 'find ~ -type f -delete']
       miss: ['find build -name "*.o" -delete', 'find . -name "*.go"']
 
+  - id: destroy.bulk-delete
+    category: destruction
+    severity: suspicious
+    on: command
+    match:
+      program: [rm, del, erase, unlink, shred, remove-item]
+      wrapped_by: [find, xargs, parallel]
+      path: {access: [delete], zone: [workspace, protected, ritam, home, system, outside, unc, unknown]}
+    reason: Deletes every file another command finds or lists, which are only known at run time.
+    examples:
+      hit: ["find . -name '*.go' -exec rm {} +", 'git ls-files | xargs rm', 'ls | xargs rm -f']
+      miss: ['rm src/old.go', 'find . -name "*.go" -exec cat {} +']
+
   - id: destroy.wipe-tools
     category: destruction
     severity: harmful
@@ -2778,7 +2791,7 @@ rules:
     dialect: [bash]
     on: command
     match:
-      program_raw_regex: '[A-Za-z0-9_.-][''"\\][A-Za-z0-9_./-]'
+      program_raw_regex: '[A-Za-z0-9_.-][''"\\]+[A-Za-z0-9_./-]'
     reason: The program name is written with quotes or backslashes inside it, which hides what runs.
     examples:
       hit: ["r''m -rf src", 'r\m -rf src', 'r"m" -rf src']
