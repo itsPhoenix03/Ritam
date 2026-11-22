@@ -68,62 +68,69 @@ func (c *Config) Trusted() (granted AccessConfig, held string) {
 // SaveAccess writes the access settings into the settings file at path,
 // creating it if needed. Everything else in the file is kept as it was.
 func SaveAccess(path string, ac AccessConfig) error {
+	if ac.Commands == nil {
+		ac.Commands = []string{} // written as [], so it overrides a global list
+	}
+	return saveSection(path, "access", ac,
+		"What agents may run in this workspace (0 files only .. 3 any command). Set from the settings tab.", "save access")
+}
+
+// saveSection writes one top-level section of the settings file at path,
+// creating the file if needed and keeping everything else, the section's
+// own comment included, as it was. what prefixes the errors.
+func saveSection(path, section string, v any, comment, what string) error {
 	var doc yaml.Node
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil && len(bytes.TrimSpace(data)) > 0:
 		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return fmt.Errorf("save access: parse %s: %w", path, err)
+			return fmt.Errorf("%s: parse %s: %w", what, path, err)
 		}
 	case err != nil && !os.IsNotExist(err):
-		return fmt.Errorf("save access: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	if doc.Kind == 0 {
 		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return fmt.Errorf("save access: %s is not a settings mapping", path)
-	}
-	if ac.Commands == nil {
-		ac.Commands = []string{} // written as [], so it overrides a global list
+		return fmt.Errorf("%s: %s is not a settings mapping", what, path)
 	}
 	var value yaml.Node
-	if err := value.Encode(ac); err != nil {
-		return fmt.Errorf("save access: %w", err)
+	if err := value.Encode(v); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	replaced := false
 	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "access" {
+		if root.Content[i].Value == section {
 			value.HeadComment = root.Content[i+1].HeadComment
 			root.Content[i+1] = &value
 			replaced = true
 		}
 	}
 	if !replaced {
-		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "access",
-			HeadComment: "What agents may run in this workspace (0 files only .. 3 any command). Set from the settings tab."}
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: section, HeadComment: comment}
 		root.Content = append(root.Content, key, &value)
 	}
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
 	if err := enc.Encode(&doc); err != nil {
-		return fmt.Errorf("save access: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	if err := enc.Close(); err != nil {
-		return fmt.Errorf("save access: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("save access: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, out.Bytes(), 0o600); err != nil {
-		return fmt.Errorf("save access: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("save access: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	return nil
 }

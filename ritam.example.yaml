@@ -217,3 +217,18 @@ access:
   # commands at any level unless this is true; they ask an agent that has a
   # sandbox, or you. Only honoured in the global settings in the app home.
   # allowUnsandboxed: false
+
+# Every tool call an agent makes goes through ritam's review before it runs:
+# its command is parsed and checked against ritam's rules. A harmful call is
+# refused, a critical one also stops the agent's turn and pauses the task.
+# The mode says who approves the rest:
+#   auto    ritam's rules decide, asking you about suspicious calls. Rules
+#           cannot foresee everything: a destructive command can still get
+#           through.
+#   manual  you approve every command as well.
+# The access level above still bounds what may be attempted. A project's
+# settings may choose manual, never auto over your global manual.
+review:
+  mode: auto
+  # How long a call waits for your answer before it is refused.
+  askTimeout: 5m

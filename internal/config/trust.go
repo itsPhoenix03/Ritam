@@ -166,6 +166,11 @@ func (c *Config) RestrictProject(global *Config, root string) (held []string) {
 		o.RequireHumanApproval = true
 	}
 
+	// A project may ask for manual approval, never take it away.
+	if global.Review.Manual() && !c.Review.Manual() {
+		hold("review.mode")
+		c.Review.Mode = ReviewManual
+	}
 	if c.Access.AllowUnsandboxed && !global.Access.AllowUnsandboxed {
 		hold("access.allowUnsandboxed")
 		c.Access.AllowUnsandboxed = false
