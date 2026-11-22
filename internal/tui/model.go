@@ -57,6 +57,9 @@ const (
 	// modeConfirm asks before an action that cannot be taken back (quit with
 	// runs going, cancel a task): y or enter does it, esc or n does not.
 	modeConfirm
+	// modeApproval asks about a tool call waiting for the human (review.go):
+	// y allows it, n refuses it, esc leaves it for later.
+	modeApproval
 )
 
 // isText reports whether keys in this mode type text rather than run
@@ -268,7 +271,13 @@ type Model struct {
 	// cursor is on.
 	access       ports.AccessInfo
 	accessLoaded bool
-	levelSel     int
+	// review is the review mode; approvals the tool calls waiting for the
+	// human, oldest first; approvalsLater: the human put them off (esc).
+	review         ports.ReviewInfo
+	reviewLoaded   bool
+	approvals      []ports.Approval
+	approvalsLater bool
+	levelSel       int
 	// spendToday is today's spending against the daily limits (spend.go).
 	spendToday ports.DailySpend
 	spendErr   error
@@ -378,6 +387,8 @@ func (m Model) Init() tea.Cmd {
 		loadAgentsCmd(m.ctx, m.svc, m.currentTaskID),
 		loadTasksCmd(m.ctx, m.svc),
 		loadAccessCmd(m.ctx, m.svc),
+		loadReviewCmd(m.ctx, m.svc),
+		loadApprovalsCmd(m.ctx, m.svc),
 		loadSpendCmd(m.ctx, m.svc),
 	}
 	if m.opts.DemoOnStart {

@@ -223,10 +223,13 @@ func inputLines(prefix line, value string, width, maxRows int, focused, selected
 // inputBoxHeight is the bottom strip's height: the box around however many
 // rows the text being typed needs.
 func (m Model) inputBoxHeight() int {
+	w, _ := m.screenSize()
+	if m.mode == modeApproval {
+		return maxInt(promptHeight, minInt(len(m.approvalLines(w-2)), m.maxInputRows())+2)
+	}
 	if m.mode != modeCommand && m.mode != modePrompt && m.mode != modeConfirm {
 		return promptHeight
 	}
-	w, _ := m.screenSize()
 	return maxInt(promptHeight, len(m.inputBodyLines(w-2))+2)
 }
 

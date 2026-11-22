@@ -61,6 +61,7 @@ var commands = []command{
 	{name: "dismiss", usage: "dismiss <agent>", help: "remove a recruited agent from the team", argHint: "agent"},
 	{name: "check", usage: "check [provider model]", help: "check a model runs on your account (one short paid call)"},
 	{name: "settings", usage: "settings", help: "the workspace's access level and command list"},
+	{name: "review", usage: "review [auto|manual]", help: "who approves the agents' tool calls: auto (ritam's rules decide) or manual (you approve every command)"},
 	{name: "access", usage: "access <0-3>", help: "set the access level: 0 files only .. 3 any command (raising asks first)"},
 	{name: "allow", usage: "allow <command>", help: "let agents run a command at access levels 1 and 2 (e.g. allow cmake)"},
 	{name: "disallow", usage: "disallow <command>", help: "take a command off the list"},
@@ -328,10 +329,13 @@ func (m Model) runCommand(input string) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "review":
+		return m.reviewCommand(rest)
+
 	case "settings":
 		m.center, m.activePane, m.zoom = tabSettings, paneConversation, false
 		m.levelSel = int(m.access.Level)
-		return m, loadAccessCmd(m.ctx, m.svc)
+		return m, tea.Batch(loadAccessCmd(m.ctx, m.svc), loadReviewCmd(m.ctx, m.svc))
 
 	case "access":
 		if strings.TrimSpace(rest) == "" {

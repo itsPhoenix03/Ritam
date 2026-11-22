@@ -47,6 +47,38 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.applyAccess(msg.info), nil
 
+	case reviewLoadedMsg:
+		if msg.err == nil {
+			m.review, m.reviewLoaded = msg.info, true
+		}
+		return m, nil
+
+	case reviewChangedMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		m.review, m.reviewLoaded = msg.info, true
+		if msg.info.Mode == "auto" {
+			m.setStatus("review mode auto: %s", msg.info.Warning)
+		} else {
+			m.setStatus("review mode manual: every command now waits for your approval")
+		}
+		return m, nil
+
+	case approvalsLoadedMsg:
+		return m.applyApprovals(msg.list), nil
+
+	case approvalAnsweredMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+		} else if msg.allow {
+			m.setStatus("allowed %s's %s", msg.approval.Agent, msg.approval.Tool)
+		} else {
+			m.setStatus("refused %s's %s", msg.approval.Agent, msg.approval.Tool)
+		}
+		return m, loadApprovalsCmd(m.ctx, m.svc)
+
 	case spendLoadedMsg:
 		m.spendToday, m.spendErr = msg.spend, msg.err
 		return m, nil
@@ -231,6 +263,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case domain.EvtAccessLevel:
 			cmds = append(cmds, loadAccessCmd(m.ctx, m.svc))
+		case domain.EvtReviewMode:
+			cmds = append(cmds, loadReviewCmd(m.ctx, m.svc))
+		case domain.EvtToolApproval, domain.EvtToolCall, domain.EvtToolBlocked:
+			if reviewEvent(ev) {
+				cmds = append(cmds, loadApprovalsCmd(m.ctx, m.svc))
+			}
 		case domain.EvtAgentUsage, domain.EvtLimitReached:
 			cmds = append(cmds, loadSpendCmd(m.ctx, m.svc))
 		case domain.EvtRunQueued:
@@ -261,6 +299,8 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateCommandLine(msg)
 	case modeConfirm:
 		return m.updateConfirm(msg)
+	case modeApproval:
+		return m.updateApproval(msg)
 	case modeHelp:
 		// The reference is longer than most terminals, so the scroll keys
 		// keep working inside it; any other key closes it.
@@ -601,6 +641,8 @@ func (m Model) dispatch(a Action, arg int) (tea.Model, tea.Cmd) {
 	case ActionQuit:
 		return m.requestQuit()
 
+	case ActionApprovals:
+		return m.openApprovals()
 	case ActionHelp:
 		m.mode = modeHelp
 		return m, nil

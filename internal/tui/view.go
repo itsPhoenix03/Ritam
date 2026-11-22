@@ -316,6 +316,10 @@ func (m Model) commandRows(width, height int) []string {
 		accent := colorYellow
 		spec = boxSpec{active: true, accent: &accent, right: keyLegend("y/enter confirm", "esc/n keep")}
 		body = m.inputBodyLines(inner)
+	case modeApproval:
+		accent := colorYellow
+		spec = boxSpec{active: true, accent: &accent, right: keyLegend("y allow", "n refuse", "esc later")}
+		body = m.approvalLines(inner)
 	default:
 		status := m.statusLine
 		if status == "" {

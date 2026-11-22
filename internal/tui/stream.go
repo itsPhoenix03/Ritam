@@ -156,7 +156,7 @@ func isFailureEvent(t domain.EventType) bool {
 	switch t {
 	case domain.EvtTaskFailed, domain.EvtAgentFailed, domain.EvtAuthorityViolation,
 		domain.EvtValidationRejected, domain.EvtDecisionRejected, domain.EvtProtectedFileRestored,
-		domain.EvtHookMissed:
+		domain.EvtHookMissed, domain.EvtToolBlocked:
 		return true
 	}
 	return false
