@@ -17,8 +17,10 @@
 // the header marker (##CODEX) as a parameter.
 //
 // A write-enabled agent (allowWrites) runs in the workspace-write sandbox
-// with temp folders and the network turned off. Nothing reviews its edits
-// before they land. Codex reports tokens but no cost.
+// with temp folders and the network turned off. With hooks on, its tool
+// calls first go through ritam's hook, which records them (hooks.go; not yet
+// run live). Nothing reviews an edit's content before it lands. Codex
+// reports tokens but no cost.
 //
 // Not implemented: structured replies via `--output-schema` (the reply is
 // free text with a header line), and interrupting a turn short of killing it.
@@ -30,6 +32,7 @@ package codex
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -77,6 +80,8 @@ type CodexAdapter struct {
 	// access is the workspace's access policy; nil means the agent's own
 	// command list (see core.Access.GrantFor).
 	access *core.Access
+	// hooks is ritam's review of tool calls (see hooks.go); nil for none.
+	hooks ports.HookMonitor
 }
 
 // New builds an adapter for id using cfg. When cfg.Executable is empty, the
@@ -402,14 +407,42 @@ func (a *CodexAdapter) runTurn(ctx context.Context, t *domain.Task, m domain.Mes
 		}
 	}
 
+	// The turn's credentials for ritam's hook go into the CLI's environment
+	// for its hook to inherit. The runner is a copy; its Env map is not, so
+	// it is replaced rather than written to.
+	var hook ports.HookTurn
+	if a.hooks != nil {
+		var task domain.TaskID
+		if t != nil {
+			task = t.ID
+		}
+		hook = a.hooks.BeginTurn(task, a.id, domain.AgentKindCodex)
+		env := maps.Clone(runner.Env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		maps.Copy(env, hook.Env())
+		runner.Env = env
+	}
+
+	var tools toolItems
 	res, runErr = runner.RunStreaming(ctx, args, prompt, func(line string) {
 		if id, ok := threadStarted(line); ok {
 			thread = id
 		}
 		rep.observe(line)
+		tools.observe(line)
 		consumeStreamLine(line, a.activity)
 	})
 	a.activity.Flush()
+	if hook != nil {
+		// Only a turn Codex finished is checked against the hook.
+		var reported ports.ToolCalls
+		if runErr == nil && rep.completed && !rep.failed {
+			reported = ports.ToolCalls{Count: tools.count()}
+		}
+		hook.End(reported)
+	}
 
 	text, readErr := os.ReadFile(lastMessage)
 	return res, strings.TrimSpace(string(text)), readErr, runErr, thread, rep
@@ -542,6 +575,7 @@ func (a *CodexAdapter) buildArgs(lastMessageFile string) []string {
 	)
 	args = append(args, writeConfinement(a.cfg.AllowWrites)...)
 	args = append(args, isolation...)
+	args = append(args, a.hookArgs()...)
 	if a.cfg.WorkingDir != "" {
 		args = append(args, "--cd", a.cfg.WorkingDir)
 	}
@@ -593,6 +627,7 @@ func (a *CodexAdapter) buildResumeArgs(thread, lastMessageFile string) []string 
 	)
 	args = append(args, writeConfinement(a.cfg.AllowWrites)...)
 	args = append(args, isolation...)
+	args = append(args, a.hookArgs()...)
 	return append(args,
 		"--output-last-message", lastMessageFile,
 		thread,

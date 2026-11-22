@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -23,6 +25,7 @@ import (
 	"ritam/internal/orchestrator"
 	"ritam/internal/ports"
 	"ritam/internal/proxy"
+	"ritam/internal/review"
 	"ritam/internal/storage"
 )
 
@@ -46,6 +49,9 @@ type System struct {
 	// Backups snapshots the project's database into the app home; nil when
 	// backups are off or there is no app home (as in tests).
 	Backups *backup.Manager
+	// Review is the server ritam's tool hook asks before an agent's CLI runs
+	// a tool; nil with mock agents, which run no tools.
+	Review *review.Server
 
 	closeStore  func() error
 	stopBackups context.CancelFunc
@@ -58,6 +64,11 @@ type System struct {
 // Close takes a last backup and releases the storage. Call it once, after
 // the TUI or demo is done.
 func (s *System) Close() error {
+	if s.Review != nil {
+		// The runs are stopped by now; a hook still asking is refused.
+		_ = s.Review.Close()
+		s.Review = nil
+	}
 	if s.closeStore == nil {
 		return nil
 	}
@@ -169,6 +180,24 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	sessions.UseGuard(guard)
 	access.guard = guard
 
+	// ritam's tool hook: a real agent's CLI asks the review server before
+	// every tool call. Mock agents run no tools, so they need none.
+	var (
+		reviewer *review.Server
+		hooks    ports.HookMonitor // stays a nil interface without a server
+	)
+	if !cfg.TUI.UseMockAgents {
+		if reviewer, err = startReview(log); err != nil {
+			return nil, err
+		}
+		hooks = reviewer
+		defer func() {
+			if !ok {
+				_ = reviewer.Close()
+			}
+		}()
+	}
+
 	// Register in a stable order so the TUI and the logs are reproducible.
 	names := make([]string, 0, len(cfg.Agents))
 	for name := range cfg.Agents {
@@ -193,11 +222,11 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 
 		// Built once here to validate the config and learn its kind; each
 		// task the agent works on then gets a fresh adapter from the factory.
-		_, kind, err := buildAdapter(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, guard, log)
+		_, kind, err := buildAdapter(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, guard, hooks, log)
 		if err != nil {
 			return nil, err
 		}
-		factory := agentFactory(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, guard, log)
+		factory := agentFactory(id, ac, role, cfg.TUI.UseMockAgents, sessions, acc, guard, hooks, log)
 		acc.SetWrites(id, ac.AllowWrites && kind != domain.AgentKindMock)
 
 		display := ac.DisplayName
@@ -246,6 +275,10 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 	agentMgr.UseAccess(acc)
 	orch.Authority.Rights = agentMgr
 
+	if reviewer != nil {
+		recordToolCalls(reviewer, orch, log)
+	}
+
 	// The agent manager reports runtime state changes as events so the TUI can
 	// show an agent crashing without polling.
 	agentMgr.OnStateChange = func(a domain.Agent) {
@@ -276,7 +309,8 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 
 	// Agents recruited in earlier sessions rejoin the team.
 	team := &Team{
-		path: teamFile(cfg), reg: registry, cfg: cfg, ws: ws, sessions: sessions, access: acc, guard: guard, log: log,
+		path: teamFile(cfg), reg: registry, cfg: cfg, ws: ws, sessions: sessions, access: acc, guard: guard, hooks: hooks,
+		log:      log,
 		catalogs: catalogsFor(cfg),
 		publish:  func(e domain.Event) { orch.Events.Publish(context.Background(), e) },
 		inUse:    orch.AgentInUse,
@@ -351,6 +385,7 @@ func Build(cfg *config.Config, log *logging.Logger) (*System, error) {
 		Knowledge:    know,
 		Proxy:        proxy.New(cfg.Proxy, log),
 		Config:       cfg,
+		Review:       reviewer,
 		log:          log,
 	}
 	if db != nil && cfg.Backups.Enabled && cfg.Runtime.BackupDir != "" {
@@ -462,11 +497,14 @@ func protectedPaths(cfg *config.Config, ws config.Workspace) []string {
 // tools load, and environment files a shell loads on entering the folder.
 // An agent has no business writing them: Claude's file tools are denied
 // them, and the guard puts back what an agent's commands change.
+// .codex/hooks.json also matters to ritam's own hook: Codex runs it outside
+// its sandbox, and the Codex adapter withholds the hook-trust bypass while
+// one exists (codex/hooks.go).
 var (
 	sensitiveFiles = []string{
 		".git/config", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json",
-		".codex/config.toml", ".vscode/tasks.json", ".vscode/settings.json", ".vscode/launch.json",
-		".envrc", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
+		".codex/config.toml", ".codex/hooks.json", ".vscode/tasks.json", ".vscode/settings.json",
+		".vscode/launch.json", ".envrc", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
 	}
 	sensitiveDirs = []string{".git/hooks", ".github/workflows", ".husky"}
 )
@@ -521,18 +559,93 @@ func newGuard(cfg *config.Config, ws config.Workspace) *core.FileGuard {
 	return g
 }
 
+// startReview starts the review server, with ritam's own executable, by its
+// absolute path, as the hook the CLIs run.
+func startReview(log *logging.Logger) (*review.Server, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("finding %s's own executable, the agents' tool hook: %w", brand.Name, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return review.Start(exe, log)
+}
+
+// recordToolCalls puts what the review server sees into the tasks' events:
+// every tool call an agent's CLI was about to make, and every turn whose
+// calls did not all go through the hook.
+func recordToolCalls(r *review.Server, orch *orchestrator.Orchestrator, log *logging.Logger) {
+	r.OnCall = func(c review.Call) {
+		orch.Events.Publish(context.Background(), toolCallEvent(c))
+	}
+	r.OnTurnEnd = func(rep review.Report) {
+		problem := rep.Problem()
+		if problem == "" {
+			log.ForAgent(rep.Agent).Debug("every tool call went through the hook",
+				"task", string(rep.Task), "seen", rep.Seen, "reported", rep.Reported)
+			return
+		}
+		var missed []string
+		for _, c := range rep.Missed {
+			missed = append(missed, c.Tool)
+		}
+		log.ForAgent(rep.Agent).Warn("tool calls did not go through the hook", "task", string(rep.Task),
+			"kind", string(rep.Kind), "seen", rep.Seen, "reported", rep.Reported, "missed", strings.Join(missed, ","))
+		orch.Events.Publish(context.Background(), domain.Event{
+			Type:    domain.EvtHookMissed,
+			TaskID:  rep.Task,
+			AgentID: rep.Agent,
+			Summary: fmt.Sprintf("%s: %s", rep.Agent, problem),
+			Details: map[string]string{
+				"seen":     strconv.Itoa(rep.Seen),
+				"reported": strconv.Itoa(rep.Reported),
+				"missed":   strings.Join(missed, ","),
+			},
+		})
+	}
+}
+
+// toolCallEvent is the event recording one tool call, e.g. "opus Bash: go
+// test ./...", or "opus: refused, the call is too large to check".
+func toolCallEvent(c review.Call) domain.Event {
+	who := string(c.Agent)
+	if c.Tool != "" {
+		who += " " + c.Tool
+	}
+	if c.Subagent != "" {
+		who += " (subagent)"
+	}
+	summary := who
+	switch {
+	case c.Decision == review.Deny:
+		summary += ": refused, " + c.Note
+	case c.Summary != "":
+		summary += ": " + c.Summary
+	}
+	details := map[string]string{"decision": string(c.Decision)}
+	for k, v := range map[string]string{"tool": c.Tool, "toolUseId": c.ToolUseID, "cwd": c.Cwd,
+		"session": c.SessionID, "subagent": c.Subagent, "note": c.Note} {
+		if v != "" {
+			details[k] = v
+		}
+	}
+	return domain.Event{Type: domain.EvtToolCall, TaskID: c.Task, AgentID: c.Agent, Summary: summary, Details: details}
+}
+
 // agentFactory makes a fresh adapter for agent id, one per task it works on.
-func agentFactory(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, acc *core.Access, guard *core.FileGuard, log *logging.Logger) core.AdapterFactory {
+func agentFactory(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, acc *core.Access, guard *core.FileGuard, hooks ports.HookMonitor, log *logging.Logger) core.AdapterFactory {
 	return func() (ports.AgentAdapter, error) {
-		ad, _, err := buildAdapter(id, ac, role, forceMock, sessions, acc, guard, log)
+		ad, _, err := buildAdapter(id, ac, role, forceMock, sessions, acc, guard, hooks, log)
 		return ad, err
 	}
 }
 
 // buildAdapter selects the adapter implementation for one agent. Mock agents
 // are the default in the scaffold so that the orchestration flow can be
-// exercised end to end without any provider access.
-func buildAdapter(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, acc *core.Access, guard *core.FileGuard, log *logging.Logger) (ports.AgentAdapter, domain.AgentKind, error) {
+// exercised end to end without any provider access. hooks may be nil: the
+// agent's tool calls then go through no hook of ritam's.
+func buildAdapter(id domain.AgentID, ac config.AgentConfig, role domain.AgentRole, forceMock bool, sessions *core.SessionRegistry, acc *core.Access, guard *core.FileGuard, hooks ports.HookMonitor, log *logging.Logger) (ports.AgentAdapter, domain.AgentKind, error) {
 	if forceMock || ac.Type == "mock" {
 		// A mock plays whichever part it has on the task: the task's
 		// authority can be any participant, and can change mid-task.
@@ -552,12 +665,14 @@ func buildAdapter(id domain.AgentID, ac config.AgentConfig, role domain.AgentRol
 		a.UseSessions(sessions)
 		a.UseAccess(acc)
 		a.UseGuard(guard)
+		a.UseHooks(hooks)
 		return a, domain.AgentKindClaudeCode, nil
 	case "codex":
 		a := codex.New(id, ac, log)
 		a.UseSessions(sessions)
 		a.UseAccess(acc)
 		a.UseGuard(guard)
+		a.UseHooks(hooks)
 		return a, domain.AgentKindCodex, nil
 	default:
 		return nil, "", fmt.Errorf("agent %s: unknown type %q", id, ac.Type)
